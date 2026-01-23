@@ -43,7 +43,7 @@ internal final class WebCheckoutFlow {
         Logger.info("Checkout session created: \(session.sessionId)", category: .iap)
         Logger.debug("Opening checkout URL in Safari", category: .iap)
 
-        await openInBrowser(session.checkoutURL)
+        await openInBrowser(session.checkoutUrl)
 
         return session
     }
@@ -105,7 +105,7 @@ internal struct CheckoutSession: Codable, Sendable {
     let sessionId: String
 
     /// The Stripe checkout URL to open in Safari
-    let checkoutURL: URL
+    let checkoutUrl: URL
 
     /// Pre-allocated transaction ID for status polling
     let transactionId: String
