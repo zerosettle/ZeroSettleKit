@@ -51,6 +51,12 @@ public final class ZeroSettleIAP: ObservableObject {
 
     public static let shared = ZeroSettleIAP()
 
+    #if DEBUG
+    /// Override the backend base URL for local development.
+    /// Only available in debug builds. Set before calling `configure()`.
+    public nonisolated(unsafe) static var baseURLOverride: URL?
+    #endif
+
     // MARK: - Configuration
 
     /// Configuration for the ZeroSettle IAP SDK.
@@ -119,7 +125,13 @@ public final class ZeroSettleIAP: ObservableObject {
     public func configure(_ config: Configuration) {
         self.config = config
 
-        let backend = Backend(baseURL: config.backendURL, publishableKey: config.publishableKey)
+        #if DEBUG
+        let baseURL = Self.baseURLOverride ?? config.backendURL
+        #else
+        let baseURL = config.backendURL
+        #endif
+
+        let backend = Backend(baseURL: baseURL, publishableKey: config.publishableKey)
         self.backend = backend
 
         let checkoutFlow = WebCheckoutFlow(backend: backend)

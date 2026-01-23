@@ -22,7 +22,6 @@ internal final class Backend: @unchecked Sendable {
     init(baseURL: URL, publishableKey: String) {
         self.baseURL = baseURL
         self.publishableKey = publishableKey
-        self.httpClient = HTTPClient()
 
         self.decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
@@ -31,6 +30,8 @@ internal final class Backend: @unchecked Sendable {
         self.encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.keyEncodingStrategy = .convertToSnakeCase
+
+        self.httpClient = HTTPClient(decoder: decoder, encoder: encoder)
     }
 
     // MARK: - Auth Headers
@@ -43,7 +44,7 @@ internal final class Backend: @unchecked Sendable {
 
     /// Fetch the product catalog for this developer's app.
     func fetchProducts() async throws -> [Product] {
-        let url = baseURL.appendingPathComponent("iap/products")
+        let url = apiURL("iap/products/")
         let response: ProductsResponse = try await httpClient.get(
             url,
             headers: authHeaders,
@@ -57,7 +58,7 @@ internal final class Backend: @unchecked Sendable {
     /// Create a Stripe checkout session for the given product and user.
     /// The backend creates the session via the developer's connected Stripe Express account.
     func createCheckoutSession(productId: String, userId: String) async throws -> CheckoutSession {
-        let url = baseURL.appendingPathComponent("iap/checkout-sessions")
+        let url = apiURL("iap/checkout-sessions/")
         let body = CreateCheckoutSessionRequest(productId: productId, userId: userId)
         return try await httpClient.post(
             url,
@@ -71,7 +72,7 @@ internal final class Backend: @unchecked Sendable {
 
     /// Get the status of a transaction by ID.
     func getTransaction(transactionId: String) async throws -> Transaction {
-        let url = baseURL.appendingPathComponent("iap/transactions/\(transactionId)")
+        let url = apiURL("iap/transactions/\(transactionId)/")
         return try await httpClient.get(
             url,
             headers: authHeaders,
@@ -83,7 +84,7 @@ internal final class Backend: @unchecked Sendable {
 
     /// Get the current entitlements for a user.
     func getEntitlements(userId: String) async throws -> [Entitlement] {
-        var components = URLComponents(url: baseURL.appendingPathComponent("iap/entitlements"), resolvingAgainstBaseURL: false)!
+        var components = URLComponents(url: apiURL("iap/entitlements/"), resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "user_id", value: userId)]
 
         guard let url = components.url else {
@@ -102,7 +103,7 @@ internal final class Backend: @unchecked Sendable {
 
     /// Forward a StoreKit transaction's JWS representation for server-side verification.
     func syncStoreKitTransaction(jwsRepresentation: String, userId: String) async throws {
-        let url = baseURL.appendingPathComponent("iap/storekit-transactions")
+        let url = apiURL("iap/storekit-transactions/")
         let body = SyncStoreKitTransactionRequest(
             jwsRepresentation: jwsRepresentation,
             userId: userId
@@ -115,6 +116,12 @@ internal final class Backend: @unchecked Sendable {
         request.httpBody = try encoder.encode(body)
 
         try await httpClient.executeVoid(request)
+    }
+
+    // MARK: - Helpers
+
+    private func apiURL(_ path: String) -> URL {
+        baseURL.appendingPathComponent(path)
     }
 }
 

@@ -120,7 +120,10 @@ let package = Package(
             dependencies: [
                 "ZeroSettleCore",
             ],
-            path: "Sources/IAP"
+            path: "Sources/IAP",
+            swiftSettings: [
+                .define("DEBUG", .when(configuration: .debug)),
+            ]
         ),
 
         // ────────────────────────────────────────────────────────────

@@ -34,13 +34,13 @@ final class ConfigurationTests: XCTestCase {
             publishableKey: "pk_live_test",
             environment: .production
         )
-        XCTAssertEqual(prodConfig.backendURL.host, "zerosettle.io")
+        XCTAssertEqual(prodConfig.backendURL.host, "api.zerosettle.io")
 
         let devConfig = ZeroSettleIAP.Configuration(
             publishableKey: "pk_test_test",
             environment: .development
         )
-        XCTAssertEqual(devConfig.backendURL.host, "staging.zerosettle.io")
+        XCTAssertEqual(devConfig.backendURL.host, "api.zerosettle.io")
     }
 }
 
@@ -238,7 +238,7 @@ final class WebCheckoutFlowTests: XCTestCase {
     override func setUp() {
         super.setUp()
         let backend = Backend(
-            baseURL: URL(string: "https://zerosettle.io/api/v1")!,
+            baseURL: URL(string: "https://api.zerosettle.io/api/v1")!,
             publishableKey: "pk_test_123"
         )
         flow = WebCheckoutFlow(backend: backend)

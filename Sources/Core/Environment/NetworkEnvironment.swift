@@ -10,13 +10,11 @@ import Foundation
 public enum NetworkEnvironment: String, Codable, Sendable, CaseIterable {
     case production
     case development
-    case local
 
     public var displayName: String {
         switch self {
         case .production: return "Production"
         case .development: return "Development"
-        case .local: return "Local"
         }
     }
 
@@ -26,12 +24,9 @@ public enum NetworkEnvironment: String, Codable, Sendable, CaseIterable {
     public var backendURL: URL {
         switch self {
         case .production:
-            return URL(string: "https://zerosettle.io/api/v1")!
+            return URL(string: "https://api.zerosettle.io/api/v1")!
         case .development:
-            return URL(string: "https://staging.zerosettle.io/api/v1")!
-        case .local:
-            // Use local network IP for physical device development
-            return URL(string: "http://192.168.1.159:8000/api/v1")!
+            return URL(string: "https://api.zerosettle.io/api/v1")!
         }
     }
 
@@ -43,8 +38,7 @@ public enum NetworkEnvironment: String, Codable, Sendable, CaseIterable {
         switch self {
         case .production:
             return URL(string: "https://api.mainnet-beta.solana.com")!
-        case .development, .local:
-            // Both dev and local use devnet for Solana
+        case .development:
             return URL(string: "https://api.devnet.solana.com")!
         }
     }
@@ -53,8 +47,7 @@ public enum NetworkEnvironment: String, Codable, Sendable, CaseIterable {
         switch self {
         case .production:
             return URL(string: "wss://api.mainnet-beta.solana.com")!
-        case .development, .local:
-            // Both dev and local use devnet for Solana
+        case .development:
             return URL(string: "wss://api.devnet.solana.com")!
         }
     }
@@ -64,7 +57,7 @@ public enum NetworkEnvironment: String, Codable, Sendable, CaseIterable {
         switch self {
         case .production:
             return URL(string: "https://explorer.solana.com/tx/\(signature)")!
-        case .development, .local:
+        case .development:
             return URL(string: "https://explorer.solana.com/tx/\(signature)?cluster=devnet")!
         }
     }
@@ -72,22 +65,19 @@ public enum NetworkEnvironment: String, Codable, Sendable, CaseIterable {
     // MARK: - Stablecoin Configuration
 
     /// Default USDC mint for the environment.
-    /// Note: For `.local`, this returns nil - you must provide `localTokenMint` in EscrowConfig.
-    public var defaultUSDCMint: String? {
+    public var defaultUSDCMint: String {
         switch self {
         case .production:
             return "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"  // Mainnet USDC
         case .development:
             return "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"  // Devnet USDC
-        case .local:
-            return nil  // Must provide localTokenMint in config
         }
     }
 }
 
 // MARK: - Custom USDC Configuration
 
-/// Configuration for custom USDC mint, primarily for local development.
+/// Configuration for custom USDC mint override.
 public struct USDCConfig: Sendable {
     public let usdcMint: String?
 
@@ -96,14 +86,7 @@ public struct USDCConfig: Sendable {
     }
 
     /// Resolve USDC mint address with fallback to environment default.
-    /// For `.local` environment, `usdcMint` must be provided.
     public func resolvedMint(for environment: NetworkEnvironment) -> String {
-        if let mint = usdcMint {
-            return mint
-        }
-        guard let defaultMint = environment.defaultUSDCMint else {
-            fatalError("usdcMint must be provided when using .local environment")
-        }
-        return defaultMint
+        return usdcMint ?? environment.defaultUSDCMint
     }
 }
