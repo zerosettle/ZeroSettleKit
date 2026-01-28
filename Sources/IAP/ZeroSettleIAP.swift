@@ -215,6 +215,8 @@ public final class ZeroSettleIAP: ObservableObject {
     /// - Returns: `true` if the URL was handled by ZeroSettleIAP, `false` otherwise
     @discardableResult
     public func handleUniversalLink(_ url: URL) -> Bool {
+        Logger.info("Handling universal link redirect")
+
         guard let checkoutFlow else {
             Logger.error("handleUniversalLink called but SDK not configured", category: .iap)
             return false

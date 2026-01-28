@@ -17,7 +17,11 @@ internal final class WebCheckoutFlow {
     private let backend: Backend
 
     /// The universal link host used for callbacks.
+#if DEBUG
+    private static let callbackHost = "landing.zerosettle.ngrok.app"
+#else
     private static let callbackHost = "zerosettle.io"
+#endif
     private static let callbackPathPrefix = "/checkout/callback"
 
     init(backend: Backend) {

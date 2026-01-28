@@ -170,9 +170,9 @@ public final class MetaMaskManager: ObservableObject {
         MetaMaskManager.connectCallCount += 1
         let callNumber = MetaMaskManager.connectCallCount
 
-        print("═══════════════════════════════════════════")
+        print("-------------------------------------------")
         print("[MetaMask] CONNECT INITIATED (Call #\(callNumber))")
-        print("═══════════════════════════════════════════")
+        print("-------------------------------------------")
         print("   Call Stack:")
         Thread.callStackSymbols.prefix(15).forEach { print("      \($0)") }
 
@@ -182,7 +182,7 @@ public final class MetaMaskManager: ObservableObject {
             onConnectionError?(msg)
             print("[MetaMask] SDK not configured")
             print("   Solution: Call MetaMaskManager.shared.configure() before connect()")
-            print("═══════════════════════════════════════════")
+            print("-------------------------------------------")
             return
         }
 
@@ -197,7 +197,7 @@ public final class MetaMaskManager: ObservableObject {
         if isConnected {
             print("[MetaMask] Already connected! Skipping duplicate connection attempt")
             print("   Account: \(account ?? "nil")")
-            print("═══════════════════════════════════════════")
+            print("-------------------------------------------")
             return
         }
 
@@ -205,7 +205,7 @@ public final class MetaMaskManager: ObservableObject {
         if isConnecting {
             print("[MetaMask] Connection already in progress! Skipping duplicate attempt")
             print("   This prevents MetaMask from opening twice")
-            print("═══════════════════════════════════════════")
+            print("-------------------------------------------")
             return
         }
 
@@ -233,7 +233,7 @@ public final class MetaMaskManager: ObservableObject {
                 print("[MetaMask] \(msg)")
                 errorMessage = msg
                 onConnectionError?(msg)
-                print("═══════════════════════════════════════════")
+                print("-------------------------------------------")
                 return
             }
 
@@ -275,17 +275,17 @@ public final class MetaMaskManager: ObservableObject {
             print("   Calling onConnected callback...")
             onConnected?(firstAccount)
 
-            print("═══════════════════════════════════════════")
+            print("-------------------------------------------")
             print("METAMASK WALLET CONNECTED SUCCESSFULLY!")
             print("   Account: \(firstAccount)")
             print("   Chain ID: \(chainId ?? "unknown")")
-            print("═══════════════════════════════════════════")
+            print("-------------------------------------------")
 
         case .failure(let error):
             isConnecting = false
-            print("═══════════════════════════════════════════")
+            print("-------------------------------------------")
             print("[MetaMask] CONNECTION FAILED")
-            print("═══════════════════════════════════════════")
+            print("-------------------------------------------")
             print("   Error: \(error)")
             print("   Error Type: \(type(of: error))")
             print("   Error localized: \(error.localizedDescription)")
@@ -294,7 +294,7 @@ public final class MetaMaskManager: ObservableObject {
             errorMessage = errorMsg
             onConnectionError?(errorMsg)
 
-            print("═══════════════════════════════════════════")
+            print("-------------------------------------------")
         }
     }
 
@@ -422,12 +422,12 @@ public final class MetaMaskManager: ObservableObject {
 
             onTransactionSent?(txHash)
 
-            print("═══════════════════════════════════════════════")
+            print("-----------------------------------------------")
             print("TRANSACTION SENT SUCCESSFULLY!")
             print("   Hash: \(txHash)")
             print("   View on Etherscan:")
             print("   https://etherscan.io/tx/\(txHash)")
-            print("═══════════════════════════════════════════════")
+            print("-----------------------------------------------")
 
             return txHash
 
@@ -563,9 +563,9 @@ public final class MetaMaskManager: ObservableObject {
         // Convert USDC to base units (6 decimals)
         let baseUnits = UInt64(amountUSDC * 1_000_000)
 
-        print("═══════════════════════════════════════════════")
+        print("-----------------------------------------------")
         print("[MetaMask] Initiating deeplink USDC transfer")
-        print("═══════════════════════════════════════════════")
+        print("-----------------------------------------------")
         print("   Recipient: \(to)")
         print("   Amount: $\(amountUSDC) USDC")
         print("   Base units: \(baseUnits)")
@@ -601,12 +601,12 @@ public final class MetaMaskManager: ObservableObject {
                 if success {
                     print("[MetaMask] Successfully opened MetaMask Mobile")
                     print("   User will confirm transaction in MetaMask")
-                    print("═══════════════════════════════════════════════")
+                    print("-----------------------------------------------")
                 } else {
                     let error = "Failed to open MetaMask Mobile (app not installed?)"
                     print("[MetaMask] \(error)")
                     print("   Make sure MetaMask Mobile is installed")
-                    print("═══════════════════════════════════════════════")
+                    print("-----------------------------------------------")
 
                     DispatchQueue.main.async {
                         self.errorMessage = error
@@ -644,9 +644,9 @@ public final class MetaMaskManager: ObservableObject {
     /// - Parameter url: The callback URL
     /// - Returns: Whether the URL was handled
     public func handleUrl(_ url: URL) -> Bool {
-        print("═══════════════════════════════════════════")
+        print("-------------------------------------------")
         print("[MetaMask] handleUrl called")
-        print("═══════════════════════════════════════════")
+        print("-------------------------------------------")
         print("   URL: \(url.absoluteString)")
         print("   Scheme: \(url.scheme ?? "nil")")
         print("   Host: \(url.host ?? "nil")")
@@ -654,7 +654,7 @@ public final class MetaMaskManager: ObservableObject {
 
         guard let sdk = metamaskSDK else {
             print("[MetaMask] SDK not configured, cannot handle URL")
-            print("═══════════════════════════════════════════")
+            print("-------------------------------------------")
             return false
         }
 
@@ -725,7 +725,7 @@ public final class MetaMaskManager: ObservableObject {
         sdk.handleUrl(url)
 
         print("[MetaMask] URL forwarded to SDK")
-        print("═══════════════════════════════════════════")
+        print("-------------------------------------------")
 
         return true
     }

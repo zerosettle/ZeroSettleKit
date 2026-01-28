@@ -581,7 +581,7 @@ public struct ZSDepositView: View {
             } else {
                 // Not connected - show connect button
                 Button {
-                    print("👆 [ZSDeposit] MetaMask connect button tapped")
+                    print("[ZSDeposit] MetaMask connect button tapped")
                     connectMetaMask()
                 } label: {
                     HStack(spacing: 12) {
@@ -743,9 +743,9 @@ public struct ZSDepositView: View {
         connectTaskCount += 1
         let taskNumber = connectTaskCount
 
-        print("═══════════════════════════════════════════")
+        print("-------------------------------------------")
         print("[ZSDeposit] connectMetaMask() called (Task #\(taskNumber))")
-        print("═══════════════════════════════════════════")
+        print("-------------------------------------------")
         print("   MetaMask current state:")
         print("      - Connected: \(MetaMaskManager.shared.isConnected)")
         print("      - Has account: \(MetaMaskManager.shared.account != nil)")
@@ -904,7 +904,7 @@ public struct ZSDepositView: View {
             } else {
                 // Not connected - show connect button
                 Button {
-                    print("👆 [ZSDeposit] Coinbase connect button tapped")
+                    print("[ZSDeposit] Coinbase connect button tapped")
                     connectCoinbase()
                 } label: {
                     HStack(spacing: 12) {

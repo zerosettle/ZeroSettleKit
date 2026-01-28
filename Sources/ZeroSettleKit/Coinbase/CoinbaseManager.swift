@@ -138,9 +138,9 @@ public final class CoinbaseManager: ObservableObject {
 
     /// Initiate a connection to Coinbase Wallet
     public func connect() {
-        print("═══════════════════════════════════════════")
+        print("-------------------------------------------")
         print("[Coinbase] CONNECT INITIATED")
-        print("═══════════════════════════════════════════")
+        print("-------------------------------------------")
 
         print("   Current state:")
         print("      - Already connected (local flag): \(isConnected)")
@@ -153,14 +153,14 @@ public final class CoinbaseManager: ObservableObject {
         if isConnected {
             print("[Coinbase] Already connected! Skipping duplicate connection attempt")
             print("   Address: \(address ?? "nil")")
-            print("═══════════════════════════════════════════")
+            print("-------------------------------------------")
             return
         }
 
         // Prevent concurrent connection attempts
         if isConnecting {
             print("[Coinbase] Connection already in progress! Skipping duplicate attempt")
-            print("═══════════════════════════════════════════")
+            print("-------------------------------------------")
             return
         }
 
@@ -218,7 +218,7 @@ public final class CoinbaseManager: ObservableObject {
                                 print("[Coinbase] \(msg)")
                                 self.errorMessage = msg
                                 self.onConnectionError?(msg)
-                                print("═══════════════════════════════════════════")
+                                print("-------------------------------------------")
                                 return
                             }
 
@@ -233,16 +233,16 @@ public final class CoinbaseManager: ObservableObject {
                             self.persistConnectionState()
                             self.onConnected?(account.address)
 
-                            print("═══════════════════════════════════════════")
+                            print("-------------------------------------------")
                             print("COINBASE WALLET CONNECTED SUCCESSFULLY!")
                             print("   Address: \(account.address)")
                             print("   Chain: \(account.chain ?? "unknown")")
-                            print("═══════════════════════════════════════════")
+                            print("-------------------------------------------")
 
                         case .failure(let error):
-                            print("═══════════════════════════════════════════")
+                            print("-------------------------------------------")
                             print("[Coinbase] CONNECTION FAILED")
-                            print("═══════════════════════════════════════════")
+                            print("-------------------------------------------")
                             print("   Error: \(error)")
                             print("   Error localized: \(error.localizedDescription)")
 
@@ -250,7 +250,7 @@ public final class CoinbaseManager: ObservableObject {
                             self.errorMessage = errorMsg
                             self.onConnectionError?(errorMsg)
 
-                            print("═══════════════════════════════════════════")
+                            print("-------------------------------------------")
                         }
                     }
                 }
@@ -350,12 +350,12 @@ public final class CoinbaseManager: ObservableObject {
 
                             self.onTransactionSent?(result)
 
-                            print("═══════════════════════════════════════════════")
+                            print("-----------------------------------------------")
                             print("TRANSACTION SENT SUCCESSFULLY!")
                             print("   Hash: \(result)")
                             print("   View on BaseScan:")
                             print("   https://basescan.org/tx/\(result)")
-                            print("═══════════════════════════════════════════════")
+                            print("-----------------------------------------------")
 
                             continuation.resume(returning: result)
                         } else {
@@ -401,19 +401,19 @@ public final class CoinbaseManager: ObservableObject {
     /// - Parameter url: The callback URL
     /// - Returns: Whether the URL was handled
     public func handleUrl(_ url: URL) -> Bool {
-        print("═══════════════════════════════════════════")
+        print("-------------------------------------------")
         print("[Coinbase] handleUrl called")
-        print("═══════════════════════════════════════════")
+        print("-------------------------------------------")
         print("   URL: \(url.absoluteString)")
 
         do {
             let handled = try cbwallet.handleResponse(url)
             print("   Handled by SDK: \(handled)")
-            print("═══════════════════════════════════════════")
+            print("-------------------------------------------")
             return handled
         } catch {
             print("   Error handling URL: \(error)")
-            print("═══════════════════════════════════════════")
+            print("-------------------------------------------")
             return false
         }
     }
