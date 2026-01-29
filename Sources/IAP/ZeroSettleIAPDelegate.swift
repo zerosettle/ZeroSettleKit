@@ -22,7 +22,7 @@ public protocol ZeroSettleIAPDelegate: AnyObject {
 
     /// Called when a web checkout completes successfully.
     /// - Parameter transaction: The completed transaction
-    func zeroSettleIAPCheckoutDidComplete(transaction: Transaction)
+    func zeroSettleIAPCheckoutDidComplete(transaction: ZSTransaction)
 
     /// Called when the user cancels the web checkout (returns without purchasing).
     /// - Parameter productId: The product that was being purchased
@@ -58,7 +58,7 @@ public protocol ZeroSettleIAPDelegate: AnyObject {
 
 public extension ZeroSettleIAPDelegate {
     func zeroSettleIAPCheckoutDidBegin(productId: String) {}
-    func zeroSettleIAPCheckoutDidComplete(transaction: Transaction) {}
+    func zeroSettleIAPCheckoutDidComplete(transaction: ZSTransaction) {}
     func zeroSettleIAPCheckoutDidCancel(productId: String) {}
     func zeroSettleIAPCheckoutDidFail(productId: String, error: Error) {}
     func zeroSettleIAPEntitlementsDidUpdate(_ entitlements: [Entitlement]) {}

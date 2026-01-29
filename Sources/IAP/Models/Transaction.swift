@@ -7,10 +7,10 @@
 
 import Foundation
 
-// MARK: - Transaction
+// MARK: - ZSTransaction
 
 /// Represents a completed or pending purchase transaction.
-public struct Transaction: Identifiable, Sendable, Codable, Equatable {
+public struct ZSTransaction: Identifiable, Sendable, Codable, Equatable {
     /// ZeroSettle transaction ID
     public let id: String
 

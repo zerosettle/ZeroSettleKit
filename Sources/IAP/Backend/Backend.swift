@@ -71,12 +71,12 @@ internal final class Backend: @unchecked Sendable {
     // MARK: - Transactions
 
     /// Get the status of a transaction by ID.
-    func getTransaction(transactionId: String) async throws -> Transaction {
+    func getTransaction(transactionId: String) async throws -> ZSTransaction {
         let url = apiURL("iap/transactions/\(transactionId)/")
         return try await httpClient.get(
             url,
             headers: authHeaders,
-            responseType: Transaction.self
+            responseType: ZSTransaction.self
         )
     }
 
