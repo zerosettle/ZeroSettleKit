@@ -24,9 +24,9 @@ public enum NetworkEnvironment: String, Codable, Sendable, CaseIterable {
     public var backendURL: URL {
         switch self {
         case .production:
-            return URL(string: "https://api.zerosettle.io/api/v1")!
+            return URL(string: "https://api.zerosettle.io/v1")!
         case .development:
-            return URL(string: "https://api.zerosettle.io/api/v1")!
+            return URL(string: "https://api.zerosettle.io/v1")!
         }
     }
 
