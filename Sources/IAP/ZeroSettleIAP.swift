@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import StoreKit
 import ZeroSettleCore
 
 // MARK: - Errors
@@ -151,8 +152,9 @@ public final class ZeroSettleIAP: ObservableObject {
     // MARK: - Products
 
     /// Fetch the product catalog from ZeroSettle with web checkout pricing.
+    /// Also reconciles with StoreKit products for native purchasing support.
     /// Results are cached in the `products` published property.
-    /// - Returns: Array of products with web prices and any active promotions
+    /// - Returns: Array of products with web prices, StoreKit prices, and any active promotions
     @discardableResult
     public func fetchProducts() async throws -> [Product] {
         guard let backend else {
@@ -160,9 +162,31 @@ public final class ZeroSettleIAP: ObservableObject {
         }
 
         do {
-            let fetchedProducts = try await backend.fetchProducts()
+            // 1. Fetch from ZeroSettle backend
+            var fetchedProducts = try await backend.fetchProducts()
+            Logger.info("Fetched \(fetchedProducts.count) products from backend", category: .iap)
+
+            // 2. Try to fetch ALL products from StoreKit (let StoreKit tell us what exists)
+            let allProductIds = fetchedProducts.map { $0.id }
+
+            // 3. Fetch StoreKit products (if StoreKit sync enabled)
+            if let storeKitManager, !allProductIds.isEmpty {
+                let skProducts = await storeKitManager.fetchProducts(for: allProductIds)
+
+                // 4. Attach StoreKit products to our Product models
+                // Products that exist in StoreKit get _storeKitProduct populated
+                // Products that don't exist remain web-only
+                for i in fetchedProducts.indices {
+                    if let skProduct = skProducts[fetchedProducts[i].id] {
+                        fetchedProducts[i]._storeKitProduct = skProduct
+                    }
+                }
+
+                let matched = fetchedProducts.filter { $0.storeKitAvailable }.count
+                Logger.info("Reconciled \(matched)/\(fetchedProducts.count) products with StoreKit", category: .iap)
+            }
+
             products = fetchedProducts
-            Logger.info("Fetched \(fetchedProducts.count) products", category: .iap)
             return fetchedProducts
         } catch {
             Logger.error("Failed to fetch products: \(error)", category: .iap)
@@ -203,6 +227,30 @@ public final class ZeroSettleIAP: ObservableObject {
             delegate?.zeroSettleIAPCheckoutDidFail(productId: productId, error: error)
             throw ZeroSettleIAPError.checkoutSessionFailed(error.localizedDescription)
         }
+    }
+
+    /// Purchase a product via native StoreKit 2.
+    /// Use this for products synced to App Store Connect where `storeKitAvailable` is true.
+    ///
+    /// - Parameters:
+    ///   - productId: The product identifier to purchase
+    ///   - userId: Your app's user ID (for syncing the transaction to ZeroSettle backend)
+    /// - Returns: The StoreKit transaction
+    public func purchaseViaStoreKit(productId: String, userId: String) async throws -> StoreKit.Transaction {
+        guard let storeKitManager else {
+            throw ZeroSettleIAPError.notConfigured
+        }
+
+        guard let product = products.first(where: { $0.id == productId }) else {
+            throw ZeroSettleIAPError.productNotFound(productId)
+        }
+
+        guard let skProduct = product._storeKitProduct else {
+            throw StoreKitPurchaseError.productNotFound(productId)
+        }
+
+        storeKitManager.setUserId(userId)
+        return try await storeKitManager.purchase(skProduct)
     }
 
     // MARK: - Universal Link Handling

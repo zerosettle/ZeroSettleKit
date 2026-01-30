@@ -10,7 +10,33 @@ import StoreKit
 import ZeroSettleCore
 
 /// Typealias to disambiguate StoreKit.Transaction from our Transaction model.
-private typealias SKTransaction = StoreKit.Transaction
+public typealias SKTransaction = StoreKit.Transaction
+
+// MARK: - StoreKit Purchase Error
+
+/// Errors that can occur during StoreKit purchases.
+public enum StoreKitPurchaseError: Error, LocalizedError {
+    case productNotFound(String)
+    case verificationFailed(Error)
+    case userCancelled
+    case pending
+    case unknown
+
+    public var errorDescription: String? {
+        switch self {
+        case .productNotFound(let id):
+            return "Product not found: \(id)"
+        case .verificationFailed(let error):
+            return "Verification failed: \(error.localizedDescription)"
+        case .userCancelled:
+            return "Purchase was cancelled"
+        case .pending:
+            return "Purchase is pending approval"
+        case .unknown:
+            return "An unknown error occurred"
+        }
+    }
+}
 
 // MARK: - StoreKit Update Delegate
 
@@ -60,6 +86,64 @@ internal final class StoreKitManager: @unchecked Sendable {
     /// Update the user ID for subsequent sync operations.
     func setUserId(_ userId: String) {
         self.userId = userId
+    }
+
+    // MARK: - Product Fetching
+
+    /// Fetch StoreKit products for reconciliation with ZeroSettle catalog.
+    /// - Parameter productIds: Array of product identifiers to fetch
+    /// - Returns: Dictionary mapping product IDs to their StoreKit products
+    func fetchProducts(for productIds: [String]) async -> [String: StoreKit.Product] {
+        guard !productIds.isEmpty else { return [:] }
+
+        Logger.info("Requesting \(productIds.count) products from StoreKit: \(productIds)", category: .iap)
+
+        do {
+            let products = try await StoreKit.Product.products(for: Set(productIds))
+            var productMap: [String: StoreKit.Product] = [:]
+            for product in products {
+                productMap[product.id] = product
+                Logger.info("StoreKit found: \(product.id) - \(product.displayName) - \(product.displayPrice)", category: .iap)
+            }
+
+            let missingIds = Set(productIds).subtracting(productMap.keys)
+            if !missingIds.isEmpty {
+                Logger.info("StoreKit did NOT find these product IDs: \(Array(missingIds))", category: .iap)
+            }
+
+            Logger.info("Fetched \(products.count)/\(productIds.count) StoreKit products", category: .iap)
+            return productMap
+        } catch {
+            Logger.error("Failed to fetch StoreKit products: \(error)", category: .iap)
+            return [:]
+        }
+    }
+
+    // MARK: - Purchasing
+
+    /// Purchase a product via StoreKit 2.
+    /// - Parameter product: The StoreKit product to purchase
+    /// - Returns: The verified transaction
+    func purchase(_ product: StoreKit.Product) async throws -> SKTransaction {
+        let result = try await product.purchase()
+
+        switch result {
+        case .success(let verification):
+            switch verification {
+            case .verified(let transaction):
+                let jws = verification.jwsRepresentation
+                await handleVerifiedTransaction(transaction, jwsRepresentation: jws)
+                return transaction
+            case .unverified(_, let error):
+                throw StoreKitPurchaseError.verificationFailed(error)
+            }
+        case .userCancelled:
+            throw StoreKitPurchaseError.userCancelled
+        case .pending:
+            throw StoreKitPurchaseError.pending
+        @unknown default:
+            throw StoreKitPurchaseError.unknown
+        }
     }
 
     // MARK: - Current Entitlements

@@ -16,12 +16,8 @@ import ZeroSettleCore
 internal final class WebCheckoutFlow {
     private let backend: Backend
 
-    /// The universal link host used for callbacks.
-#if DEBUG
-    private static let callbackHost = "landing.zerosettle.ngrok.app"
-#else
-    private static let callbackHost = "zerosettle.io"
-#endif
+    /// The universal link hosts used for callbacks (accept both prod and dev).
+    private static let callbackHosts = ["api.zerosettle.io", "landing.zerosettle.ngrok.app"]
     private static let callbackPathPrefix = "/checkout/callback"
 
     init(backend: Backend) {
@@ -59,9 +55,11 @@ internal final class WebCheckoutFlow {
     /// - Returns: Parsed callback data, or `nil` if the URL is not a ZeroSettle checkout callback
     func handleCallback(url: URL) -> CheckoutCallback? {
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              components.host == Self.callbackHost,
+              let host = components.host,
+              Self.callbackHosts.contains(host),
               let path = components.path.removingPercentEncoding,
               path.hasPrefix(Self.callbackPathPrefix) else {
+            Logger.error("Unable to handle callback due to invalid components: \(url)")
             return nil
         }
 
