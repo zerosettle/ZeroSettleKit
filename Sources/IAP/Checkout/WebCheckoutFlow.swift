@@ -6,15 +6,35 @@
 //
 
 import Foundation
+import SafariServices
 import UIKit
 import ZeroSettleCore
+
+// MARK: - Checkout UX Mode
+
+/// Defines how the checkout web view is presented to the user.
+internal enum CheckoutUX {
+    /// Opens checkout in an inline web view popover (SFSafariViewController)
+    case inline
+    /// Opens checkout in external Safari browser
+    case externalBrowser
+}
 
 // MARK: - Web Checkout Flow
 
 /// Orchestrates the web checkout flow: creates a Stripe checkout session,
 /// opens it in Safari, and parses the universal link callback.
-internal final class WebCheckoutFlow {
+internal final class WebCheckoutFlow: NSObject {
     private let backend: Backend
+    
+    /// Controls how the checkout UI is presented. Change this to switch between inline and external browser.
+    private static let checkoutUX: CheckoutUX = .inline
+    
+    /// Continuation for inline checkout dismissal
+    private var inlineCheckoutContinuation: CheckedContinuation<Void, Never>?
+    
+    /// Reference to the presented Safari view controller
+    private var safariViewController: SFSafariViewController?
 
     /// The universal link hosts used for callbacks (accept both prod and dev).
     private static let callbackHosts = ["api.zerosettle.io", "landing.zerosettle.ngrok.app"]
@@ -22,11 +42,12 @@ internal final class WebCheckoutFlow {
 
     init(backend: Backend) {
         self.backend = backend
+        super.init()
     }
 
     // MARK: - Begin Checkout
 
-    /// Create a checkout session and open it in Safari.
+    /// Create a checkout session and open it based on the configured UX mode.
     /// - Parameters:
     ///   - productId: The product to purchase
     ///   - userId: The developer's user identifier
@@ -41,9 +62,15 @@ internal final class WebCheckoutFlow {
         )
 
         Logger.info("Checkout session created: \(session.sessionId)", category: .iap)
-        Logger.debug("Opening checkout URL in Safari", category: .iap)
-
-        await openInBrowser(session.checkoutUrl)
+        
+        switch Self.checkoutUX {
+        case .inline:
+            Logger.debug("Opening checkout URL in inline web view", category: .iap)
+            await openInlineWebView(session.checkoutUrl)
+        case .externalBrowser:
+            Logger.debug("Opening checkout URL in Safari", category: .iap)
+            await openInBrowser(session.checkoutUrl)
+        }
 
         return session
     }
@@ -51,8 +78,10 @@ internal final class WebCheckoutFlow {
     // MARK: - Handle Callback
 
     /// Parse a universal link callback URL from the checkout flow.
+    /// Automatically dismisses the inline checkout view if one is presented.
     /// - Parameter url: The universal link URL
     /// - Returns: Parsed callback data, or `nil` if the URL is not a ZeroSettle checkout callback
+    @MainActor
     func handleCallback(url: URL) -> CheckoutCallback? {
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let host = components.host,
@@ -78,6 +107,12 @@ internal final class WebCheckoutFlow {
         let success = statusString == "success"
 
         Logger.info("Checkout callback received: transaction=\(transactionId), status=\(statusString)", category: .iap)
+        
+        // Auto-dismiss inline checkout when callback is received
+        if safariViewController != nil {
+            Logger.debug("Auto-dismissing inline checkout after callback", category: .iap)
+            dismissInlineCheckout()
+        }
 
         return CheckoutCallback(
             transactionId: transactionId,
@@ -96,6 +131,70 @@ internal final class WebCheckoutFlow {
                 continuation.resume()
             }
         }
+    }
+    
+    /// Open a URL in an inline web view popover using SFSafariViewController.
+    @MainActor
+    private func openInlineWebView(_ url: URL) async {
+        guard let windowScene = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first(where: { $0.activationState == .foregroundActive }),
+              let rootViewController = windowScene.windows.first(where: { $0.isKeyWindow })?.rootViewController else {
+            Logger.error("Unable to find root view controller for inline checkout", category: .iap)
+            // Fall back to external browser
+            await openInBrowser(url)
+            return
+        }
+        
+        // Find the topmost presented view controller
+        var topController = rootViewController
+        while let presented = topController.presentedViewController {
+            topController = presented
+        }
+        
+        let safari = SFSafariViewController(url: url)
+        safari.delegate = self
+        safari.preferredControlTintColor = .systemBlue
+        safari.dismissButtonStyle = .close
+        
+        // Present as a sheet on iOS 15+
+        if #available(iOS 15.0, *) {
+            safari.modalPresentationStyle = .pageSheet
+            if let sheet = safari.sheetPresentationController {
+                sheet.detents = [.large()]
+                sheet.prefersGrabberVisible = true
+            }
+        } else {
+            safari.modalPresentationStyle = .formSheet
+        }
+        
+        self.safariViewController = safari
+        
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            self.inlineCheckoutContinuation = continuation
+            topController.present(safari, animated: true)
+        }
+    }
+    
+    /// Dismiss the inline checkout view if it's currently presented.
+    @MainActor
+    func dismissInlineCheckout() {
+        safariViewController?.dismiss(animated: true) { [weak self] in
+            self?.safariViewController = nil
+            self?.inlineCheckoutContinuation?.resume()
+            self?.inlineCheckoutContinuation = nil
+        }
+    }
+}
+
+// MARK: - SFSafariViewControllerDelegate
+
+extension WebCheckoutFlow: SFSafariViewControllerDelegate {
+    func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
+        Logger.debug("Inline checkout dismissed by user", category: .iap)
+        safariViewController = nil
+        inlineCheckoutContinuation?.resume()
+        inlineCheckoutContinuation = nil
     }
 }
 
