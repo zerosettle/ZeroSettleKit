@@ -19,7 +19,8 @@ public struct ZSMigrateTipView: View {
     
     static let checkoutURL = URL(string: "https://api.zerosettle.io/elements/checkout/?product_id=prod_TtYDzVkboKEvlg&trial_days=7")!
     static let collapsedHeight: CGFloat = 220
-    static let expandedHeight: CGFloat = 352
+    static let applePayExpandedHeight: CGFloat = 352
+    static let cardExpandedHeight: CGFloat = 690
     
     // MARK: - Persistence
     
@@ -171,11 +172,20 @@ public struct ZSMigrateTipView: View {
                             isLoading = false
                             webViewLoaded = true
                         },
-                        onAccordionExpanded: { isAccordionExpanded in
-                            print("📐 SwiftUI received accordion change: \(isAccordionExpanded)")
-                            print("📐 Setting height from \(contentHeight) to \(isAccordionExpanded ? Self.expandedHeight : Self.collapsedHeight)")
+                        onPaymentMethodChanged: { paymentMethod in
+                            let newHeight: CGFloat
+                            switch paymentMethod {
+                            case "apple_pay":
+                                newHeight = Self.applePayExpandedHeight
+                            case "card":
+                                newHeight = Self.cardExpandedHeight
+                            default:
+                                newHeight = Self.collapsedHeight
+                            }
+                            print("📐 SwiftUI received payment method change: \(paymentMethod)")
+                            print("📐 Setting height from \(contentHeight) to \(newHeight)")
                             withAnimation(.easeInOut(duration: 0.25)) {
-                                contentHeight = isAccordionExpanded ? Self.expandedHeight : Self.collapsedHeight
+                                contentHeight = newHeight
                             }
                         },
                         onCheckoutSuccess: { successURL in
@@ -248,14 +258,14 @@ struct CheckoutWebView: UIViewRepresentable {
     let url: URL
     let backgroundColor: UIColor
     let onLoaded: () -> Void
-    let onAccordionExpanded: (Bool) -> Void
+    let onPaymentMethodChanged: (String) -> Void
     let onCheckoutSuccess: (URL) -> Void
     
     func makeCoordinator() -> Coordinator {
         Coordinator(
             backgroundColor: backgroundColor,
             onLoaded: onLoaded,
-            onAccordionExpanded: onAccordionExpanded,
+            onPaymentMethodChanged: onPaymentMethodChanged,
             onCheckoutSuccess: onCheckoutSuccess
         )
     }
@@ -264,8 +274,8 @@ struct CheckoutWebView: UIViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.allowsInlineMediaPlayback = true
         
-        // Add script message handlers for accordion state changes and debug logs
-        configuration.userContentController.add(context.coordinator, name: "accordionChanged")
+        // Add script message handlers for payment method changes and debug logs
+        configuration.userContentController.add(context.coordinator, name: "paymentMethodChanged")
         configuration.userContentController.add(context.coordinator, name: "debugLog")
 
         // IMPORTANT:
@@ -305,18 +315,18 @@ struct CheckoutWebView: UIViewRepresentable {
     class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         let backgroundColor: UIColor
         let onLoaded: () -> Void
-        let onAccordionExpanded: (Bool) -> Void
+        let onPaymentMethodChanged: (String) -> Void
         let onCheckoutSuccess: (URL) -> Void
         
         init(
             backgroundColor: UIColor,
             onLoaded: @escaping () -> Void,
-            onAccordionExpanded: @escaping (Bool) -> Void,
+            onPaymentMethodChanged: @escaping (String) -> Void,
             onCheckoutSuccess: @escaping (URL) -> Void
         ) {
             self.backgroundColor = backgroundColor
             self.onLoaded = onLoaded
-            self.onAccordionExpanded = onAccordionExpanded
+            self.onPaymentMethodChanged = onPaymentMethodChanged
             self.onCheckoutSuccess = onCheckoutSuccess
         }
         
@@ -324,10 +334,10 @@ struct CheckoutWebView: UIViewRepresentable {
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             if message.name == "debugLog", let logMessage = message.body as? String {
                 print("🌐 [WebView] \(logMessage)")
-            } else if message.name == "accordionChanged", let isExpanded = message.body as? Bool {
-                print("🎯 Accordion state changed: isExpanded = \(isExpanded)")
+            } else if message.name == "paymentMethodChanged", let paymentMethod = message.body as? String {
+                print("🎯 Payment method changed: \(paymentMethod)")
                 DispatchQueue.main.async {
-                    self.onAccordionExpanded(isExpanded)
+                    self.onPaymentMethodChanged(paymentMethod)
                 }
             }
         }
@@ -346,8 +356,8 @@ struct CheckoutWebView: UIViewRepresentable {
             // across navigations/frames.
             return """
             (function() {
-              if (window.__divecastApplePayDetectionInstalled) { return; }
-              window.__divecastApplePayDetectionInstalled = true;
+              if (window.__divecastPaymentDetectionInstalled) { return; }
+              window.__divecastPaymentDetectionInstalled = true;
 
               function log(msg) {
                 try {
@@ -358,7 +368,7 @@ struct CheckoutWebView: UIViewRepresentable {
 
               function safeStr(x) { try { return String(x); } catch (e) { return '[unstringifiable]'; } }
 
-              log('Installing Apple Pay detection (all-frames user script).');
+              log('Installing payment method detection (all-frames user script).');
 
               // Inject custom CSS (ok if duplicated across frames)
               try {
@@ -403,62 +413,56 @@ struct CheckoutWebView: UIViewRepresentable {
                 log('CSS inject failed: ' + safeStr(e));
               }
 
-              function findApplePayButton() {
-                return document.querySelector('.p-AccordionButton[data-value="apple_pay"]')
-                    || document.querySelector('[data-value="apple_pay"]');
+              function findButton(dataValue) {
+                return document.querySelector('.p-AccordionButton[data-value="' + dataValue + '"]')
+                    || document.querySelector('[data-value="' + dataValue + '"]');
               }
 
-              function findApplePayPanel() {
-                return document.getElementById('apple_pay');
-              }
-
-              var lastIsExpanded = null;
-
-              function computeIsExpanded() {
-                var btn = findApplePayButton();
+              function isButtonExpanded(dataValue) {
+                var btn = findButton(dataValue);
                 if (btn) {
                   return btn.getAttribute('aria-expanded') === 'true';
                 }
-                var panel = findApplePayPanel();
-                if (panel) {
-                  var hasChildren = panel.children && panel.children.length > 0;
-                  var h = 0;
-                  try { h = panel.getBoundingClientRect().height; } catch (e) {}
-                  return hasChildren || (h > 4);
+                return false;
+              }
+
+              var lastPaymentMethod = null;
+
+              function computeActivePaymentMethod() {
+                // Check which payment method accordion is expanded
+                if (isButtonExpanded('card')) {
+                  return 'card';
                 }
-                return null;
+                if (isButtonExpanded('apple_pay')) {
+                  return 'apple_pay';
+                }
+                return 'collapsed';
               }
 
               function report(reason) {
-                var btn = findApplePayButton();
-                var panel = findApplePayPanel();
+                var applePayBtn = findButton('apple_pay');
+                var cardBtn = findButton('card');
 
-                var btnState = btn ? btn.getAttribute('aria-expanded') : null;
-                var panelChildCount = panel && panel.children ? panel.children.length : null;
-                var panelHeight = null;
-                if (panel) { try { panelHeight = panel.getBoundingClientRect().height; } catch (e) {} }
+                var applePayState = applePayBtn ? applePayBtn.getAttribute('aria-expanded') : null;
+                var cardState = cardBtn ? cardBtn.getAttribute('aria-expanded') : null;
 
-                var isExpanded = computeIsExpanded();
+                var paymentMethod = computeActivePaymentMethod();
 
-                log('[report:' + reason + '] btn=' + (btn ? 'FOUND' : 'nil')
-                  + ' aria-expanded=' + safeStr(btnState)
-                  + ' panel=' + (panel ? 'FOUND' : 'nil')
-                  + ' panelChildren=' + safeStr(panelChildCount)
-                  + ' panelHeight=' + safeStr(panelHeight)
-                  + ' => isExpanded=' + safeStr(isExpanded));
+                log('[report:' + reason + '] apple_pay=' + safeStr(applePayState)
+                  + ' card=' + safeStr(cardState)
+                  + ' => paymentMethod=' + safeStr(paymentMethod));
 
-                if (isExpanded === null) { return; }
-                if (lastIsExpanded === isExpanded) { return; }
-                lastIsExpanded = isExpanded;
+                if (lastPaymentMethod === paymentMethod) { return; }
+                lastPaymentMethod = paymentMethod;
 
-                log('Sending accordionChanged -> ' + safeStr(isExpanded));
-                try { window.webkit.messageHandlers.accordionChanged.postMessage(isExpanded); } catch (e) {}
+                log('Sending paymentMethodChanged -> ' + safeStr(paymentMethod));
+                try { window.webkit.messageHandlers.paymentMethodChanged.postMessage(paymentMethod); } catch (e) {}
               }
 
-              function isApplePayTap(event) {
+              function isPaymentMethodTap(event) {
                 var t = event && event.target ? event.target : null;
                 if (!t || !t.closest) { return false; }
-                return !!t.closest('[data-value="apple_pay"]');
+                return !!t.closest('[data-value="apple_pay"]') || !!t.closest('[data-value="card"]');
               }
 
               // Initial probing (Stripe often hydrates late)
@@ -467,24 +471,25 @@ struct CheckoutWebView: UIViewRepresentable {
               setTimeout(function() { report('t+1500ms'); }, 1500);
               setTimeout(function() { report('t+3000ms'); }, 3000);
 
-              // Tap detection: when Apple Pay is tapped, re-check after animation/hydration.
+              // Tap detection: when a payment method is tapped, re-check after animation/hydration.
               document.addEventListener('click', function(e) {
-                if (!isApplePayTap(e)) { return; }
-                log('Apple Pay tap detected (event delegation).');
+                if (!isPaymentMethodTap(e)) { return; }
+                log('Payment method tap detected (event delegation).');
                 setTimeout(function() { report('tap+0ms'); }, 0);
                 setTimeout(function() { report('tap+120ms'); }, 120);
                 setTimeout(function() { report('tap+300ms'); }, 300);
                 setTimeout(function() { report('tap+600ms'); }, 600);
               }, true);
 
-              // Observe aria-expanded changes on the Apple Pay button.
+              // Observe aria-expanded changes on any payment method button.
               var observer = new MutationObserver(function(muts) {
                 for (var i = 0; i < muts.length; i++) {
                   var m = muts[i];
                   if (m.type === 'attributes' && m.attributeName === 'aria-expanded') {
                     var target = m.target;
-                    if (target && target.getAttribute && target.getAttribute('data-value') === 'apple_pay') {
-                      log('Observed aria-expanded mutation on Apple Pay button.');
+                    var dataValue = target && target.getAttribute ? target.getAttribute('data-value') : null;
+                    if (dataValue === 'apple_pay' || dataValue === 'card') {
+                      log('Observed aria-expanded mutation on ' + dataValue + ' button.');
                       report('mutation:aria-expanded');
                       return;
                     }
@@ -500,7 +505,7 @@ struct CheckoutWebView: UIViewRepresentable {
               // Poll fallback
               setInterval(function() { report('poll'); }, 2000);
 
-              log('Apple Pay detection installed.');
+              log('Payment method detection installed.');
             })();
             """
         }
