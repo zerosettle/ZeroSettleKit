@@ -17,7 +17,7 @@ public struct ZSMigrateTipView: View {
     @State private var showCongratulations = false
     @State private var confettiTrigger = 0
     
-    static let checkoutURL = URL(string: "https://api.zerosettle.io/elements/checkout/?product_id=prod_TtYDzVkboKEvlg")!
+    static let checkoutURL = URL(string: "https://api.zerosettle.io/elements/checkout/?product_id=prod_TtYDzVkboKEvlg&trial_days=7")!
     static let collapsedHeight: CGFloat = 220
     static let expandedHeight: CGFloat = 352
     
