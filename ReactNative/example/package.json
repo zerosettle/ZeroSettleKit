@@ -1,0 +1,27 @@
+{
+  "name": "zerosettle-react-native-example",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "android": "react-native run-android",
+    "ios": "react-native run-ios",
+    "start": "react-native start",
+    "pod-install": "cd ios && pod install"
+  },
+  "dependencies": {
+    "@zerosettle/react-native": "file:..",
+    "react": "18.2.0",
+    "react-native": "0.73.4"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.20.0",
+    "@babel/preset-env": "^7.20.0",
+    "@babel/runtime": "^7.20.0",
+    "@react-native/babel-preset": "0.73.21",
+    "@react-native/metro-config": "0.73.5",
+    "@react-native/typescript-config": "0.73.1",
+    "@types/react": "^18.2.6",
+    "@types/react-native": "^0.72.0",
+    "typescript": "5.0.4"
+  }
+}

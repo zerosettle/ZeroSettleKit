@@ -88,8 +88,8 @@ public struct ZSMigrateTipView: View {
                         
                         Spacer()
                         
-                        // Close button (always visible, but hidden during congratulations)
-                        if !showCongratulations {
+                        // Close button (hidden during checkout success and congratulations states)
+                        if !showCongratulations && !checkoutSucceeded {
                             Button(action: {
                                 withAnimation(.easeInOut(duration: 0.3)) {
                                     isDismissed = true
