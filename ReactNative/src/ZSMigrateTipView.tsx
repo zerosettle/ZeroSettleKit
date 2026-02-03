@@ -4,7 +4,6 @@ import {
   ViewProps,
   StyleSheet,
   Platform,
-  View,
 } from 'react-native';
 
 /**

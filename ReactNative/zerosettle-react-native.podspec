@@ -42,9 +42,8 @@ Pod::Spec.new do |s|
   # Dependencies
   s.dependency "React-Core"
 
-  # ConfettiSwiftUI via CocoaPods (same library used by the Swift package)
-  # Note: If this fails, you may need to add the pod repo manually or use SPM
-  s.dependency "ConfettiSwiftUI"
+  # Note: ConfettiSwiftUI needs to be added separately via SPM or as a local pod
+  # since it's not available in CocoaPods trunk
 
   # Build settings
   s.pod_target_xcconfig = {
