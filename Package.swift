@@ -38,8 +38,6 @@ let package = Package(
         .package(url: "https://github.com/MetaMask/metamask-ios-sdk", from: "0.8.10"),
         // Wallets: Coinbase Wallet SDK
         .package(url: "https://github.com/MobileWalletProtocol/wallet-mobile-sdk.git", from: "1.0.3"),
-        // UI: Confetti animations
-        .package(url: "https://github.com/simibac/ConfettiSwiftUI.git", branch: "master"),
     ],
 
     // MARK: - Targets
@@ -121,7 +119,6 @@ let package = Package(
             name: "ZeroSettleIAP",
             dependencies: [
                 "ZeroSettleCore",
-                .product(name: "ConfettiSwiftUI", package: "ConfettiSwiftUI"),
             ],
             path: "Sources/IAP",
             swiftSettings: [

@@ -2,7 +2,6 @@ import SwiftUI
 import UIKit
 import StoreKit
 import WebKit
-import ConfettiSwiftUI
 
 // MARK: - Expandable Web Billing Tip View
 public struct ZSMigrateTipView: View {
