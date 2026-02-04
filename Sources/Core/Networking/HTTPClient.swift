@@ -108,10 +108,7 @@ public final class HTTPClient: @unchecked Sendable {
         }
 
         guard (200...299).contains(httpResponse.statusCode) else {
-            Logger.error(
-                "HTTP \(httpResponse.statusCode) from \(request.url?.absoluteString ?? "unknown")",
-                category: .network
-            )
+            logAPIError(statusCode: httpResponse.statusCode, url: request.url, data: data)
             throw HTTPError.httpError(statusCode: httpResponse.statusCode, body: data)
         }
 
@@ -120,6 +117,53 @@ public final class HTTPClient: @unchecked Sendable {
         } catch {
             Logger.error("Decoding failed: \(error)", category: .network)
             throw HTTPError.decodingFailed(error)
+        }
+    }
+
+    // MARK: - Error Logging
+
+    /// Parse and log API error responses with debug info for developers.
+    private func logAPIError(statusCode: Int, url: URL?, data: Data) {
+        let urlString = url?.absoluteString ?? "unknown"
+
+        // Try to parse JSON error response
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            Logger.error("[ZeroSettle] HTTP \(statusCode) from \(urlString)", category: .network)
+            return
+        }
+
+        let errorMessage = json["error"] as? String ?? "Unknown error"
+        let errorCode = json["code"] as? String ?? "unknown"
+
+        // Log the main error
+        Logger.error(
+            "[ZeroSettle] API Error: \(errorMessage) (code: \(errorCode), status: \(statusCode))",
+            category: .network
+        )
+
+        // Log debug info if present - this helps developers troubleshoot
+        if let debug = json["debug"] as? [String: Any] {
+            Logger.error("[ZeroSettle] Debug Info:", category: .network)
+
+            if let reason = debug["reason"] as? String {
+                Logger.error("  → Reason: \(reason)", category: .network)
+            }
+            if let action = debug["action"] as? String {
+                Logger.error("  → Action: \(action)", category: .network)
+            }
+            if let docs = debug["docs"] as? String {
+                Logger.error("  → Docs: \(docs)", category: .network)
+            }
+            if let stripeError = debug["stripe_error"] as? String {
+                Logger.error("  → Stripe Error: \(stripeError)", category: .network)
+            }
+            if let stripeCode = debug["stripe_error_code"] as? String {
+                Logger.error("  → Stripe Code: \(stripeCode)", category: .network)
+            }
+            if let capabilities = debug["capabilities"] as? [String: Any] {
+                let capsStr = capabilities.map { "\($0.key): \($0.value)" }.joined(separator: ", ")
+                Logger.error("  → Capabilities: \(capsStr)", category: .network)
+            }
         }
     }
 
@@ -137,10 +181,7 @@ public final class HTTPClient: @unchecked Sendable {
         }
 
         guard (200...299).contains(httpResponse.statusCode) else {
-            Logger.error(
-                "HTTP \(httpResponse.statusCode) from \(request.url?.absoluteString ?? "unknown")",
-                category: .network
-            )
+            logAPIError(statusCode: httpResponse.statusCode, url: request.url, data: data)
             throw HTTPError.httpError(statusCode: httpResponse.statusCode, body: data)
         }
     }

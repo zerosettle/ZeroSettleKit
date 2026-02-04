@@ -47,3 +47,7 @@ import Foundation
 // From Checkout/ZeroSettleCheckoutView.swift:
 //   - ZeroSettleCheckoutView
 //   - CheckoutError
+//
+// From UI/ZSPaymentSheet.swift:
+//   - ZSPaymentSheet
+//   - PaymentSheetError

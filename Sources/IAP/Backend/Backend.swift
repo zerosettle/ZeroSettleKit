@@ -113,6 +113,21 @@ internal final class Backend: @unchecked Sendable {
         )
     }
 
+    // MARK: - Payment Intents (for native checkout)
+
+    /// Create a Stripe PaymentIntent for native checkout (Apple Pay / Card in WebView).
+    /// Returns data needed for the Payment Request API and card entry form.
+    func createPaymentIntent(productId: String, userId: String) async throws -> PaymentIntentResponse {
+        let url = apiURL("iap/payment-intents/")
+        let body = CreatePaymentIntentRequest(productId: productId, userId: userId)
+        return try await httpClient.post(
+            url,
+            body: body,
+            headers: authHeaders,
+            responseType: PaymentIntentResponse.self
+        )
+    }
+
     // MARK: - Transactions
 
     /// Get the status of a transaction by ID.
@@ -218,6 +233,25 @@ private struct EntitlementsResponse: Decodable {
 internal struct CreateCheckoutSessionRequest: Encodable {
     let productId: String
     let userId: String
+}
+
+internal struct CreatePaymentIntentRequest: Encodable {
+    let productId: String
+    let userId: String
+}
+
+/// Response from the create_payment_intent endpoint.
+/// Contains everything needed to render the native checkout WebView.
+internal struct PaymentIntentResponse: Decodable {
+    let clientSecret: String
+    let transactionId: String
+    let amount: Int
+    let currency: String
+    let productName: String
+    let originalAmount: Int?
+    let callbackUrl: String
+    let publishableKey: String
+    let checkoutUrl: String
 }
 
 private struct SyncStoreKitTransactionRequest: Encodable {
