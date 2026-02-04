@@ -13,35 +13,25 @@ import UIKit
 import ZeroSettleCore
 #endif
 
-// MARK: - Checkout UX Mode
-
-/// Defines how the checkout web view is presented to the user.
-internal enum CheckoutUX {
-    /// Opens checkout in an inline web view popover (SFSafariViewController)
-    case inline
-    /// Opens checkout in external Safari browser
-    case externalBrowser
-}
-
 // MARK: - Web Checkout Flow
 
 /// Orchestrates the web checkout flow: creates a Stripe checkout session,
-/// opens it in Safari, and parses the universal link callback.
+/// opens it in Safari or SFSafariViewController, and parses the universal link callback.
 internal final class WebCheckoutFlow: NSObject {
     private let backend: Backend
-    
-    /// Controls how the checkout UI is presented. Change this to switch between inline and external browser.
-    private static let checkoutUX: CheckoutUX = .inline
-    
+
     /// Continuation for inline checkout dismissal
     private var inlineCheckoutContinuation: CheckedContinuation<Void, Never>?
-    
+
     /// Reference to the presented Safari view controller
     private var safariViewController: SFSafariViewController?
 
     /// The universal link hosts used for callbacks (accept both prod and dev).
     private static let callbackHosts = ["api.zerosettle.io", "landing.zerosettle.ngrok.app"]
     private static let callbackPathPrefix = "/checkout/callback"
+
+    /// Currently presented SFSafariViewController (if any).
+    private weak var presentedSafariVC: SFSafariViewController?
 
     init(backend: Backend) {
         self.backend = backend
@@ -50,7 +40,9 @@ internal final class WebCheckoutFlow: NSObject {
 
     // MARK: - Begin Checkout
 
-    /// Create a checkout session and open it based on the configured UX mode.
+    /// Create a checkout session and open it in the appropriate browser.
+    /// Respects the configured checkout type from `ZeroSettleIAP.shared.checkoutType`.
+    ///
     /// - Parameters:
     ///   - productId: The product to purchase
     ///   - userId: The developer's user identifier
@@ -65,14 +57,23 @@ internal final class WebCheckoutFlow: NSObject {
         )
 
         Logger.info("Checkout session created: \(session.sessionId)", category: .iap)
-        
-        switch Self.checkoutUX {
-        case .inline:
-            Logger.debug("Opening checkout URL in inline web view", category: .iap)
-            await openInlineWebView(session.checkoutUrl)
-        case .externalBrowser:
+
+        // Determine checkout type from remote config
+        let checkoutType = ZeroSettleIAP.shared.checkoutType
+
+        switch checkoutType {
+        case .safari:
             Logger.debug("Opening checkout URL in Safari", category: .iap)
-            await openInBrowser(session.checkoutUrl)
+            await openInSafari(session.checkoutUrl)
+
+        case .safariVC:
+            Logger.debug("Opening checkout URL in SFSafariViewController", category: .iap)
+            await openInSafariVC(session.checkoutUrl)
+
+        case .webview:
+            // WebView is handled by ZeroSettleCheckoutView, not here
+            // The purchase() method in ZeroSettleIAP should route appropriately
+            Logger.debug("WebView checkout - session created but not opening browser", category: .iap)
         }
 
         return session
@@ -110,7 +111,7 @@ internal final class WebCheckoutFlow: NSObject {
         let success = statusString == "success"
 
         Logger.info("Checkout callback received: transaction=\(transactionId), status=\(statusString)", category: .iap)
-        
+
         // Auto-dismiss inline checkout when callback is received
         if safariViewController != nil {
             Logger.debug("Auto-dismissing inline checkout after callback", category: .iap)
@@ -124,42 +125,52 @@ internal final class WebCheckoutFlow: NSObject {
         )
     }
 
+    // MARK: - Safari VC Dismissal
+
+    /// Dismiss the currently presented SFSafariViewController (if any).
+    /// Call this after handling a universal link callback to close the in-app browser.
+    @MainActor
+    func dismissSafariViewController() {
+        presentedSafariVC?.dismiss(animated: true)
+        presentedSafariVC = nil
+    }
+
     // MARK: - Private
 
-    /// Open a URL in the system browser (Safari).
+    /// Open a URL in the external Safari browser.
     @MainActor
-    private func openInBrowser(_ url: URL) async {
+    private func openInSafari(_ url: URL) async {
         await withCheckedContinuation { continuation in
             UIApplication.shared.open(url, options: [:]) { _ in
                 continuation.resume()
             }
         }
     }
-    
-    /// Open a URL in an inline web view popover using SFSafariViewController.
+
+    /// Open a URL in an SFSafariViewController presented as a sheet.
     @MainActor
-    private func openInlineWebView(_ url: URL) async {
+    private func openInSafariVC(_ url: URL) async {
         guard let windowScene = UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene })
             .first(where: { $0.activationState == .foregroundActive }),
               let rootViewController = windowScene.windows.first(where: { $0.isKeyWindow })?.rootViewController else {
             Logger.error("Unable to find root view controller for inline checkout", category: .iap)
             // Fall back to external browser
-            await openInBrowser(url)
+            await openInSafari(url)
             return
         }
-        
+
         // Find the topmost presented view controller
         var topController = rootViewController
         while let presented = topController.presentedViewController {
             topController = presented
         }
-        
+
         let safari = SFSafariViewController(url: url)
         safari.delegate = self
-        safari.preferredControlTintColor = .systemBlue
+        safari.preferredControlTintColor = .systemGreen
         safari.dismissButtonStyle = .close
-        
+
         // Present as a sheet on iOS 15+
         if #available(iOS 15.0, *) {
             safari.modalPresentationStyle = .pageSheet
@@ -170,20 +181,22 @@ internal final class WebCheckoutFlow: NSObject {
         } else {
             safari.modalPresentationStyle = .formSheet
         }
-        
+
         self.safariViewController = safari
-        
+        self.presentedSafariVC = safari
+
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             self.inlineCheckoutContinuation = continuation
             topController.present(safari, animated: true)
         }
     }
-    
+
     /// Dismiss the inline checkout view if it's currently presented.
     @MainActor
     func dismissInlineCheckout() {
         safariViewController?.dismiss(animated: true) { [weak self] in
             self?.safariViewController = nil
+            self?.presentedSafariVC = nil
             self?.inlineCheckoutContinuation?.resume()
             self?.inlineCheckoutContinuation = nil
         }
@@ -196,6 +209,7 @@ extension WebCheckoutFlow: SFSafariViewControllerDelegate {
     func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
         Logger.debug("Inline checkout dismissed by user", category: .iap)
         safariViewController = nil
+        presentedSafariVC = nil
         inlineCheckoutContinuation?.resume()
         inlineCheckoutContinuation = nil
     }

@@ -46,14 +46,56 @@ internal final class Backend: @unchecked Sendable {
     // MARK: - Products
 
     /// Fetch the product catalog for this developer's app.
-    func fetchProducts() async throws -> [Product] {
-        let url = apiURL("iap/products/")
+    /// - Parameter userId: Optional user ID to check for migration eligibility
+    /// - Returns: Tuple of products and optional remote config
+    func fetchProducts(userId: String? = nil) async throws -> (products: [Product], config: RemoteConfig?) {
+        var components = URLComponents(url: apiURL("iap/products/"), resolvingAgainstBaseURL: false)!
+        if let userId {
+            components.queryItems = [URLQueryItem(name: "user_id", value: userId)]
+        }
+
+        guard let url = components.url else {
+            throw ZeroSettleIAPError.networkError(HTTPError.invalidURL("Failed to construct products URL"))
+        }
+
         let response: ProductsResponse = try await httpClient.get(
             url,
             headers: authHeaders,
             responseType: ProductsResponse.self
         )
-        return response.products
+
+        // Parse remote config if present
+        let remoteConfig: RemoteConfig?
+        if let configResponse = response.config {
+            let checkoutType = CheckoutType(rawValue: configResponse.checkout.sheetType) ?? .safari
+            let checkoutConfig = CheckoutConfig(
+                sheetType: checkoutType,
+                isEnabled: configResponse.checkout.isEnabled
+            )
+
+            let migration: MigrationPrompt?
+            if let migrationResponse = configResponse.migration,
+               migrationResponse.shouldShow,
+               let productId = migrationResponse.productId,
+               let discountPercent = migrationResponse.discountPercent,
+               let title = migrationResponse.title,
+               let message = migrationResponse.message {
+                migration = MigrationPrompt(
+                    productId: productId,
+                    discountPercent: discountPercent,
+                    title: title,
+                    message: message
+                )
+            } else {
+                migration = nil
+            }
+
+            remoteConfig = RemoteConfig(checkout: checkoutConfig, migration: migration)
+        } else {
+            remoteConfig = nil
+        }
+
+        return (response.products, remoteConfig)
     }
 
     // MARK: - Checkout Sessions
@@ -102,6 +144,22 @@ internal final class Backend: @unchecked Sendable {
         return response.entitlements
     }
 
+    // MARK: - Migration Tracking
+
+    /// Track a successful migration conversion (user switched from StoreKit to web checkout).
+    func trackMigrationConversion(userId: String) async throws {
+        let url = apiURL("iap/migration-converted/")
+        let body = MigrationConversionRequest(userId: userId)
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authHeaders.forEach { request.setValue($1, forHTTPHeaderField: $0) }
+        request.httpBody = try encoder.encode(body)
+
+        try await httpClient.executeVoid(request)
+    }
+
     // MARK: - StoreKit Transaction Sync
 
     /// Forward a StoreKit transaction's JWS representation for server-side verification.
@@ -132,6 +190,25 @@ internal final class Backend: @unchecked Sendable {
 
 private struct ProductsResponse: Decodable {
     let products: [Product]
+    let config: ConfigResponse?
+}
+
+private struct ConfigResponse: Decodable {
+    let checkout: CheckoutConfigResponse
+    let migration: MigrationPromptResponse?
+}
+
+private struct CheckoutConfigResponse: Decodable {
+    let sheetType: String
+    let isEnabled: Bool
+}
+
+private struct MigrationPromptResponse: Decodable {
+    let shouldShow: Bool
+    let productId: String?
+    let discountPercent: Int?
+    let title: String?
+    let message: String?
 }
 
 private struct EntitlementsResponse: Decodable {
@@ -145,5 +222,9 @@ internal struct CreateCheckoutSessionRequest: Encodable {
 
 private struct SyncStoreKitTransactionRequest: Encodable {
     let jwsRepresentation: String
+    let userId: String
+}
+
+private struct MigrationConversionRequest: Encodable {
     let userId: String
 }

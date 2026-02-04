@@ -103,10 +103,39 @@ public final class ZeroSettleIAP: ObservableObject {
     /// Whether a web checkout is currently in progress (user is in Safari).
     @Published public private(set) var pendingCheckout: Bool = false
 
+    /// Remote configuration from the backend (populated after `fetchProducts()`).
+    /// Contains checkout type settings and optional migration campaign data.
+    @Published public private(set) var remoteConfig: RemoteConfig?
+
+    // MARK: - Computed Properties
+
+    /// The configured checkout type. Returns `.safari` as the default fallback
+    /// if remote config hasn't been fetched yet.
+    public var checkoutType: CheckoutType {
+        remoteConfig?.checkout.sheetType ?? .safari
+    }
+
     // MARK: - Delegate
 
     /// Delegate to receive IAP event callbacks.
     public weak var delegate: ZeroSettleIAPDelegate?
+
+    // MARK: - Internal State (for ZeroSettleCheckoutView)
+
+    /// Internal accessor for the current configuration.
+    /// Used by `ZeroSettleCheckoutView` to create checkout sessions.
+    internal var currentConfig: Configuration? { config }
+
+    /// The effective base URL, accounting for any debug override.
+    /// Used by `ZeroSettleCheckoutView` to ensure it uses the same backend URL.
+    internal var effectiveBaseURL: URL? {
+        guard let config else { return nil }
+        #if DEBUG
+        return Self.baseURLOverride ?? config.backendURL
+        #else
+        return config.backendURL
+        #endif
+    }
 
     // MARK: - Private State
 
@@ -156,21 +185,31 @@ public final class ZeroSettleIAP: ObservableObject {
 
     /// Fetch the product catalog from ZeroSettle with web checkout pricing.
     /// Also reconciles with StoreKit products for native purchasing support.
-    /// Results are cached in the `products` published property.
+    /// Results are cached in the `products` and `remoteConfig` published properties.
+    ///
+    /// - Parameter userId: Optional user ID to check for migration eligibility.
+    ///   Pass this to receive migration campaign data in `remoteConfig.migration`.
     /// - Returns: Array of products with web prices, StoreKit prices, and any active promotions
     @discardableResult
-    public func fetchProducts() async throws -> [Product] {
+    public func fetchProducts(userId: String? = nil) async throws -> [Product] {
         guard let backend else {
             throw ZeroSettleIAPError.notConfigured
         }
 
         do {
-            // 1. Fetch from ZeroSettle backend
-            var fetchedProducts = try await backend.fetchProducts()
-            Logger.info("Fetched \(fetchedProducts.count) products from backend", category: .iap)
+            // 1. Fetch from ZeroSettle backend (includes config when userId is provided)
+            let (fetchedProducts, config) = try await backend.fetchProducts(userId: userId)
+            var products = fetchedProducts
+            Logger.info("Fetched \(products.count) products from backend", category: .iap)
+
+            // Store remote config if present
+            if let config {
+                remoteConfig = config
+                Logger.info("Remote config received: checkoutType=\(config.checkout.sheetType.rawValue), migration=\(config.migration != nil)", category: .iap)
+            }
 
             // 2. Try to fetch ALL products from StoreKit (let StoreKit tell us what exists)
-            let allProductIds = fetchedProducts.map { $0.id }
+            let allProductIds = products.map { $0.id }
 
             // 3. Fetch StoreKit products (if StoreKit sync enabled)
             if let storeKitManager, !allProductIds.isEmpty {
@@ -179,18 +218,18 @@ public final class ZeroSettleIAP: ObservableObject {
                 // 4. Attach StoreKit products to our Product models
                 // Products that exist in StoreKit get _storeKitProduct populated
                 // Products that don't exist remain web-only
-                for i in fetchedProducts.indices {
-                    if let skProduct = skProducts[fetchedProducts[i].id] {
-                        fetchedProducts[i]._storeKitProduct = skProduct
+                for i in products.indices {
+                    if let skProduct = skProducts[products[i].id] {
+                        products[i]._storeKitProduct = skProduct
                     }
                 }
 
-                let matched = fetchedProducts.filter { $0.storeKitAvailable }.count
-                Logger.info("Reconciled \(matched)/\(fetchedProducts.count) products with StoreKit", category: .iap)
+                let matched = products.filter { $0.storeKitAvailable }.count
+                Logger.info("Reconciled \(matched)/\(products.count) products with StoreKit", category: .iap)
             }
 
-            products = fetchedProducts
-            return fetchedProducts
+            self.products = products
+            return products
         } catch {
             Logger.error("Failed to fetch products: \(error)", category: .iap)
             throw ZeroSettleIAPError.networkError(error)
@@ -256,6 +295,27 @@ public final class ZeroSettleIAP: ObservableObject {
         return try await storeKitManager.purchase(skProduct)
     }
 
+    // MARK: - Migration Tracking
+
+    /// Track a successful migration conversion.
+    /// Call this after a user successfully completes a web checkout purchase
+    /// as part of a migration campaign (switching from StoreKit to web checkout).
+    ///
+    /// - Parameter userId: Your app's user identifier
+    public func trackMigrationConversion(userId: String) async throws {
+        guard let backend else {
+            throw ZeroSettleIAPError.notConfigured
+        }
+
+        do {
+            try await backend.trackMigrationConversion(userId: userId)
+            Logger.info("Migration conversion tracked for user: \(userId)", category: .iap)
+        } catch {
+            Logger.error("Failed to track migration conversion: \(error)", category: .iap)
+            throw ZeroSettleIAPError.networkError(error)
+        }
+    }
+
     // MARK: - Universal Link Handling
 
     /// Handle a universal link callback from the web checkout.
@@ -276,6 +336,9 @@ public final class ZeroSettleIAP: ObservableObject {
         guard let callback = checkoutFlow.handleCallback(url: url) else {
             return false
         }
+
+        // Dismiss SFSafariViewController if it was used
+        checkoutFlow.dismissSafariViewController()
 
         // Process the callback asynchronously
         Task {
