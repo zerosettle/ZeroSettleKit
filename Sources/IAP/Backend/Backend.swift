@@ -6,7 +6,10 @@
 //
 
 import Foundation
+
+#if !COCOAPODS
 import ZeroSettleCore
+#endif
 
 // MARK: - Backend
 

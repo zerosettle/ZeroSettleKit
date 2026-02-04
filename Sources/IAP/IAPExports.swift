@@ -6,7 +6,9 @@
 //
 
 import Foundation
-import ZeroSettleCore
 
+#if !COCOAPODS
+import ZeroSettleCore
 // Re-export Core types for convenience
 @_exported import ZeroSettleCore
+#endif

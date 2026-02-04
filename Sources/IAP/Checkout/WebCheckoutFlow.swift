@@ -8,7 +8,10 @@
 import Foundation
 import SafariServices
 import UIKit
+
+#if !COCOAPODS
 import ZeroSettleCore
+#endif
 
 // MARK: - Checkout UX Mode
 

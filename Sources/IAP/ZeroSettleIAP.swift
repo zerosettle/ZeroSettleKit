@@ -8,7 +8,10 @@
 
 import Foundation
 import StoreKit
+
+#if !COCOAPODS
 import ZeroSettleCore
+#endif
 
 // MARK: - Errors
 

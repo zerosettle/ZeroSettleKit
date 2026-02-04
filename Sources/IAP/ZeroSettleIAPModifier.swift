@@ -6,7 +6,10 @@
 //
 
 import SwiftUI
+
+#if !COCOAPODS
 import ZeroSettleCore
+#endif
 
 // MARK: - View Modifier
 

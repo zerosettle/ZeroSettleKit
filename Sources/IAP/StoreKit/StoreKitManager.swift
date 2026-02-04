@@ -7,7 +7,10 @@
 
 import Foundation
 import StoreKit
+
+#if !COCOAPODS
 import ZeroSettleCore
+#endif
 
 /// Typealias to disambiguate StoreKit.Transaction from our Transaction model.
 public typealias SKTransaction = StoreKit.Transaction
