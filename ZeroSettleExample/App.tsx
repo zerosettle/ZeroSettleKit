@@ -6,6 +6,7 @@
 
 import { StatusBar, StyleSheet, Text, useColorScheme, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import { ZSMigrateTipView } from '@zerosettle/react-native';
 
 function App() {
   const isDarkMode = useColorScheme() === 'dark';
@@ -21,6 +22,11 @@ function App() {
           <Text style={[styles.subtitle, isDarkMode && styles.textDark]}>
             ZeroSettle Example App
           </Text>
+        </View>
+        
+        {/* ZeroSettle Migrate Tip View */}
+        <View style={styles.tipContainer}>
+          <ZSMigrateTipView backgroundColor="#6366F1" />
         </View>
       </SafeAreaView>
     </SafeAreaProvider>
@@ -52,6 +58,10 @@ const styles = StyleSheet.create({
   },
   textDark: {
     color: '#ffffff',
+  },
+  tipContainer: {
+    padding: 16,
+    paddingBottom: 32,
   },
 });
 
