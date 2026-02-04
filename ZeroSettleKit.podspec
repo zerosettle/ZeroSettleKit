@@ -31,8 +31,6 @@ Pod::Spec.new do |s|
   # Build settings
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',
-    'SWIFT_COMPILATION_MODE' => 'wholemodule',
-    # Define flag to detect CocoaPods build (no space after -D)
-    'OTHER_SWIFT_FLAGS' => '-DCOCOAPODS'
+    'SWIFT_COMPILATION_MODE' => 'wholemodule'
   }
 end

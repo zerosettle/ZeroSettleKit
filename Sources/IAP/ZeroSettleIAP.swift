@@ -9,7 +9,7 @@
 import Foundation
 import StoreKit
 
-#if !COCOAPODS
+#if canImport(ZeroSettleCore)
 import ZeroSettleCore
 #endif
 

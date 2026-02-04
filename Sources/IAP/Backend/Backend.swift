@@ -7,7 +7,7 @@
 
 import Foundation
 
-#if !COCOAPODS
+#if canImport(ZeroSettleCore)
 import ZeroSettleCore
 #endif
 

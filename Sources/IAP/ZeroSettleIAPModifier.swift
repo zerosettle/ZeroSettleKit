@@ -7,7 +7,7 @@
 
 import SwiftUI
 
-#if !COCOAPODS
+#if canImport(ZeroSettleCore)
 import ZeroSettleCore
 #endif
 

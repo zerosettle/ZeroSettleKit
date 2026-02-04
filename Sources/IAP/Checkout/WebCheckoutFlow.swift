@@ -9,7 +9,7 @@ import Foundation
 import SafariServices
 import UIKit
 
-#if !COCOAPODS
+#if canImport(ZeroSettleCore)
 import ZeroSettleCore
 #endif
 
