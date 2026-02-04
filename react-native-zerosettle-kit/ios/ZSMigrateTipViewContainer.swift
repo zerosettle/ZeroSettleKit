@@ -8,33 +8,26 @@ public final class ZSMigrateTipViewContainer: UIView {
     
     // Props exposed to React Native
     @objc var backgroundColorHex: NSString = "#000000" {
-        didSet { rebuild() }
+        didSet { updateSwiftUIView() }
     }
     
     public override init(frame: CGRect) {
         super.init(frame: frame)
-        rebuild()
+        buildView()
     }
     
     required init?(coder: NSCoder) {
         super.init(coder: coder)
-        rebuild()
+        buildView()
     }
     
-    private func rebuild() {
+    private func buildView() {
         // Convert hex to SwiftUI Color
         let uiColor = UIColor(hex: backgroundColorHex as String) ?? .black
         let swiftUIColor = Color(uiColor)
         
         let root = ZSMigrateTipView(backgroundColor: swiftUIColor)
         let any = AnyView(root)
-        
-        if let hc = hostingController {
-            hc.rootView = any
-            hc.view.invalidateIntrinsicContentSize()
-            setNeedsLayout()
-            return
-        }
         
         let hc = UIHostingController(rootView: any)
         hostingController = hc
@@ -49,11 +42,75 @@ public final class ZSMigrateTipViewContainer: UIView {
             hc.view.topAnchor.constraint(equalTo: topAnchor),
             hc.view.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
+        
+        attachHostingControllerIfPossible()
+    }
+    
+    private func updateSwiftUIView() {
+        guard let hc = hostingController else { return }
+        
+        let uiColor = UIColor(hex: backgroundColorHex as String) ?? .black
+        let swiftUIColor = Color(uiColor)
+        
+        let root = ZSMigrateTipView(backgroundColor: swiftUIColor)
+        hc.rootView = AnyView(root)
+        hc.view.invalidateIntrinsicContentSize()
+        setNeedsLayout()
     }
     
     public override func layoutSubviews() {
         super.layoutSubviews()
         hostingController?.view.frame = bounds
+    }
+    
+    public override func didMoveToWindow() {
+        super.didMoveToWindow()
+        
+        if window != nil {
+            attachHostingControllerIfPossible()
+        } else {
+            // Clean up when removed from window
+            if let hc = hostingController {
+                hc.willMove(toParent: nil)
+                hc.view.removeFromSuperview()
+                hc.removeFromParent()
+                hostingController = nil
+            }
+        }
+    }
+
+    private func attachHostingControllerIfPossible() {
+        guard let hc = hostingController else { return }
+
+        let parentVC: UIViewController? = {
+            if let windowScene = window?.windowScene,
+               let keyWindow = windowScene.windows.first(where: { $0.isKeyWindow }),
+               let root = keyWindow.rootViewController {
+                return root
+            }
+            return findParentViewController()
+        }()
+
+        guard let resolvedParent = parentVC else { return }
+
+        if hc.parent !== resolvedParent {
+            hc.willMove(toParent: nil)
+            hc.removeFromParent()
+            resolvedParent.addChild(hc)
+            hc.didMove(toParent: resolvedParent)
+        }
+    }
+    
+    /// Traverse the responder chain to find the nearest UIViewController
+    private func findParentViewController() -> UIViewController? {
+        var responder: UIResponder? = self
+        while let nextResponder = responder?.next {
+            if let viewController = nextResponder as? UIViewController {
+                return viewController
+            }
+            responder = nextResponder
+        }
+        return nil
     }
 }
 
