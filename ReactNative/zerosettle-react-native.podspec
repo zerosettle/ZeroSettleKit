@@ -13,37 +13,21 @@ Pod::Spec.new do |s|
   s.platforms    = { :ios => "17.0" }
   s.source       = { :git => package["repository"]["url"], :tag => "#{s.version}" }
 
-  # Include React Native bridge files AND ZeroSettle Swift sources directly
-  # This avoids consumers needing to add a separate SwiftPM dependency
-  s.source_files = [
-    "ios/**/*.{h,m,mm,swift}",
-    "../Sources/Core/**/*.swift",
-    "../Sources/IAP/**/*.swift"
-  ]
-
-  # Exclude test files and resources that shouldn't be compiled
-  s.exclude_files = [
-    "../Sources/**/Tests/**/*",
-    "../Sources/**/Resources/**/*"
-  ]
-
-  # Preserve folder structure for module organization
-  s.preserve_paths = [
-    "../Sources/Core/**/*",
-    "../Sources/IAP/**/*"
-  ]
+  # Only include the React Native bridge files
+  s.source_files = "ios/**/*.{h,m,mm,swift}"
 
   # Swift version
   s.swift_version = "5.9"
 
   # Frameworks
-  s.frameworks = "UIKit", "SwiftUI", "StoreKit", "WebKit"
+  s.frameworks = "UIKit", "SwiftUI"
 
   # Dependencies
   s.dependency "React-Core"
-
-  # Note: ConfettiSwiftUI needs to be added separately via SPM or as a local pod
-  # since it's not available in CocoaPods trunk
+  
+  # Depend on ZeroSettleKit CocoaPod for the actual SDK implementation
+  # This keeps the RN wrapper automatically in sync with the SDK
+  s.dependency "ZeroSettleKit", "~> 1.0"
 
   # Build settings
   s.pod_target_xcconfig = {

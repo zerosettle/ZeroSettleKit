@@ -14,7 +14,8 @@
     "!**/__tests__",
     "!**/__fixtures__",
     "!**/__mocks__",
-    "zerosettle-react-native.podspec"
+    "zerosettle-react-native.podspec",
+    "react-native.config.js"
   ],
   "scripts": {
     "typescript": "tsc --noEmit",
