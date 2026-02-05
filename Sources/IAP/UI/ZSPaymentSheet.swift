@@ -246,7 +246,7 @@ public struct ZSPaymentSheet<Header: View>: View {
         self.onComplete = onComplete
         self._isLoading = State(initialValue: false)
         self._webContentHeight = State(initialValue: preloader.measuredContentHeight)
-        let startHeight = min(max(preloader.measuredContentHeight, 200), 700) + 6
+        let startHeight = min(max(preloader.measuredContentHeight, 200), 700)
         self._compactHeight = State(initialValue: startHeight)
         self._selectedDetent = State(initialValue: .height(startHeight))
     }
@@ -294,64 +294,63 @@ extension ZSPaymentSheet {
     // MARK: - Body
 
     public var body: some View {
-        Color(.systemBackground)
-            .overlay {
-                VStack(spacing: 0) {
-                    if let error = loadError {
-                        errorView(error)
-                    } else if let url = checkoutURL {
-                        if !(Header.self == EmptyView.self) {
-                            header
-                                .frame(maxWidth: .infinity)
-                                .padding(.bottom, 20)
-                                .background(GeometryReader { geo in
-                                    Color.clear.preference(key: HeaderHeightKey.self, value: geo.size.height)
-                                })
-                                .onPreferenceChange(HeaderHeightKey.self) { newHeight in
-                                    headerHeight = newHeight
-                                    recalculateHeight()
-                                }
+        VStack(spacing: 0) {
+            if let error = loadError {
+                errorView(error)
+            } else if let url = checkoutURL {
+                if !(Header.self == EmptyView.self) {
+                    header
+                        .frame(maxWidth: .infinity)
+                        .padding(.bottom, 20)
+                        .background(GeometryReader { geo in
+                            Color.clear.preference(key: HeaderHeightKey.self, value: geo.size.height)
+                        })
+                        .onPreferenceChange(HeaderHeightKey.self) { newHeight in
+                            headerHeight = newHeight
+                            recalculateHeight()
                         }
+                }
 
-                        ZStack {
-                            PaymentWebView(
-                                url: url,
-                                isLoading: $isLoading,
-                                preloadedWebView: preloadedWebView,
-                                messageRouter: messageRouter,
-                                onAction: handleWebViewAction
-                            )
+                ZStack {
+                    PaymentWebView(
+                        url: url,
+                        isLoading: $isLoading,
+                        preloadedWebView: preloadedWebView,
+                        messageRouter: messageRouter,
+                        onAction: handleWebViewAction
+                    )
 
-                            if isLoading {
-                                Color(.systemBackground)
-                            }
-                        }
-                    } else {
-                        ProgressView()
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    if isLoading {
+                        Color(.systemBackground)
                     }
                 }
+            } else {
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .overlay(alignment: .topTrailing) {
-                Button {
-                    dismiss()
-                    onComplete(.failure(PaymentSheetError.cancelled))
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 28, height: 28)
-                        .background(.ultraThinMaterial, in: Circle())
-                }
-                .padding(.top, 10)
-                .padding(.trailing, 14)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
+        .overlay(alignment: .topTrailing) {
+            Button {
+                dismiss()
+                onComplete(.failure(PaymentSheetError.cancelled))
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 32, height: 32)
+                    .background(.ultraThinMaterial, in: Circle())
             }
-            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .ignoresSafeArea(edges: .bottom)
-            .presentationDetents([.height(compactHeight), .large], selection: $selectedDetent)
-            .presentationDragIndicator(.hidden)
-            .presentationBackground(.clear)
-            .interactiveDismissDisabled()
+            .padding(.top, 14)
+            .padding(.trailing, 18)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .ignoresSafeArea(edges: .bottom)
+        .presentationDetents([.height(compactHeight), .large], selection: $selectedDetent)
+        .presentationDragIndicator(.hidden)
+        .presentationBackground(.clear)
+        .interactiveDismissDisabled()
         .task {
             if let url = prefetchedCheckoutURL {
                 self.checkoutURL = url
@@ -366,7 +365,7 @@ extension ZSPaymentSheet {
 
     private func recalculateHeight() {
         let contentH = webContentHeight > 0 ? webContentHeight : 400
-        let totalHeight = headerHeight + contentH + 6
+        let totalHeight = headerHeight + contentH
         let clamped = min(max(totalHeight, 200), 700)
 
         withAnimation(.easeInOut(duration: 0.3)) {
