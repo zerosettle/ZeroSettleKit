@@ -71,8 +71,7 @@ internal final class WebCheckoutFlow: NSObject {
             await openInSafariVC(session.checkoutUrl)
 
         case .webview:
-            // WebView is handled by ZeroSettleCheckoutView, not here
-            // The purchase() method in ZeroSettleIAP should route appropriately
+            // WebView handled by ZSPaymentSheet, not WebCheckoutFlow
             Logger.debug("WebView checkout - session created but not opening browser", category: .iap)
         }
 

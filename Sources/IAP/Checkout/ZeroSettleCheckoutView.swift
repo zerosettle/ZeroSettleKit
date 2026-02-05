@@ -14,11 +14,17 @@ import ZeroSettleCore
 
 /// An embedded checkout view for native WebView mode.
 ///
+/// - Important: This view is deprecated. Use `ZSPaymentSheet` instead, which provides
+///   a better user experience with preloading, Apple Pay support, and proper presentation.
+///
 /// Use this view when `ZeroSettleIAP.shared.checkoutType == .webview`.
 /// The developer controls placement and sizing of this view.
 ///
 /// Example usage:
 /// ```swift
+/// // Deprecated - use ZSPaymentSheet instead:
+/// // .zsPaymentSheet(isPresented: $showPayment, product: product, userId: userId) { result in ... }
+///
 /// ZeroSettleCheckoutView(
 ///     productId: "premium_monthly",
 ///     userId: currentUser.id
@@ -33,6 +39,7 @@ import ZeroSettleCore
 /// .frame(maxWidth: 400)
 /// .cornerRadius(16)
 /// ```
+@available(*, deprecated, message: "Use ZSPaymentSheet instead, which provides preloading and better UX")
 public struct ZeroSettleCheckoutView: View {
     private let productId: String
     private let userId: String

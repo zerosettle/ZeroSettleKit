@@ -91,6 +91,11 @@ internal final class StoreKitManager: @unchecked Sendable {
         self.userId = userId
     }
 
+    /// The currently set user ID (nil if not set).
+    var currentUserId: String? {
+        userId
+    }
+
     // MARK: - Product Fetching
 
     /// Fetch StoreKit products for reconciliation with ZeroSettle catalog.

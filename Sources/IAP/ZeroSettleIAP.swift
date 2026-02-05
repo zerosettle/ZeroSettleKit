@@ -419,18 +419,43 @@ public final class ZeroSettleIAP: ObservableObject {
             Logger.info("Checkout completed: \(transaction.id) for \(transaction.productId)", category: .iap)
             delegate?.zeroSettleIAPCheckoutDidComplete(transaction: transaction)
 
-            // Add the new entitlement
-            let entitlement = Entitlement(
-                id: "web_\(transaction.id)",
-                productId: transaction.productId,
-                source: .webCheckout,
-                isActive: true,
-                expiresAt: nil,
-                purchasedAt: transaction.purchasedAt
-            )
-
-            entitlements.append(entitlement)
-            delegate?.zeroSettleIAPEntitlementsDidUpdate(entitlements)
+            // Fetch fresh entitlements from backend to get proper expiry dates
+            // This ensures subscription expiresAt is populated correctly from the server
+            if let userId = storeKitManager?.currentUserId {
+                do {
+                    let freshEntitlements = try await backend.getEntitlements(userId: userId)
+                    // Merge: keep StoreKit entitlements, add/replace web entitlements
+                    let storeKitEnts = entitlements.filter { $0.source == .storeKit }
+                    entitlements = storeKitEnts + freshEntitlements
+                    delegate?.zeroSettleIAPEntitlementsDidUpdate(entitlements)
+                    Logger.info("Refreshed entitlements after checkout: \(freshEntitlements.count) web entitlements", category: .iap)
+                } catch {
+                    Logger.error("Failed to refresh entitlements after checkout: \(error)", category: .iap)
+                    // Fall back to creating local entitlement with available info
+                    let entitlement = Entitlement(
+                        id: "web_\(transaction.id)",
+                        productId: transaction.productId,
+                        source: .webCheckout,
+                        isActive: true,
+                        expiresAt: transaction.expiresAt,
+                        purchasedAt: transaction.purchasedAt
+                    )
+                    entitlements.append(entitlement)
+                    delegate?.zeroSettleIAPEntitlementsDidUpdate(entitlements)
+                }
+            } else {
+                // No user ID available, create local entitlement
+                let entitlement = Entitlement(
+                    id: "web_\(transaction.id)",
+                    productId: transaction.productId,
+                    source: .webCheckout,
+                    isActive: true,
+                    expiresAt: transaction.expiresAt,
+                    purchasedAt: transaction.purchasedAt
+                )
+                entitlements.append(entitlement)
+                delegate?.zeroSettleIAPEntitlementsDidUpdate(entitlements)
+            }
 
         } catch {
             Logger.error("Transaction verification failed: \(error)", category: .iap)

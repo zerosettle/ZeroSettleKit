@@ -26,18 +26,23 @@ public struct ZSTransaction: Identifiable, Sendable, Codable, Equatable {
     /// When the purchase was made
     public let purchasedAt: Date
 
+    /// When this entitlement expires (nil for non-expiring products like non-consumables)
+    public let expiresAt: Date?
+
     public init(
         id: String,
         productId: String,
         status: TransactionStatus,
         source: EntitlementSource,
-        purchasedAt: Date
+        purchasedAt: Date,
+        expiresAt: Date? = nil
     ) {
         self.id = id
         self.productId = productId
         self.status = status
         self.source = source
         self.purchasedAt = purchasedAt
+        self.expiresAt = expiresAt
     }
 }
 
