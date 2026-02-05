@@ -3,8 +3,8 @@
 //  ZeroSettleIAP
 //
 //  An embedded payment sheet that loads the ZeroSettle checkout page
-//  in a WKWebView. Starts compact showing product info + payment method
-//  selection, expands to full height when card entry is needed.
+//  in a WKWebView. The WebView is preloaded off-screen before the
+//  sheet appears, so the user sees a fully-rendered checkout instantly.
 //
 
 import SwiftUI
@@ -14,16 +14,164 @@ import WebKit
 import ZeroSettleCore
 #endif
 
+// MARK: - Message Router
+
+/// Proxy WKScriptMessageHandler that forwards messages to a mutable closure.
+/// Lets us redirect WebView messages between preloader and sheet phases.
+private final class MessageRouter: NSObject, WKScriptMessageHandler {
+    var onMessage: ((WKScriptMessage) -> Void)?
+
+    func userContentController(
+        _ userContentController: WKUserContentController,
+        didReceive message: WKScriptMessage
+    ) {
+        onMessage?(message)
+    }
+}
+
+// MARK: - Checkout Preloader
+
+/// Manages off-screen WKWebView creation and preloading.
+/// Creates the WebView, loads the checkout URL, and waits for the
+/// JavaScript "ready" signal before resolving.
+private final class CheckoutPreloader: ObservableObject {
+    @Published var webView: WKWebView?
+    @Published private(set) var isReady = false
+    private(set) var measuredContentHeight: CGFloat = 0
+    let messageRouter = MessageRouter()
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    @MainActor
+    func loadAndWait(url: URL) async {
+        let config = WKWebViewConfiguration()
+        config.allowsInlineMediaPlayback = true
+        config.userContentController.add(messageRouter, name: "checkoutComplete")
+        config.userContentController.add(messageRouter, name: "consoleLog")
+
+        let consoleScript = WKUserScript(source: """
+            (function() {
+                function forward(level) {
+                    var orig = console[level];
+                    console[level] = function() {
+                        var args = Array.prototype.slice.call(arguments).map(function(a) {
+                            try { return typeof a === 'object' ? JSON.stringify(a) : String(a); }
+                            catch(e) { return String(a); }
+                        });
+                        window.webkit.messageHandlers.consoleLog.postMessage({
+                            level: level,
+                            message: args.join(' ')
+                        });
+                        orig.apply(console, arguments);
+                    };
+                }
+                forward('log'); forward('warn'); forward('error');
+            })();
+            """, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        config.userContentController.addUserScript(consoleScript)
+
+        let wv = WKWebView(frame: CGRect(x: 0, y: 0, width: 393, height: 600), configuration: config)
+        wv.scrollView.bounces = false
+        wv.scrollView.contentInsetAdjustmentBehavior = .never
+        wv.isOpaque = false
+        wv.backgroundColor = .clear
+        wv.scrollView.backgroundColor = .clear
+
+        self.webView = wv
+        wv.load(URLRequest(url: url))
+
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            self.continuation = cont
+
+            messageRouter.onMessage = { [weak self] message in
+                guard let self = self else { return }
+
+                if message.name == "consoleLog",
+                   let body = message.body as? [String: Any],
+                   let level = body["level"] as? String,
+                   let msg = body["message"] as? String {
+                    print("[WebView \(level)] \(msg)")
+                    return
+                }
+
+                guard message.name == "checkoutComplete",
+                      let body = message.body as? [String: Any],
+                      let action = body["action"] as? String,
+                      action == "ready" else { return }
+
+                let measureJS = """
+                (function() {
+                    var el = document.getElementById('checkout-content');
+                    if (el) {
+                        var rect = el.getBoundingClientRect();
+                        return rect.top + rect.height;
+                    }
+                    var children = document.body.children;
+                    var maxBottom = 0;
+                    for (var i = 0; i < children.length; i++) {
+                        if (children[i].offsetHeight > 0) {
+                            var r = children[i].getBoundingClientRect();
+                            if (r.bottom > maxBottom) maxBottom = r.bottom;
+                        }
+                    }
+                    return maxBottom;
+                })()
+                """
+                self.webView?.evaluateJavaScript(measureJS) { [weak self] result, _ in
+                    guard let self = self else { return }
+                    DispatchQueue.main.async {
+                        if let height = result as? CGFloat, height > 0 {
+                            self.measuredContentHeight = height
+                        } else if let number = result as? NSNumber, number.doubleValue > 0 {
+                            self.measuredContentHeight = CGFloat(number.doubleValue)
+                        }
+                        self.isReady = true
+                        self.continuation?.resume()
+                        self.continuation = nil
+                    }
+                }
+            }
+        }
+    }
+
+    func reset() {
+        webView = nil
+        isReady = false
+        measuredContentHeight = 0
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+// MARK: - Preloader Host
+
+/// Invisible view that hosts the preloader's WKWebView in the hierarchy.
+/// WKWebView must be in a window to load and render content.
+private struct PreloaderHost: UIViewRepresentable {
+    let webView: WKWebView?
+
+    func makeUIView(context: Context) -> UIView {
+        let container = UIView()
+        container.clipsToBounds = true
+        return container
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        for subview in uiView.subviews where subview !== webView {
+            subview.removeFromSuperview()
+        }
+        if let wv = webView, wv.superview == nil {
+            wv.frame = CGRect(x: 0, y: 0, width: 393, height: 600)
+            uiView.addSubview(wv)
+        }
+    }
+}
+
 // MARK: - Payment Sheet
 
 /// An embedded payment sheet for ZeroSettle web checkout.
 ///
 /// Presents an optional native SwiftUI header above a WebView with
-/// payment buttons. Tapping Apple Pay triggers the Payment Request API
-/// inline. Tapping Card expands the sheet to show the Stripe card entry form.
-///
-/// Supply a `@ViewBuilder` header to render product info natively above
-/// the payment buttons, or omit the header for a payment-buttons-only sheet.
+/// payment buttons. The WebView is preloaded before the sheet appears.
 public struct ZSPaymentSheet<Header: View>: View {
 
     // MARK: - Configuration
@@ -32,6 +180,9 @@ public struct ZSPaymentSheet<Header: View>: View {
     private let userId: String
     private let prefetchedCheckoutURL: URL?
     private let prefetchedTransactionId: String?
+    private let preloadedWebView: WKWebView?
+    private let messageRouter: MessageRouter?
+    private let initialContentHeight: CGFloat
     private let header: Header
     private let onComplete: (Result<ZSTransaction, Error>) -> Void
 
@@ -40,14 +191,15 @@ public struct ZSPaymentSheet<Header: View>: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var checkoutURL: URL?
-    @State private var isLoading = true
+    @State private var isLoading: Bool
     @State private var loadError: Error?
     @State private var transactionId: String?
-    @State private var compactHeight: CGFloat = 480
+    @State private var webContentHeight: CGFloat
+    @State private var compactHeight: CGFloat
     @State private var headerHeight: CGFloat = 0
-    @State private var selectedDetent: PresentationDetent = .height(480)
+    @State private var selectedDetent: PresentationDetent
 
-    // MARK: - Initialization
+    // MARK: - Public Initialization (without preloading)
 
     public init(
         product: Product,
@@ -61,10 +213,43 @@ public struct ZSPaymentSheet<Header: View>: View {
         self.userId = userId
         self.prefetchedCheckoutURL = checkoutURL
         self.prefetchedTransactionId = transactionId
+        self.preloadedWebView = nil
+        self.messageRouter = nil
+        self.initialContentHeight = 0
         self.header = header()
         self.onComplete = onComplete
+        self._isLoading = State(initialValue: true)
+        self._webContentHeight = State(initialValue: 0)
+        self._compactHeight = State(initialValue: 480)
+        self._selectedDetent = State(initialValue: .height(480))
     }
 
+    // MARK: - Internal Initialization (with preloaded WebView)
+
+    fileprivate init(
+        product: Product,
+        userId: String,
+        preloader: CheckoutPreloader,
+        checkoutURL: URL,
+        transactionId: String?,
+        @ViewBuilder header: () -> Header,
+        onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
+    ) {
+        self.product = product
+        self.userId = userId
+        self.prefetchedCheckoutURL = checkoutURL
+        self.prefetchedTransactionId = transactionId
+        self.preloadedWebView = preloader.webView
+        self.messageRouter = preloader.messageRouter
+        self.initialContentHeight = preloader.measuredContentHeight
+        self.header = header()
+        self.onComplete = onComplete
+        self._isLoading = State(initialValue: false)
+        self._webContentHeight = State(initialValue: preloader.measuredContentHeight)
+        let startHeight = min(max(preloader.measuredContentHeight, 200), 700) + 6
+        self._compactHeight = State(initialValue: startHeight)
+        self._selectedDetent = State(initialValue: .height(startHeight))
+    }
 }
 
 extension ZSPaymentSheet where Header == EmptyView {
@@ -87,7 +272,6 @@ extension ZSPaymentSheet where Header == EmptyView {
     }
 
     /// Pre-create a PaymentIntent and return the checkout URL.
-    /// Call this before presenting ZSPaymentSheet to eliminate load time.
     public static func preload(
         productId: String,
         userId: String
@@ -110,58 +294,64 @@ extension ZSPaymentSheet {
     // MARK: - Body
 
     public var body: some View {
-        ZStack {
-            // Solid fill so the sheet is fully opaque in every state
-            Color(.systemBackground)
-                .ignoresSafeArea()
-
-            if let error = loadError {
-                errorView(error)
-            } else if let url = checkoutURL {
+        Color(.systemBackground)
+            .overlay {
                 VStack(spacing: 0) {
-                    if !(Header.self == EmptyView.self) {
-                        header
-                            .background(GeometryReader { geo in
-                                Color.clear.preference(key: HeaderHeightKey.self, value: geo.size.height)
-                            })
-                    }
+                    if let error = loadError {
+                        errorView(error)
+                    } else if let url = checkoutURL {
+                        if !(Header.self == EmptyView.self) {
+                            header
+                                .frame(maxWidth: .infinity)
+                                .padding(.bottom, 20)
+                                .background(GeometryReader { geo in
+                                    Color.clear.preference(key: HeaderHeightKey.self, value: geo.size.height)
+                                })
+                                .onPreferenceChange(HeaderHeightKey.self) { newHeight in
+                                    headerHeight = newHeight
+                                    recalculateHeight()
+                                }
+                        }
 
-                    PaymentWebView(
-                        url: url,
-                        isLoading: $isLoading,
-                        onAction: handleWebViewAction
-                    )
-                    .ignoresSafeArea(.container, edges: .bottom)
-                }
-                .onPreferenceChange(HeaderHeightKey.self) { headerHeight = $0 }
+                        ZStack {
+                            PaymentWebView(
+                                url: url,
+                                isLoading: $isLoading,
+                                preloadedWebView: preloadedWebView,
+                                messageRouter: messageRouter,
+                                onAction: handleWebViewAction
+                            )
 
-                // Loading overlay while WebView content loads
-                if isLoading {
-                    Color(.systemBackground)
-                        .ignoresSafeArea()
-                    VStack(spacing: 16) {
+                            if isLoading {
+                                Color(.systemBackground)
+                            }
+                        }
+                    } else {
                         ProgressView()
-                            .scaleEffect(1.5)
-                        Text("Loading checkout...")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
-                }
-            } else {
-                // Loading while creating PaymentIntent
-                VStack(spacing: 16) {
-                    ProgressView()
-                        .scaleEffect(1.5)
-                    Text("Preparing checkout...")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
                 }
             }
-        }
-        .presentationDetents([.height(compactHeight), .large], selection: $selectedDetent)
-        .presentationDragIndicator(.visible)
-        .presentationCornerRadius(20)
-        .presentationBackgroundInteraction(.disabled)
+            .overlay(alignment: .topTrailing) {
+                Button {
+                    dismiss()
+                    onComplete(.failure(PaymentSheetError.cancelled))
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, height: 28)
+                        .background(.ultraThinMaterial, in: Circle())
+                }
+                .padding(.top, 10)
+                .padding(.trailing, 14)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .ignoresSafeArea(edges: .bottom)
+            .presentationDetents([.height(compactHeight), .large], selection: $selectedDetent)
+            .presentationDragIndicator(.hidden)
+            .presentationBackground(.clear)
+            .interactiveDismissDisabled()
         .task {
             if let url = prefetchedCheckoutURL {
                 self.checkoutURL = url
@@ -169,6 +359,19 @@ extension ZSPaymentSheet {
             } else {
                 await createPaymentIntent()
             }
+        }
+    }
+
+    // MARK: - Height Calculation
+
+    private func recalculateHeight() {
+        let contentH = webContentHeight > 0 ? webContentHeight : 400
+        let totalHeight = headerHeight + contentH + 6
+        let clamped = min(max(totalHeight, 200), 700)
+
+        withAnimation(.easeInOut(duration: 0.3)) {
+            compactHeight = clamped
+            selectedDetent = .height(clamped)
         }
     }
 
@@ -233,16 +436,11 @@ extension ZSPaymentSheet {
     private func handleWebViewAction(_ action: WebViewAction) {
         switch action {
         case .ready:
-            // Page loaded and Stripe initialized
             break
 
-        case .contentHeight(let webContentHeight):
-            let totalHeight = headerHeight + webContentHeight + 32
-            let clamped = min(max(totalHeight, 200), 600)
-            withAnimation(.easeInOut(duration: 0.3)) {
-                compactHeight = clamped
-                selectedDetent = .height(clamped)
-            }
+        case .contentHeight(let height):
+            webContentHeight = height
+            recalculateHeight()
 
         case .expandSheet:
             withAnimation(.easeInOut(duration: 0.3)) {
@@ -321,15 +519,31 @@ private enum WebViewAction {
 private struct PaymentWebView: UIViewRepresentable {
     let url: URL
     @Binding var isLoading: Bool
+    var preloadedWebView: WKWebView?
+    var messageRouter: MessageRouter?
     let onAction: (WebViewAction) -> Void
 
     func makeUIView(context: Context) -> WKWebView {
+        // Reuse preloaded WebView if available
+        if let preloaded = preloadedWebView {
+            preloaded.removeFromSuperview()
+            preloaded.navigationDelegate = context.coordinator
+            context.coordinator.webView = preloaded
+
+            messageRouter?.onMessage = { [weak coordinator = context.coordinator] message in
+                guard let coordinator = coordinator else { return }
+                coordinator.userContentController(WKUserContentController(), didReceive: message)
+            }
+
+            return preloaded
+        }
+
+        // Standard path: create a new WebView
         let configuration = WKWebViewConfiguration()
         configuration.allowsInlineMediaPlayback = true
         configuration.userContentController.add(context.coordinator, name: "checkoutComplete")
         configuration.userContentController.add(context.coordinator, name: "consoleLog")
 
-        // Forward JS console.log/warn/error to native
         let consoleScript = WKUserScript(source: """
             (function() {
                 function forward(level) {
@@ -356,11 +570,11 @@ private struct PaymentWebView: UIViewRepresentable {
         webView.scrollView.bounces = false
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.isOpaque = false
-        webView.backgroundColor = .systemBackground
+        webView.backgroundColor = .clear
+        webView.scrollView.backgroundColor = .clear
         context.coordinator.webView = webView
 
-        let request = URLRequest(url: url)
-        webView.load(request)
+        webView.load(URLRequest(url: url))
 
         return webView
     }
@@ -393,7 +607,6 @@ private struct PaymentWebView: UIViewRepresentable {
         // MARK: - JS Message Handler
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-            // Forward JS console output to Xcode console
             if message.name == "consoleLog",
                let body = message.body as? [String: Any],
                let level = body["level"] as? String,
@@ -410,7 +623,6 @@ private struct PaymentWebView: UIViewRepresentable {
             switch action {
             case "ready":
                 onAction(.ready)
-                // Measure actual content height (body has min-height:100% so scrollHeight is unreliable)
                 let measureJS = """
                 (function() {
                     var el = document.getElementById('checkout-content');
@@ -463,7 +675,6 @@ private struct PaymentWebView: UIViewRepresentable {
                 onAction(.error(errorMessage))
 
             default:
-                // Legacy format (no action field) — treat as completion
                 guard !hasCompleted else { return }
                 hasCompleted = true
                 if let success = body["success"] as? Bool, success,
@@ -480,10 +691,7 @@ private struct PaymentWebView: UIViewRepresentable {
 
         // MARK: - Navigation Delegate
 
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            // Don't dismiss loading overlay here — wait for JS 'ready' message
-            // so Stripe.js has finished initializing before showing content.
-        }
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {}
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
             DispatchQueue.main.async {
@@ -555,6 +763,184 @@ public enum PaymentSheetError: Error, LocalizedError {
         case .invalidCard: return "Please enter valid card details"
         case .paymentFailed(let message): return message
         }
+    }
+}
+
+// MARK: - SwiftUI View Modifier
+
+/// Preloads the PaymentIntent AND the WebView before presenting the sheet.
+/// The user sees a fully-rendered checkout the moment it slides up.
+private struct ZSPaymentSheetModifier<Header: View>: ViewModifier {
+    @Binding var isPresented: Bool
+    let product: Product
+    let userId: String
+    let header: () -> Header
+    let onComplete: (Result<ZSTransaction, Error>) -> Void
+
+    @StateObject private var preloader = CheckoutPreloader()
+    @State private var showSheet = false
+    @State private var preloadedURL: URL?
+    @State private var preloadedTransactionId: String?
+
+    func body(content: Content) -> some View {
+        content
+            .background(
+                PreloaderHost(webView: preloader.webView)
+                    .frame(width: 1, height: 1)
+                    .allowsHitTesting(false)
+            )
+            .task(id: isPresented) {
+                if isPresented {
+                    await preloadAll()
+                } else {
+                    showSheet = false
+                    preloadedURL = nil
+                    preloadedTransactionId = nil
+                    preloader.reset()
+                }
+            }
+            .sheet(isPresented: $showSheet, onDismiss: {
+                isPresented = false
+                preloadedURL = nil
+                preloadedTransactionId = nil
+                preloader.reset()
+            }) {
+                if let url = preloadedURL {
+                    ZSPaymentSheet(
+                        product: product,
+                        userId: userId,
+                        preloader: preloader,
+                        checkoutURL: url,
+                        transactionId: preloadedTransactionId,
+                        header: header,
+                        onComplete: onComplete
+                    )
+                } else {
+                    ZSPaymentSheet(
+                        product: product,
+                        userId: userId,
+                        header: header,
+                        onComplete: onComplete
+                    )
+                }
+            }
+    }
+
+    private func preloadAll() async {
+        guard let result = await ZSPaymentSheet<EmptyView>.preload(
+            productId: product.id, userId: userId
+        ) else {
+            guard !Task.isCancelled else { return }
+            showSheet = true
+            return
+        }
+
+        guard !Task.isCancelled else { return }
+        preloadedURL = result.checkoutURL
+        preloadedTransactionId = result.transactionId
+
+        await preloader.loadAndWait(url: result.checkoutURL)
+
+        guard !Task.isCancelled else { return }
+        showSheet = true
+    }
+}
+
+extension View {
+    /// Presents a ZeroSettle payment sheet when `isPresented` is true.
+    ///
+    /// The PaymentIntent and WebView are preloaded before the sheet appears,
+    /// so the checkout is ready for interaction the moment it slides up.
+    public func zsPaymentSheet(
+        isPresented: Binding<Bool>,
+        product: Product,
+        userId: String,
+        onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
+    ) -> some View {
+        modifier(ZSPaymentSheetModifier<EmptyView>(
+            isPresented: isPresented,
+            product: product,
+            userId: userId,
+            header: { EmptyView() },
+            onComplete: onComplete
+        ))
+    }
+
+    /// Presents a ZeroSettle payment sheet with a custom header when `isPresented` is true.
+    public func zsPaymentSheet<Header: View>(
+        isPresented: Binding<Bool>,
+        product: Product,
+        userId: String,
+        @ViewBuilder header: @escaping () -> Header,
+        onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
+    ) -> some View {
+        modifier(ZSPaymentSheetModifier(
+            isPresented: isPresented,
+            product: product,
+            userId: userId,
+            header: header,
+            onComplete: onComplete
+        ))
+    }
+}
+
+// MARK: - UIKit Presentation
+
+extension ZSPaymentSheet where Header == EmptyView {
+    /// Present a ZeroSettle payment sheet from a UIKit view controller.
+    @MainActor
+    public static func present(
+        from viewController: UIViewController,
+        product: Product,
+        userId: String,
+        checkoutURL: URL? = nil,
+        transactionId: String? = nil,
+        onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
+    ) {
+        weak var bridgeController: UIViewController?
+
+        let bridge = PaymentSheetBridge(
+            product: product,
+            userId: userId,
+            checkoutURL: checkoutURL,
+            transactionId: transactionId,
+            onComplete: onComplete,
+            onDismissed: {
+                bridgeController?.dismiss(animated: false)
+            }
+        )
+
+        let hosting = UIHostingController(rootView: bridge)
+        hosting.view.backgroundColor = .clear
+        hosting.modalPresentationStyle = .overFullScreen
+        bridgeController = hosting
+        viewController.present(hosting, animated: false)
+    }
+}
+
+/// Transparent bridge that presents ZSPaymentSheet via SwiftUI's `.sheet`
+/// so all presentation modifiers work correctly when called from UIKit.
+private struct PaymentSheetBridge: View {
+    let product: Product
+    let userId: String
+    let checkoutURL: URL?
+    let transactionId: String?
+    let onComplete: (Result<ZSTransaction, Error>) -> Void
+    let onDismissed: () -> Void
+
+    @State private var isPresented = true
+
+    var body: some View {
+        Color.clear
+            .sheet(isPresented: $isPresented, onDismiss: onDismissed) {
+                ZSPaymentSheet(
+                    product: product,
+                    userId: userId,
+                    checkoutURL: checkoutURL,
+                    transactionId: transactionId,
+                    onComplete: onComplete
+                )
+            }
     }
 }
 
