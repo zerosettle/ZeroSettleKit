@@ -18,9 +18,12 @@ public struct ZSMigrateTipView: View {
     @State private var checkoutURL: URL?
     @State private var checkoutError: Error?
     
-    static let checkoutProductId = "divegeniusmonthly"
-    static let collapsedHeight: CGFloat = 220
-    static let applePayExpandedHeight: CGFloat = 352
+    // MARK: - Hardcoded Configuration
+    
+    private static let productId = "divegeniusmonthly"
+    private static let userId = "divegenius_migrate_user"
+    static let collapsedHeight: CGFloat = 190
+    static let applePayExpandedHeight: CGFloat = 690
     static let cardExpandedHeight: CGFloat = 690
     
     // MARK: - Persistence
@@ -81,7 +84,7 @@ public struct ZSMigrateTipView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     // Title row with close button
                     HStack(alignment: .top, spacing: 8) {
-                        Text(showCongratulations ? "Congratulations!" : (checkoutSucceeded ? "Thanks for switching!" : "GRDEBUGThanks for being with us!"))
+                        Text(showCongratulations ? "Congratulations!" : (checkoutSucceeded ? "Thanks for switching!" : "Thanks for being with us!"))
                             .font(.system(size: 20, weight: .bold))
                             .foregroundColor(.white)
                             .lineLimit(1)
@@ -109,8 +112,8 @@ public struct ZSMigrateTipView: View {
                     Text(showCongratulations
                          ? "You are now saving 15% forever."
                          : (checkoutSucceeded
-                            ? "The last step is to cancel your Apple billing! Your card won't be charged by DiveGenius until the end of your last Apple billing cycle. Pro features will continue uninterrupted."
-                            : "Switch to direct billing and get 15% off DiveGenius Pro forever. Same features, fewer platform fees, and we pass the savings onto you."))
+                            ? "The last step is to cancel your Apple billing! Your card won't be charged until the end of your last Apple billing cycle. Pro features will continue uninterrupted."
+                            : "Switch to direct billing and get 15% off forever. Same features, fewer platform fees, and we pass the savings onto you."))
                         .font(.system(size: 16))
                         .foregroundColor(.white.opacity(0.85))
                         .fixedSize(horizontal: false, vertical: true)
@@ -138,7 +141,7 @@ public struct ZSMigrateTipView: View {
                 .padding(.bottom, 16)
             } else if !isExpanded && !showCongratulations {
                 Button(action: {
-                    startCheckoutSession()
+                    startCheckout()
                 }) {
                     HStack(spacing: 8) {
                         if isLoading {
@@ -199,7 +202,7 @@ public struct ZSMigrateTipView: View {
                     .cornerRadius(12)
                     .padding(.horizontal, 12)
                     
-                    Text("You won't be billed until the end of your current cycle on January 31st. Cancel anytime.")
+                    Text("You won't be billed until the end of your current cycle. Cancel anytime.")
                         .font(.system(size: 12))
                         .foregroundColor(.white.opacity(0.7))
                         .multilineTextAlignment(.center)
@@ -248,20 +251,23 @@ public struct ZSMigrateTipView: View {
         }
     }
 
-    private func startCheckoutSession() {
+    private func startCheckout() {
         checkoutError = nil
         isLoading = true
 
-        print("🧾 Creating checkout session (productId=\(Self.checkoutProductId))")
+        print("🧾 Creating payment intent (productId=\(Self.productId), userId=\(Self.userId))")
 
         Task {
             do {
                 let backend = try getBackend()
-                let session = try await backend.createCheckoutSession(productId: Self.checkoutProductId)
+                let paymentIntent = try await backend.createPaymentIntent(
+                    productId: Self.productId,
+                    userId: Self.userId
+                )
                 
                 await MainActor.run {
-                    print("✅ Checkout session created. checkoutUrl=\(session.checkoutUrl.absoluteString)")
-                    checkoutURL = session.checkoutUrl
+                    print("✅ Payment intent created. checkoutUrl=\(paymentIntent.checkoutUrl)")
+                    checkoutURL = URL(string: paymentIntent.checkoutUrl)
                     withAnimation(.easeInOut(duration: 0.3)) {
                         isExpanded = true
                     }
@@ -270,7 +276,7 @@ public struct ZSMigrateTipView: View {
                 await MainActor.run {
                     checkoutError = error
                     isLoading = false
-                    print("❌ Checkout session failed (productId=\(Self.checkoutProductId)): \(error)")
+                    print("❌ Payment intent failed (productId=\(Self.productId)): \(error)")
                 }
             }
         }
@@ -306,8 +312,9 @@ struct CheckoutWebView: UIViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.allowsInlineMediaPlayback = true
         
-        // Add script message handlers for payment method changes and debug logs
+        // Add script message handlers for payment method changes, checkout completion, and debug logs
         configuration.userContentController.add(context.coordinator, name: "paymentMethodChanged")
+        configuration.userContentController.add(context.coordinator, name: "checkoutComplete")
         configuration.userContentController.add(context.coordinator, name: "debugLog")
 
         // IMPORTANT:
@@ -369,6 +376,20 @@ struct CheckoutWebView: UIViewRepresentable {
             } else if message.name == "paymentMethodChanged", let paymentMethod = message.body as? String {
                 DispatchQueue.main.async {
                     self.onPaymentMethodChanged(paymentMethod)
+                }
+            } else if message.name == "checkoutComplete", let body = message.body as? [String: Any] {
+                let action = body["action"] as? String ?? ""
+                let success = body["success"] as? Bool ?? false
+                
+                print("🧾 checkoutComplete received: action=\(action), success=\(success)")
+                
+                // Handle completion - check for "complete" action or direct success flag
+                if action == "complete" || success {
+                    DispatchQueue.main.async {
+                        // Create a placeholder URL for the success callback
+                        let successURL = URL(string: "https://zerosettle.io/checkout/success")!
+                        self.onCheckoutSuccess(successURL)
+                    }
                 }
             }
         }
@@ -436,6 +457,38 @@ struct CheckoutWebView: UIViewRepresentable {
 
                   /* Style loading text white */
                   .loading-text {
+                    color: white !important;
+                  }
+
+                  /* Style "or" divider white */
+                  .or-divider,
+                  #or-divider,
+                  .or-divider span {
+                    color: white !important;
+                    border-color: rgba(255, 255, 255, 0.3) !important;
+                  }
+                  .or-divider::before,
+                  .or-divider::after,
+                  #or-divider::before,
+                  #or-divider::after {
+                    background-color: rgba(255, 255, 255, 0.3) !important;
+                  }
+
+                  /* Style "Secured by Stripe" and footer text white */
+                  [class*="secured"],
+                  [class*="stripe-badge"],
+                  [class*="footer"],
+                  [class*="branding"],
+                  .stripe-secured,
+                  .powered-by-stripe,
+                  .secure-badge,
+                  .security-text {
+                    color: white !important;
+                    fill: white !important;
+                  }
+                  [class*="secured"] span,
+                  [class*="footer"] span,
+                  [class*="branding"] span {
                     color: white !important;
                   }
                 `;
