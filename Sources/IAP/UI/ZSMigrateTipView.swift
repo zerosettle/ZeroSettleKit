@@ -15,8 +15,10 @@ public struct ZSMigrateTipView: View {
     @State private var isDismissed = false
     @State private var showCongratulations = false
     @State private var confettiTrigger = 0
+    @State private var checkoutURL: URL?
+    @State private var checkoutError: Error?
     
-    static let checkoutURL = URL(string: "https://api.zerosettle.io/elements/checkout/?product_id=prod_TtYDzVkboKEvlg&trial_days=7")!
+    static let checkoutProductId = "divegeniusmonthly"
     static let collapsedHeight: CGFloat = 220
     static let applePayExpandedHeight: CGFloat = 352
     static let cardExpandedHeight: CGFloat = 690
@@ -79,7 +81,7 @@ public struct ZSMigrateTipView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     // Title row with close button
                     HStack(alignment: .top, spacing: 8) {
-                        Text(showCongratulations ? "Congratulations!" : (checkoutSucceeded ? "Thanks for switching!" : "Thanks for being with us!"))
+                        Text(showCongratulations ? "Congratulations!" : (checkoutSucceeded ? "Thanks for switching!" : "GRDEBUGThanks for being with us!"))
                             .font(.system(size: 20, weight: .bold))
                             .foregroundColor(.white)
                             .lineLimit(1)
@@ -136,10 +138,7 @@ public struct ZSMigrateTipView: View {
                 .padding(.bottom, 16)
             } else if !isExpanded && !showCongratulations {
                 Button(action: {
-                    isLoading = true
-                    withAnimation(.easeInOut(duration: 0.3)) {
-                        isExpanded = true
-                    }
+                    startCheckoutSession()
                 }) {
                     HStack(spacing: 8) {
                         if isLoading {
@@ -162,10 +161,10 @@ public struct ZSMigrateTipView: View {
             }
             
             // Inline WebView (only when expanded)
-            if isExpanded && !checkoutSucceeded {
+            if isExpanded && !checkoutSucceeded, let checkoutURLValue = checkoutURL {
                 VStack(spacing: 8) {
                     CheckoutWebView(
-                        url: Self.checkoutURL,
+                        url: checkoutURLValue,
                         backgroundColor: UIColor(backgroundColor),
                         onLoaded: {
                             isLoading = false
@@ -181,20 +180,18 @@ public struct ZSMigrateTipView: View {
                             default:
                                 newHeight = Self.collapsedHeight
                             }
-                            print("📐 SwiftUI received payment method change: \(paymentMethod)")
-                            print("📐 Setting height from \(contentHeight) to \(newHeight)")
                             withAnimation(.easeInOut(duration: 0.25)) {
                                 contentHeight = newHeight
                             }
                         },
                         onCheckoutSuccess: { successURL in
-                            print("✅ Checkout success detected. Showing success state. url=\(successURL.absoluteString)")
                             withAnimation(.easeInOut(duration: 0.25)) {
                                 isExpanded = false
                                 isLoading = false
                                 webViewLoaded = false
                                 contentHeight = Self.collapsedHeight
                                 checkoutSucceeded = true
+                                checkoutURL = nil
                             }
                         }
                     )
@@ -249,6 +246,42 @@ public struct ZSMigrateTipView: View {
             print("❌ Failed to open subscription management: \(error)")
             print("   Error details: \(error.localizedDescription)")
         }
+    }
+
+    private func startCheckoutSession() {
+        checkoutError = nil
+        isLoading = true
+
+        print("🧾 Creating checkout session (productId=\(Self.checkoutProductId))")
+
+        Task {
+            do {
+                let backend = try getBackend()
+                let session = try await backend.createCheckoutSession(productId: Self.checkoutProductId)
+                
+                await MainActor.run {
+                    print("✅ Checkout session created. checkoutUrl=\(session.checkoutUrl.absoluteString)")
+                    checkoutURL = session.checkoutUrl
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        isExpanded = true
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    checkoutError = error
+                    isLoading = false
+                    print("❌ Checkout session failed (productId=\(Self.checkoutProductId)): \(error)")
+                }
+            }
+        }
+    }
+
+    private func getBackend() throws -> Backend {
+        guard let config = ZeroSettleIAP.shared.currentConfig,
+              let baseURL = ZeroSettleIAP.shared.effectiveBaseURL else {
+            throw ZeroSettleIAPError.notConfigured
+        }
+        return Backend(baseURL: baseURL, publishableKey: config.publishableKey)
     }
 }
 
@@ -331,10 +364,9 @@ struct CheckoutWebView: UIViewRepresentable {
         
         // Handle messages from JavaScript
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-            if message.name == "debugLog", let logMessage = message.body as? String {
-                print("🌐 [WebView] \(logMessage)")
+            if message.name == "debugLog" {
+                // Intentionally ignore verbose WebView logging.
             } else if message.name == "paymentMethodChanged", let paymentMethod = message.body as? String {
-                print("🎯 Payment method changed: \(paymentMethod)")
                 DispatchQueue.main.async {
                     self.onPaymentMethodChanged(paymentMethod)
                 }
@@ -523,9 +555,6 @@ struct CheckoutWebView: UIViewRepresentable {
             let isNewWindow = (navigationAction.targetFrame == nil)
             let isMainFrame = (navigationAction.targetFrame?.isMainFrame ?? false)
 
-            // Always log navigations/redirects so we can see Stripe/ZeroSettle flow.
-            print("🌐 [WebView][nav] type=\(navigationAction.navigationType.rawValue) newWindow=\(isNewWindow) mainFrame=\(isMainFrame) url=\(urlString)")
-
             // Don't treat the main checkout URL as a universal link.
             let isCheckoutPage = host == "api.zerosettle.io" && path.hasPrefix("/elements/checkout")
 
@@ -548,12 +577,9 @@ struct CheckoutWebView: UIViewRepresentable {
                     || query.contains("result=succeeded")
 
                 if looksLikeSuccess {
-                    print("✅ [WebView] Universal-link SUCCESS detected: \(urlString)")
                     DispatchQueue.main.async {
                         self.onCheckoutSuccess(url)
                     }
-                } else {
-                    print("🔗 [WebView] Universal-link return (non-success/unknown): \(urlString)")
                 }
 
                 // IMPORTANT:
@@ -565,7 +591,6 @@ struct CheckoutWebView: UIViewRepresentable {
             // If something tries to open a new window (targetFrame == nil), open it externally.
             if isNewWindow {
                 // Keep everything inside this WKWebView (avoid Safari).
-                print("🪟 [WebView] New-window navigation. Loading in same webview: \(urlString)")
                 webView.load(navigationAction.request)
                 decisionHandler(.cancel)
                 return

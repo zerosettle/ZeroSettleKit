@@ -263,7 +263,7 @@ public final class ZeroSettleIAP: ObservableObject {
             pendingCheckout = true
             delegate?.zeroSettleIAPCheckoutDidBegin(productId: productId)
 
-            Logger.info("Checkout started for \(productId), transaction: \(session.transactionId)", category: .iap)
+            Logger.info("Checkout started for \(productId), transaction: \(session.transactionId ?? "none")", category: .iap)
         } catch {
             Logger.error("Checkout failed for \(productId): \(error)", category: .iap)
             delegate?.zeroSettleIAPCheckoutDidFail(productId: productId, error: error)

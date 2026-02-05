@@ -224,8 +224,8 @@ internal struct CheckoutSession: Codable, Sendable {
     /// The Stripe checkout URL to open in Safari
     let checkoutUrl: URL
 
-    /// Pre-allocated transaction ID for status polling
-    let transactionId: String
+    /// Pre-allocated transaction ID for status polling (optional for backwards compatibility)
+    let transactionId: String?
 }
 
 // MARK: - Checkout Callback

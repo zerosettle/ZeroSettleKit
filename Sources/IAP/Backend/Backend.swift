@@ -102,9 +102,24 @@ internal final class Backend: @unchecked Sendable {
 
     /// Create a Stripe checkout session for the given product and user.
     /// The backend creates the session via the developer's connected Stripe Express account.
-    func createCheckoutSession(productId: String, userId: String) async throws -> CheckoutSession {
+    /// - Parameters:
+    ///   - productId: The product ID to create a checkout session for
+    ///   - userId: Optional user ID (for managed user identity scenario)
+    ///   - externalUserId: Optional external user ID
+    ///   - rcAppUserId: Optional RevenueCat app user ID
+    func createCheckoutSession(
+        productId: String,
+        userId: String? = nil,
+        externalUserId: String? = nil,
+        rcAppUserId: String? = nil
+    ) async throws -> CheckoutSession {
         let url = apiURL("iap/checkout-sessions/")
-        let body = CreateCheckoutSessionRequest(productId: productId, userId: userId)
+        let body = CreateCheckoutSessionRequest(
+            productId: productId,
+            userId: userId,
+            externalUserId: externalUserId,
+            rcAppUserId: rcAppUserId
+        )
         return try await httpClient.post(
             url,
             body: body,
@@ -232,7 +247,9 @@ private struct EntitlementsResponse: Decodable {
 
 internal struct CreateCheckoutSessionRequest: Encodable {
     let productId: String
-    let userId: String
+    let userId: String?
+    let externalUserId: String?
+    let rcAppUserId: String?
 }
 
 internal struct CreatePaymentIntentRequest: Encodable {
