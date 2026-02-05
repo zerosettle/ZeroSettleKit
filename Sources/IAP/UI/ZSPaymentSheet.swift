@@ -38,6 +38,7 @@ private final class CheckoutPreloader: ObservableObject {
     @Published var webView: WKWebView?
     @Published private(set) var isReady = false
     private(set) var measuredContentHeight: CGFloat = 0
+    private(set) var startedExpanded = false
     let messageRouter = MessageRouter()
     private var continuation: CheckedContinuation<Void, Never>?
 
@@ -95,8 +96,14 @@ private final class CheckoutPreloader: ObservableObject {
 
                 guard message.name == "checkoutComplete",
                       let body = message.body as? [String: Any],
-                      let action = body["action"] as? String,
-                      action == "ready" else { return }
+                      let action = body["action"] as? String else { return }
+
+                if action == "expandSheet" {
+                    self.startedExpanded = true
+                    return
+                }
+
+                guard action == "ready" else { return }
 
                 let measureJS = """
                 (function() {
@@ -137,6 +144,7 @@ private final class CheckoutPreloader: ObservableObject {
         webView = nil
         isReady = false
         measuredContentHeight = 0
+        startedExpanded = false
         continuation?.resume()
         continuation = nil
     }
@@ -198,6 +206,7 @@ public struct ZSPaymentSheet<Header: View>: View {
     @State private var compactHeight: CGFloat
     @State private var headerHeight: CGFloat = 0
     @State private var selectedDetent: PresentationDetent
+    @State private var isExpanded = false
 
     // MARK: - Public Initialization (without preloading)
 
@@ -248,7 +257,8 @@ public struct ZSPaymentSheet<Header: View>: View {
         self._webContentHeight = State(initialValue: preloader.measuredContentHeight)
         let startHeight = min(max(preloader.measuredContentHeight, 200), 700)
         self._compactHeight = State(initialValue: startHeight)
-        self._selectedDetent = State(initialValue: .height(startHeight))
+        self._isExpanded = State(initialValue: preloader.startedExpanded)
+        self._selectedDetent = State(initialValue: preloader.startedExpanded ? .large : .height(startHeight))
     }
 }
 
@@ -347,7 +357,7 @@ extension ZSPaymentSheet {
         }
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .ignoresSafeArea(edges: .bottom)
-        .presentationDetents([.height(compactHeight), .large], selection: $selectedDetent)
+        .presentationDetents(isExpanded ? [.height(compactHeight), .large] : [.height(compactHeight)], selection: $selectedDetent)
         .presentationDragIndicator(.hidden)
         .presentationBackground(.clear)
         .interactiveDismissDisabled()
@@ -370,7 +380,9 @@ extension ZSPaymentSheet {
 
         withAnimation(.easeInOut(duration: 0.3)) {
             compactHeight = clamped
-            selectedDetent = .height(clamped)
+            if !isExpanded {
+                selectedDetent = .height(clamped)
+            }
         }
     }
 
@@ -443,12 +455,16 @@ extension ZSPaymentSheet {
 
         case .expandSheet:
             withAnimation(.easeInOut(duration: 0.3)) {
+                isExpanded = true
                 selectedDetent = .large
             }
 
         case .collapseSheet:
             withAnimation(.easeInOut(duration: 0.3)) {
                 selectedDetent = .height(compactHeight)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                isExpanded = false
             }
 
         case .complete(let txnId):
