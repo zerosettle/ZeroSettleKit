@@ -869,6 +869,38 @@ private struct ZSPaymentSheetModifier<Header: View>: ViewModifier {
     }
 }
 
+// MARK: - Item-Based Modifier
+
+/// Presents the payment sheet driven by an optional `Product?` binding.
+/// When `item` becomes non-nil the sheet presents; on dismiss it's set back to `nil`.
+private struct ZSPaymentSheetItemModifier<Header: View>: ViewModifier {
+    @Binding var item: Product?
+    let userId: String
+    let header: () -> Header
+    let onComplete: (Result<ZSTransaction, Error>) -> Void
+
+    private var isPresented: Binding<Bool> {
+        Binding(
+            get: { item != nil },
+            set: { if !$0 { item = nil } }
+        )
+    }
+
+    func body(content: Content) -> some View {
+        if let product = item {
+            content.modifier(ZSPaymentSheetModifier(
+                isPresented: isPresented,
+                product: product,
+                userId: userId,
+                header: header,
+                onComplete: onComplete
+            ))
+        } else {
+            content
+        }
+    }
+}
+
 extension View {
     /// Presents a ZeroSettle payment sheet when `isPresented` is true.
     ///
@@ -900,6 +932,42 @@ extension View {
         modifier(ZSPaymentSheetModifier(
             isPresented: isPresented,
             product: product,
+            userId: userId,
+            header: header,
+            onComplete: onComplete
+        ))
+    }
+
+    /// Presents a ZeroSettle payment sheet driven by an optional product binding.
+    ///
+    /// When `item` is non-nil, the sheet presents for that product.
+    /// On dismiss, `item` is automatically set back to `nil`.
+    ///
+    ///     .zsPaymentSheet(item: $selectedProduct, userId: "user_123") { result in
+    ///         print(result)
+    ///     }
+    public func zsPaymentSheet(
+        item: Binding<Product?>,
+        userId: String,
+        onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
+    ) -> some View {
+        modifier(ZSPaymentSheetItemModifier<EmptyView>(
+            item: item,
+            userId: userId,
+            header: { EmptyView() },
+            onComplete: onComplete
+        ))
+    }
+
+    /// Presents a ZeroSettle payment sheet with a custom header, driven by an optional product binding.
+    public func zsPaymentSheet<Header: View>(
+        item: Binding<Product?>,
+        userId: String,
+        @ViewBuilder header: @escaping () -> Header,
+        onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
+    ) -> some View {
+        modifier(ZSPaymentSheetItemModifier(
+            item: item,
             userId: userId,
             header: header,
             onComplete: onComplete
