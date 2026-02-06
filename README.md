@@ -1,374 +1,265 @@
 # ZeroSettleKit
 
-A Swift package for iOS that enables seamless fiat-to-crypto onboarding with phone authentication, Apple Pay, and embedded wallets.
+A Swift SDK that lets iOS developers offer web-based checkout as an alternative to In-App Purchase — keeping more revenue while staying fully compliant with App Store guidelines.
 
-## Features
+**5% + 50¢ per transaction. Instant Stripe payouts. We handle tax, compliance, and liability as your Merchant of Record.**
 
-- 📱 **Phone Authentication** - SMS-based login with Privy SDK
-- 🔐 **Embedded Wallets** - Automatic Solana wallet creation
-- 💳 **Apple Pay → Crypto** - Coinbase Commerce integration for USDC onramp
-- 🦊 **MetaMask Integration** - Full Ethereum wallet support with MetaMask iOS SDK
-- 👻 **Phantom Wallet** - Solana wallet deep linking support
-- ⛓️ **Multi-Chain Ready** - Designed to support multiple blockchains (Solana + Ethereum)
-- 🎨 **Customizable UI** - Optional SwiftUI components with theming
-- 🔌 **Protocol-Based** - Easily swap payment processors
+[Documentation](https://docs.zerosettle.io) · [Dashboard](https://zerosettle.io)
+
+---
+
+## Why ZeroSettle
+
+On a $9.99 sale through the App Store, you keep ~$6.99. With ZeroSettle, you keep ~$8.99.
+
+ZeroSettle acts as your **Merchant of Record** — we're the legal seller, so we handle sales tax remittance, chargebacks, refunds, and regulatory compliance. You focus on building your app.
+
+- **Web checkout with Apple Pay** — Stripe-powered payment sheet that feels native
+- **StoreKit 2 integration** — offer both web and App Store pricing on the same paywall
+- **Entitlement management** — unified subscription state across both purchase sources
+- **Server-controlled checkout** — embedded sheet, in-app Safari, or external Safari
+- **Tax compliance** — US sales tax, EU VAT, and AU GST handled automatically
+- **Promotional pricing** — percent off, fixed amount, and free trial support
+
+## Products
+
+ZeroSettleKit ships two independent products you can import separately:
+
+| Product | Import | Purpose |
+|---------|--------|---------|
+| **ZeroSettleIAP** | `import ZeroSettleIAP` | Merchant of Record web checkout for subscriptions and one-time purchases |
+| **ZeroSettleEscrow** | `import ZeroSettleEscrow` | Skill-based competitive gaming with on-chain Solana escrow |
+
+This README covers **ZeroSettleIAP**. For Escrow documentation, see [docs.zerosettle.io](https://docs.zerosettle.io).
 
 ## Installation
 
 ### Swift Package Manager
 
-Add ZeroSettleKit to your project:
+Add ZeroSettleKit to your project in Xcode:
+
+1. File > Add Package Dependencies...
+2. Enter: `https://github.com/zerosettle/ZeroSettleKit`
+3. Add `ZeroSettleIAP` to your target
+
+Or in `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/your-org/ZeroSettleKit.git", from: "0.1.0")
+    .package(url: "https://github.com/zerosettle/ZeroSettleKit", from: "1.0.0")
+],
+targets: [
+    .target(
+        name: "YourApp",
+        dependencies: [
+            .product(name: "ZeroSettleIAP", package: "ZeroSettleKit")
+        ]
+    )
 ]
 ```
 
-Or in Xcode:
-1. File → Add Packages...
-2. Enter the repository URL
-3. Select version and add to your target
-
 ## Quick Start
 
-### 1. Configure ZeroSettleKit
+### 1. Configure the SDK
+
+Call `configure` early in your app lifecycle — typically in your `App` init or `AppDelegate`:
 
 ```swift
-import ZeroSettleKit
+import ZeroSettleIAP
 
-// Create a Coinbase payment processor
-let coinbaseProcessor = CoinbasePaymentProcessor(
-    apiKeyId: "your-coinbase-api-key-id",
-    apiKeySecret: "your-coinbase-api-secret",
-    environment: .production
-)
-
-// Configure ZeroSettle
-let config = ZeroSettleConfig(
-    privyAppId: "your-privy-app-id",
-    privyClientId: "your-privy-client-id",
-    supportedChains: [.solana, .base],
-    paymentProcessor: coinbaseProcessor,
-    defaultNetwork: .base,
-    partnerAppId: 2 // Replace with your partner app ID
-)
-
-// Initialize the manager
-let zeroSettle = ZeroSettleManager(config: config)
-zeroSettle.delegate = self
+ZeroSettleIAP.shared.configure(.init(
+    publishableKey: "pk_live_your_key",
+    environment: .production,
+    syncStoreKitTransactions: true
+))
 ```
 
-### 2. Initialize (in your App or Scene)
+### 2. Attach the handler
+
+Add the universal link handler to your root view so checkout callbacks are processed:
 
 ```swift
 @main
 struct MyApp: App {
-    @StateObject private var zeroSettle: ZeroSettleManager
-
-    init() {
-        let config = ZeroSettleConfig(...)
-        _zeroSettle = StateObject(wrappedValue: ZeroSettleManager(config: config))
-    }
-
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .environmentObject(zeroSettle)
-                .environmentObject(zeroSettle.authManager)
-                .task {
-                    await zeroSettle.initialize()
-                }
+                .zeroSettleIAPHandler()
         }
     }
 }
 ```
 
-### 3. Authenticate Users
+### 3. Fetch products
+
+Products are defined in the [ZeroSettle Dashboard](https://zerosettle.io) and include both web pricing and App Store pricing:
 
 ```swift
-// Send OTP
-try await zeroSettle.sendOTPCode(to: "+14155552671")
+let products = try await ZeroSettleIAP.shared.fetchProducts(userId: user.id)
 
-// Verify OTP and login
-try await zeroSettle.loginWithOTP(code: "123456", phoneNumber: "+14155552671")
-
-// User now has an embedded Solana wallet!
-print("Wallet: \(zeroSettle.walletAddress)")
-```
-
-### 4. Add Funds
-
-```swift
-// Initiate funding session
-let session = try await zeroSettle.initiateFunding(
-    amount: Decimal(3.00),
-    currency: "USD"
-)
-
-// Load session.paymentURL in a WKWebView
-// User completes Apple Pay checkout
-// Coinbase sends USDC to user's wallet
-```
-
-### 5. Fetch the latest payout table
-
-```swift
-let payoutTable = try await zeroSettle.fetchLatestPayoutTable()
-for tier in payoutTable.tiers {
-    print("\(tier.guessesUsed) guesses → \(tier.multiplier)x")
+for product in products {
+    print("\(product.displayName): \(product.webPrice.formatted)")
 }
 ```
 
-`partnerAppId` defaults to `2` (WordPlay) but you can configure it via `ZeroSettleConfig` to target your own app. If your deployment requires an Authorization header, provide a closure through `partnerAuthTokenProvider` to return a bearer token at request time.
+### 4. Present checkout
 
-## Architecture
-
-```
-ZeroSettleKit
-├── Core/
-│   ├── ZeroSettleManager.swift       # Main facade
-│   ├── ZeroSettleConfig.swift        # Configuration
-│   └── ZeroSettleDelegate.swift      # Event callbacks
-│
-├── Authentication/
-│   └── AuthenticationManager.swift   # Privy integration
-│
-├── Funding/
-│   ├── PaymentProcessor.swift        # Protocol
-│   └── Coinbase/
-│       ├── CoinbasePaymentProcessor.swift
-│       ├── CoinbaseJWTGenerator.swift
-│       └── CoinbaseOnrampEventHandler.swift
-│
-├── Phantom/
-│   └── PhantomManager.swift          # Solana wallet deeplinks
-│
-├── MetaMask/
-│   └── MetaMaskManager.swift         # Ethereum wallet integration
-│
-├── Models/
-│   └── BlockchainModels.swift        # Shared models
-│
-└── UI/ (coming soon)
-    └── Components/
-```
-
-## Protocol-Based Design
-
-ZeroSettleKit uses protocols to support multiple payment processors:
+Use the built-in payment sheet for an embedded checkout experience with Apple Pay:
 
 ```swift
-public protocol PaymentProcessor {
-    var supportedMethods: [PaymentMethod] { get }
-
-    func initiateFunding(
-        amount: Decimal,
-        currency: String,
-        destination: String,
-        network: BlockchainNetwork
-    ) async throws -> FundingSession
-}
-```
-
-### Supported Processors
-
-- ✅ **Coinbase Commerce** (Apple Pay, Credit/Debit Cards)
-- 🔜 **Stripe** (Coming soon)
-- 🔜 **MoonPay** (Coming soon)
-- 🔜 **Custom** (Implement your own!)
-
-## Delegate Pattern
-
-Implement `ZeroSettleDelegate` to receive events:
-
-```swift
-extension MyViewController: ZeroSettleDelegate {
-    func didAuthenticate(userId: String, wallet: WalletInfo) {
-        print("✅ User \(userId) authenticated with wallet \(wallet.address)")
-    }
-
-    func didCompleteFunding(amount: Decimal, currency: String, transactionHash: String?) {
-        print("💰 Added \(amount) \(currency)")
-    }
-
-    func didFailFunding(error: Error) {
-        print("❌ Funding failed: \(error)")
+.zsPaymentSheet(
+    isPresented: $showCheckout,
+    product: product,
+    userId: user.id
+) { result in
+    switch result {
+    case .success(let transaction):
+        // Entitlements update automatically
+        unlockContent(transaction.productId)
+    case .failure(let error):
+        showError(error)
     }
 }
 ```
 
-## Multi-Chain Support
-
-ZeroSettleKit is designed to support multiple blockchains:
+Or trigger a Safari-based checkout directly:
 
 ```swift
-public enum BlockchainNetwork: String, Codable {
-    case ethereum
-    case base
-    case arbitrum
-    case optimism
-    case polygon
-    case solana
+try await ZeroSettleIAP.shared.purchase(
+    productId: "pro_monthly",
+    userId: user.id
+)
+```
+
+### 5. Check entitlements
+
+Entitlements unify purchases from both web checkout and StoreKit into a single state:
+
+```swift
+let entitlements = try await ZeroSettleIAP.shared.restoreEntitlements(userId: user.id)
+
+let isPro = entitlements.contains { $0.productId == "pro_monthly" && $0.isActive }
+```
+
+Call `restoreEntitlements` on every app launch to ensure cross-device sync.
+
+## Checkout Modes
+
+The checkout experience is controlled server-side via your dashboard:
+
+| Mode | Description |
+|------|-------------|
+| **Embedded Sheet** | Native bottom sheet with WKWebView — Apple Pay and card support |
+| **In-App Safari** | SFSafariViewController within your app |
+| **External Safari** | Opens the user's default browser, returns via universal link |
+
+The SDK reads this configuration automatically — no client-side changes needed to switch modes.
+
+## User Identity
+
+ZeroSettleIAP works with any authentication system:
+
+| Approach | When to use | userId value |
+|----------|-------------|--------------|
+| **Custom Auth** | You have your own auth system | Your stable user ID |
+| **RevenueCat** | Migrating from RevenueCat | `Purchases.shared.appUserID` |
+| **Anonymous** | No auth system | Empty string (email collected at checkout) |
+
+Use a stable, non-email identifier. See [User Identity](https://docs.zerosettle.io/iap/user-identity) for details.
+
+## Delegate
+
+Implement `ZeroSettleIAPDelegate` to observe checkout and entitlement events:
+
+```swift
+extension AppState: ZeroSettleIAPDelegate {
+    func zeroSettleIAPCheckoutDidComplete(transaction: ZSTransaction) {
+        // Purchase succeeded — entitlements are already updated
+    }
+
+    func zeroSettleIAPCheckoutDidCancel(productId: String) {
+        // User dismissed checkout
+    }
+
+    func zeroSettleIAPCheckoutDidFail(productId: String, error: Error) {
+        // Handle error
+    }
+
+    func zeroSettleIAPEntitlementsDidUpdate(_ entitlements: [Entitlement]) {
+        // Entitlement state changed
+    }
 }
 ```
 
-Currently, Privy SDK supports Solana embedded wallets. EVM chain support coming soon!
+## StoreKit Integration
 
-## Customization
-
-### Theming
+Offer both web checkout (lower fees) and native StoreKit on the same paywall:
 
 ```swift
-let theme = ZeroSettleTheme(
-    primaryColor: "#00FF00",
-    secondaryColor: "#FFFFFF",
-    backgroundColors: ["#000000", "#1A1A1A"],
-    buttonCornerRadius: 12
+// Web checkout — 5% + 50¢
+try await ZeroSettleIAP.shared.purchase(
+    productId: "pro_monthly",
+    userId: user.id
 )
 
-let config = ZeroSettleConfig(
-    ...
-    theme: theme
+// StoreKit fallback — standard App Store pricing
+let transaction = try await ZeroSettleIAP.shared.purchaseViaStoreKit(
+    productId: "pro_monthly",
+    userId: user.id
 )
 ```
 
-### Default Funding Amounts
+Both paths feed into the same entitlement system. See [StoreKit Integration](https://docs.zerosettle.io/iap/storekit-integration) for hybrid paywall patterns.
 
-```swift
-let config = ZeroSettleConfig(
-    ...
-    defaultFundingAmounts: [100, 500, 1000, 2000] // Cents: $1, $5, $10, $20
-)
-```
+## Universal Links
+
+Web checkout callbacks require universal links. Add an Apple App Site Association file to your domain and configure your entitlements. See [Universal Links Setup](https://docs.zerosettle.io/iap/universal-links-setup) for the full walkthrough.
+
+**Note:** Universal links do not work in the iOS Simulator — test on a physical device.
+
+## Key Types
+
+| Type | Description |
+|------|-------------|
+| `ZeroSettleIAP` | Main SDK singleton — configure, fetch, purchase, restore |
+| `Product` | A purchasable item with web and App Store pricing |
+| `Entitlement` | An active access right with source tracking (`.webCheckout` or `.storeKit`) |
+| `ZSTransaction` | Result of a completed purchase |
+| `ZSPaymentSheet` | SwiftUI payment sheet component |
+| `RemoteConfig` | Server-controlled checkout mode and migration campaigns |
+| `Promotion` | Active promotional pricing on a product |
 
 ## Requirements
 
-- iOS 15.0+
+- iOS 17.0+
 - Swift 5.9+
 - Xcode 15.0+
+- No third-party dependencies (for ZeroSettleIAP)
 
-## Dependencies
+## Best Practices
 
-- [Privy iOS SDK](https://github.com/privy-io/privy-ios-sdk) (2.5.1+)
-- [MetaMask iOS SDK](https://github.com/MetaMask/metamask-ios-sdk) (0.8.10+)
-- [TweetNacl](https://github.com/bitmark-inc/tweetnacl-swiftwrap) (1.1.0+) - For Phantom encryption
-- [Solana.Swift](https://github.com/your-org/Solana.Swift) - Solana blockchain support
+- **Call `restoreEntitlements` on every app launch** for cross-device sync
+- **Validate entitlements server-side** for sensitive features
+- **Provide a visible "Restore Purchases" button** (App Store requirement)
+- **Use sandbox keys during development** — switch to live keys for production
+- **Preload products on paywall screens** for instant checkout
+- **Never trust client-side entitlements alone** for critical access control
 
-## Getting API Keys
+See [Best Practices](https://docs.zerosettle.io/iap/best-practices) for the full guide.
 
-### Privy
+## Documentation
 
-1. Sign up at [privy.io](https://privy.io)
-2. Create a new app
-3. Copy your App ID and Client ID
+Full guides, API reference, and integration walkthroughs are available at **[docs.zerosettle.io](https://docs.zerosettle.io)**.
 
-### Coinbase Commerce
-
-1. Sign up at [Coinbase Developer Platform](https://portal.cdp.coinbase.com/)
-2. Create API credentials
-3. Copy your API Key ID and Secret
-
-## Security
-
-⚠️ **Never commit API credentials to your repository!**
-
-Use environment variables or a secure configuration:
-
-```swift
-// ❌ DON'T do this
-let apiKey = "your-secret-key"
-
-// ✅ DO this
-let apiKey = ProcessInfo.processInfo.environment["COINBASE_API_KEY"] ?? ""
-```
-
-## Wallet Integration Guides
-
-### MetaMask (Ethereum)
-
-See [METAMASK_INTEGRATION.md](METAMASK_INTEGRATION.md) for complete MetaMask integration guide including:
-- ETH and ERC-20 token transfers
-- USDC support on multiple chains (Ethereum, Polygon, Optimism, Arbitrum)
-- Balance queries and chain switching
-- Custom JSON-RPC calls
-
-Quick example:
-
-```swift
-// Configure MetaMask
-MetaMaskManager.shared.configure(
-    dappScheme: "yourapp",
-    appName: "Your App",
-    appURL: "https://yourapp.com",
-    infuraAPIKey: "YOUR_INFURA_KEY"
-)
-
-// Connect
-await MetaMaskManager.shared.connect()
-
-// Send USDC
-await MetaMaskManager.shared.sendUSDC(
-    to: "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb",
-    amountUSDC: 5.0
-)
-```
-
-### Phantom (Solana)
-
-PhantomManager is included for Solana wallet integration via deep links:
-
-```swift
-// Configure Phantom
-PhantomManager.shared.configure(
-    appURL: "https://yourapp.com",
-    redirectScheme: "yourapp",
-    cluster: .mainnetBeta
-)
-
-// Connect
-PhantomManager.shared.connect()
-
-// Transfer USDC to Privy wallet
-PhantomManager.shared.depositUSDCToPrivyWallet(
-    fromTokenAccount: "SOURCE_ATA",
-    toTokenAccount: "DEST_ATA",
-    amountUSDC: 5.0
-)
-```
-
-## Example App
-
-See the `Example/` directory for a complete implementation.
-
-## Roadmap
-
-- [x] Core authentication (Privy)
-- [x] Coinbase payment processor
-- [x] Protocol-based architecture
-- [ ] SwiftUI UI components
-- [ ] Stripe payment processor
-- [ ] EVM chain support
-- [ ] Transaction monitoring
-- [ ] Balance tracking
-- [ ] DocC documentation
-- [ ] Unit tests
-- [ ] Example app
+- [Quickstart](https://docs.zerosettle.io/iap/quickstart)
+- [Payment Sheet](https://docs.zerosettle.io/iap/payment-sheet)
+- [User Identity](https://docs.zerosettle.io/iap/user-identity)
+- [Subscription State](https://docs.zerosettle.io/iap/subscription-state)
+- [StoreKit Integration](https://docs.zerosettle.io/iap/storekit-integration)
+- [RevenueCat Integration](https://docs.zerosettle.io/iap/revenuecat-integration)
+- [Customer Portal](https://docs.zerosettle.io/iap/customer-portal)
+- [Best Practices](https://docs.zerosettle.io/iap/best-practices)
 
 ## License
 
-MIT License - See LICENSE file for details
-
-## Contributing
-
-Contributions welcome! Please read CONTRIBUTING.md first.
-
-## Support
-
-- [Documentation](https://docs.zerosettle.com)
-- [GitHub Issues](https://github.com/your-org/ZeroSettleKit/issues)
-- [Discord](https://discord.gg/zerosettle)
-
----
-
-Built with ❤️ by [ZeroSettle](https://zerosettle.com)
+MIT License — see LICENSE for details.
