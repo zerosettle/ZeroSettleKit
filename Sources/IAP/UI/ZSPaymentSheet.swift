@@ -46,6 +46,8 @@ private final class CheckoutPreloader: ObservableObject {
     func loadAndWait(url: URL) async {
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
+        // Use non-persistent data store to prevent caching between sessions
+        config.websiteDataStore = .nonPersistent()
         config.userContentController.add(messageRouter, name: "checkoutComplete")
         config.userContentController.add(messageRouter, name: "consoleLog")
 
@@ -78,7 +80,9 @@ private final class CheckoutPreloader: ObservableObject {
         wv.scrollView.backgroundColor = .clear
 
         self.webView = wv
-        wv.load(URLRequest(url: url))
+        var request = URLRequest(url: url)
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        wv.load(request)
 
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             self.continuation = cont
@@ -556,6 +560,8 @@ private struct PaymentWebView: UIViewRepresentable {
         // Standard path: create a new WebView
         let configuration = WKWebViewConfiguration()
         configuration.allowsInlineMediaPlayback = true
+        // Use non-persistent data store to prevent caching between sessions
+        configuration.websiteDataStore = .nonPersistent()
         configuration.userContentController.add(context.coordinator, name: "checkoutComplete")
         configuration.userContentController.add(context.coordinator, name: "consoleLog")
 
@@ -589,7 +595,9 @@ private struct PaymentWebView: UIViewRepresentable {
         webView.scrollView.backgroundColor = .clear
         context.coordinator.webView = webView
 
-        webView.load(URLRequest(url: url))
+        var request = URLRequest(url: url)
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        webView.load(request)
 
         return webView
     }
