@@ -190,6 +190,7 @@ public struct ZSPaymentSheet<Header: View>: View {
 
     private let product: Product
     private let userId: String
+    private let dismissable: Bool
     private let prefetchedCheckoutURL: URL?
     private let prefetchedTransactionId: String?
     private let preloadedWebView: WKWebView?
@@ -217,6 +218,7 @@ public struct ZSPaymentSheet<Header: View>: View {
     public init(
         product: Product,
         userId: String,
+        dismissable: Bool = true,
         checkoutURL: URL? = nil,
         transactionId: String? = nil,
         @ViewBuilder header: () -> Header,
@@ -224,6 +226,7 @@ public struct ZSPaymentSheet<Header: View>: View {
     ) {
         self.product = product
         self.userId = userId
+        self.dismissable = dismissable
         self.prefetchedCheckoutURL = checkoutURL
         self.prefetchedTransactionId = transactionId
         self.preloadedWebView = nil
@@ -242,6 +245,7 @@ public struct ZSPaymentSheet<Header: View>: View {
     fileprivate init(
         product: Product,
         userId: String,
+        dismissable: Bool = true,
         preloader: CheckoutPreloader,
         checkoutURL: URL,
         transactionId: String?,
@@ -250,6 +254,7 @@ public struct ZSPaymentSheet<Header: View>: View {
     ) {
         self.product = product
         self.userId = userId
+        self.dismissable = dismissable
         self.prefetchedCheckoutURL = checkoutURL
         self.prefetchedTransactionId = transactionId
         self.preloadedWebView = preloader.webView
@@ -271,6 +276,7 @@ extension ZSPaymentSheet where Header == EmptyView {
     public init(
         product: Product,
         userId: String,
+        dismissable: Bool = true,
         checkoutURL: URL? = nil,
         transactionId: String? = nil,
         onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
@@ -278,6 +284,7 @@ extension ZSPaymentSheet where Header == EmptyView {
         self.init(
             product: product,
             userId: userId,
+            dismissable: dismissable,
             checkoutURL: checkoutURL,
             transactionId: transactionId,
             header: { EmptyView() },
@@ -315,7 +322,7 @@ extension ZSPaymentSheet {
                 if !(Header.self == EmptyView.self) {
                     header
                         .frame(maxWidth: .infinity)
-                        .padding(.bottom, 20)
+                        .padding(.bottom, 8)
                         .background(GeometryReader { geo in
                             Color.clear.preference(key: HeaderHeightKey.self, value: geo.size.height)
                         })
@@ -346,25 +353,27 @@ extension ZSPaymentSheet {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(.systemBackground))
         .overlay(alignment: .topTrailing) {
-            Button {
-                dismiss()
-                onComplete(.failure(PaymentSheetError.cancelled))
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 32, height: 32)
-                    .background(.ultraThinMaterial, in: Circle())
+            if dismissable {
+                Button {
+                    dismiss()
+                    onComplete(.failure(PaymentSheetError.cancelled))
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 32, height: 32)
+                        .background(.ultraThinMaterial, in: Circle())
+                }
+                .padding(.top, 14)
+                .padding(.trailing, 18)
             }
-            .padding(.top, 14)
-            .padding(.trailing, 18)
         }
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .ignoresSafeArea(edges: .bottom)
         .presentationDetents(isExpanded ? [.height(compactHeight), .large] : [.height(compactHeight)], selection: $selectedDetent)
         .presentationDragIndicator(.hidden)
         .presentationBackground(.clear)
-        .interactiveDismissDisabled()
+        .interactiveDismissDisabled(!dismissable)
         .task {
             if let url = prefetchedCheckoutURL {
                 self.checkoutURL = url
@@ -797,6 +806,7 @@ private struct ZSPaymentSheetModifier<Header: View>: ViewModifier {
     @Binding var isPresented: Bool
     let product: Product
     let userId: String
+    let dismissable: Bool
     let header: () -> Header
     let onComplete: (Result<ZSTransaction, Error>) -> Void
 
@@ -832,6 +842,7 @@ private struct ZSPaymentSheetModifier<Header: View>: ViewModifier {
                     ZSPaymentSheet(
                         product: product,
                         userId: userId,
+                        dismissable: dismissable,
                         preloader: preloader,
                         checkoutURL: url,
                         transactionId: preloadedTransactionId,
@@ -842,6 +853,7 @@ private struct ZSPaymentSheetModifier<Header: View>: ViewModifier {
                     ZSPaymentSheet(
                         product: product,
                         userId: userId,
+                        dismissable: dismissable,
                         header: header,
                         onComplete: onComplete
                     )
@@ -876,6 +888,7 @@ private struct ZSPaymentSheetModifier<Header: View>: ViewModifier {
 private struct ZSPaymentSheetItemModifier<Header: View>: ViewModifier {
     @Binding var item: Product?
     let userId: String
+    let dismissable: Bool
     let header: () -> Header
     let onComplete: (Result<ZSTransaction, Error>) -> Void
 
@@ -892,6 +905,7 @@ private struct ZSPaymentSheetItemModifier<Header: View>: ViewModifier {
                 isPresented: isPresented,
                 product: product,
                 userId: userId,
+                dismissable: dismissable,
                 header: header,
                 onComplete: onComplete
             ))
@@ -910,12 +924,14 @@ extension View {
         isPresented: Binding<Bool>,
         product: Product,
         userId: String,
+        dismissable: Bool = true,
         onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
     ) -> some View {
         modifier(ZSPaymentSheetModifier<EmptyView>(
             isPresented: isPresented,
             product: product,
             userId: userId,
+            dismissable: dismissable,
             header: { EmptyView() },
             onComplete: onComplete
         ))
@@ -926,6 +942,7 @@ extension View {
         isPresented: Binding<Bool>,
         product: Product,
         userId: String,
+        dismissable: Bool = true,
         @ViewBuilder header: @escaping () -> Header,
         onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
     ) -> some View {
@@ -933,6 +950,7 @@ extension View {
             isPresented: isPresented,
             product: product,
             userId: userId,
+            dismissable: dismissable,
             header: header,
             onComplete: onComplete
         ))
@@ -949,11 +967,13 @@ extension View {
     public func zsPaymentSheet(
         item: Binding<Product?>,
         userId: String,
+        dismissable: Bool = true,
         onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
     ) -> some View {
         modifier(ZSPaymentSheetItemModifier<EmptyView>(
             item: item,
             userId: userId,
+            dismissable: dismissable,
             header: { EmptyView() },
             onComplete: onComplete
         ))
@@ -963,12 +983,14 @@ extension View {
     public func zsPaymentSheet<Header: View>(
         item: Binding<Product?>,
         userId: String,
+        dismissable: Bool = true,
         @ViewBuilder header: @escaping () -> Header,
         onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
     ) -> some View {
         modifier(ZSPaymentSheetItemModifier(
             item: item,
             userId: userId,
+            dismissable: dismissable,
             header: header,
             onComplete: onComplete
         ))
@@ -984,6 +1006,7 @@ extension ZSPaymentSheet where Header == EmptyView {
         from viewController: UIViewController,
         product: Product,
         userId: String,
+        dismissable: Bool = true,
         checkoutURL: URL? = nil,
         transactionId: String? = nil,
         onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
@@ -993,6 +1016,7 @@ extension ZSPaymentSheet where Header == EmptyView {
         let bridge = PaymentSheetBridge(
             product: product,
             userId: userId,
+            dismissable: dismissable,
             checkoutURL: checkoutURL,
             transactionId: transactionId,
             onComplete: onComplete,
@@ -1014,6 +1038,7 @@ extension ZSPaymentSheet where Header == EmptyView {
 private struct PaymentSheetBridge: View {
     let product: Product
     let userId: String
+    let dismissable: Bool
     let checkoutURL: URL?
     let transactionId: String?
     let onComplete: (Result<ZSTransaction, Error>) -> Void
@@ -1027,6 +1052,7 @@ private struct PaymentSheetBridge: View {
                 ZSPaymentSheet(
                     product: product,
                     userId: userId,
+                    dismissable: dismissable,
                     checkoutURL: checkoutURL,
                     transactionId: transactionId,
                     onComplete: onComplete
