@@ -37,6 +37,36 @@ public enum ZeroSettleBackendError: Error, LocalizedError {
             return "Failed to decode response: \(error.localizedDescription)"
         }
     }
+
+    /// Convert an arbitrary error (typically `HTTPError`) into a structured `ZeroSettleBackendError`.
+    /// If the error is already a `ZeroSettleBackendError`, it is returned unchanged.
+    public static func from(_ error: Error) -> ZeroSettleBackendError {
+        if let backendError = error as? ZeroSettleBackendError {
+            return backendError
+        }
+
+        guard let httpError = error as? HTTPError else {
+            return .networkError(error)
+        }
+
+        switch httpError {
+        case .httpError(let statusCode, let body):
+            var message: String?
+            if let body, let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
+                message = json["error"] as? String ?? json["message"] as? String ?? json["detail"] as? String
+            }
+            return .serverError(statusCode: statusCode, message: message)
+
+        case .decodingFailed(let decodingError):
+            return .decodingError(decodingError)
+
+        case .networkError(let underlyingError):
+            return .networkError(underlyingError)
+
+        case .invalidURL, .invalidResponse:
+            return .invalidResponse
+        }
+    }
 }
 
 // MARK: - Backend Responses

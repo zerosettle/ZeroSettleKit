@@ -45,6 +45,16 @@ public struct Entitlement: Identifiable, Sendable, Codable, Equatable {
         self.expiresAt = expiresAt
         self.purchasedAt = purchasedAt
     }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        productId = try container.decode(String.self, forKey: .productId)
+        source = try container.decodeIfPresent(EntitlementSource.self, forKey: .source) ?? .webCheckout
+        isActive = try container.decode(Bool.self, forKey: .isActive)
+        expiresAt = try container.decodeIfPresent(Date.self, forKey: .expiresAt)
+        purchasedAt = try container.decode(Date.self, forKey: .purchasedAt)
+    }
 }
 
 // MARK: - Entitlement Source

@@ -48,29 +48,56 @@ internal final class Backend: @unchecked Sendable {
     /// Fetch the product catalog for this developer's app.
     /// - Parameter userId: Optional user ID to check for migration eligibility
     /// - Returns: Tuple of products and optional remote config
-    func fetchProducts(userId: String? = nil) async throws -> (products: [Product], config: RemoteConfig?) {
+    func fetchProducts(userId: String? = nil) async throws -> (products: [ZSProduct], config: RemoteConfig?) {
+        let span = PaymentSheetTrace.current?.begin("fetchProducts", metadata: ["userId": userId ?? "(none)"])
+
         var components = URLComponents(url: apiURL("iap/products/"), resolvingAgainstBaseURL: false)!
         if let userId {
             components.queryItems = [URLQueryItem(name: "user_id", value: userId)]
         }
 
         guard let url = components.url else {
-            throw ZeroSettleIAPError.networkError(HTTPError.invalidURL("Failed to construct products URL"))
+            if let span { PaymentSheetTrace.current?.end(span, metadata: ["error": "invalidURL"]) }
+            throw Backend.wrapError(HTTPError.invalidURL("Failed to construct products URL"))
         }
 
-        let response: ProductsResponse = try await httpClient.get(
-            url,
-            headers: authHeaders,
-            responseType: ProductsResponse.self
-        )
+        let netSpan = PaymentSheetTrace.current?.begin("GET /iap/products")
+        let response: ProductsResponse
+        do {
+            response = try await httpClient.get(
+                url,
+                headers: authHeaders,
+                responseType: ProductsResponse.self
+            )
+            if let netSpan { PaymentSheetTrace.current?.end(netSpan, metadata: ["products": "\(response.products.count)"]) }
+        } catch {
+            if let netSpan { PaymentSheetTrace.current?.end(netSpan, metadata: ["error": "\(error)"]) }
+            if let span { PaymentSheetTrace.current?.end(span, metadata: ["error": "\(error)"]) }
+            throw Backend.wrapError(error)
+        }
 
         // Parse remote config if present
         let remoteConfig: RemoteConfig?
         if let configResponse = response.config {
             let checkoutType = CheckoutType(rawValue: configResponse.checkout.sheetType) ?? .safari
+
+            // Parse jurisdiction overrides
+            var jurisdictions: [Jurisdiction: JurisdictionCheckoutConfig] = [:]
+            if let jurDict = configResponse.checkout.jurisdictions {
+                for (key, value) in jurDict {
+                    guard let jurisdiction = Jurisdiction(rawValue: key),
+                          let sheetType = CheckoutType(rawValue: value.sheetType) else { continue }
+                    jurisdictions[jurisdiction] = JurisdictionCheckoutConfig(
+                        sheetType: sheetType,
+                        isEnabled: value.isEnabled
+                    )
+                }
+            }
+
             let checkoutConfig = CheckoutConfig(
                 sheetType: checkoutType,
-                isEnabled: configResponse.checkout.isEnabled
+                isEnabled: configResponse.checkout.isEnabled,
+                jurisdictions: jurisdictions
             )
 
             let migration: MigrationPrompt?
@@ -95,6 +122,7 @@ internal final class Backend: @unchecked Sendable {
             remoteConfig = nil
         }
 
+        if let span { PaymentSheetTrace.current?.end(span, metadata: ["products": "\(response.products.count)"]) }
         return (response.products, remoteConfig)
     }
 
@@ -133,26 +161,42 @@ internal final class Backend: @unchecked Sendable {
     /// Create a Stripe PaymentIntent for native checkout (Apple Pay / Card in WebView).
     /// Returns data needed for the Payment Request API and card entry form.
     func createPaymentIntent(productId: String, userId: String) async throws -> PaymentIntentResponse {
-        let url = apiURL("iap/payment-intents/")
-        let body = CreatePaymentIntentRequest(productId: productId, userId: userId)
-        return try await httpClient.post(
-            url,
-            body: body,
-            headers: authHeaders,
-            responseType: PaymentIntentResponse.self
-        )
+        let span = PaymentSheetTrace.current?.begin("POST /iap/payment-intents", metadata: ["productId": productId])
+        do {
+            let url = apiURL("iap/payment-intents/")
+            let body = CreatePaymentIntentRequest(productId: productId, userId: userId)
+            let response = try await httpClient.post(
+                url,
+                body: body,
+                headers: authHeaders,
+                responseType: PaymentIntentResponse.self
+            )
+            if let span { PaymentSheetTrace.current?.end(span, metadata: ["txnId": response.transactionId]) }
+            return response
+        } catch {
+            if let span { PaymentSheetTrace.current?.end(span, metadata: ["error": "\(error)"]) }
+            throw Backend.wrapError(error)
+        }
     }
 
     // MARK: - Transactions
 
     /// Get the status of a transaction by ID.
     func getTransaction(transactionId: String) async throws -> ZSTransaction {
-        let url = apiURL("iap/transactions/\(transactionId)/")
-        return try await httpClient.get(
-            url,
-            headers: authHeaders,
-            responseType: ZSTransaction.self
-        )
+        let span = PaymentSheetTrace.current?.begin("GET /iap/transactions", metadata: ["txnId": transactionId])
+        do {
+            let url = apiURL("iap/transactions/\(transactionId)/")
+            let response = try await httpClient.get(
+                url,
+                headers: authHeaders,
+                responseType: ZSTransaction.self
+            )
+            if let span { PaymentSheetTrace.current?.end(span, metadata: ["status": response.status.rawValue]) }
+            return response
+        } catch {
+            if let span { PaymentSheetTrace.current?.end(span, metadata: ["error": "\(error)"]) }
+            throw Backend.wrapError(error)
+        }
     }
 
     // MARK: - Entitlements
@@ -163,7 +207,7 @@ internal final class Backend: @unchecked Sendable {
         components.queryItems = [URLQueryItem(name: "user_id", value: userId)]
 
         guard let url = components.url else {
-            throw ZeroSettleIAPError.networkError(HTTPError.invalidURL("Failed to construct entitlements URL"))
+            throw Backend.wrapError(HTTPError.invalidURL("Failed to construct entitlements URL"))
         }
 
         let response: EntitlementsResponse = try await httpClient.get(
@@ -190,6 +234,24 @@ internal final class Backend: @unchecked Sendable {
         try await httpClient.executeVoid(request)
     }
 
+    // MARK: - Customer Portal
+
+    /// Create a Stripe customer portal session for subscription management.
+    func createCustomerPortalSession(userId: String) async throws -> CustomerPortalSession {
+        let url = apiURL("iap/customer-portal-sessions/")
+        let body = CreateCustomerPortalSessionRequest(userId: userId)
+        do {
+            return try await httpClient.post(
+                url,
+                body: body,
+                headers: authHeaders,
+                responseType: CustomerPortalSession.self
+            )
+        } catch {
+            throw Backend.wrapError(error)
+        }
+    }
+
     // MARK: - StoreKit Transaction Sync
 
     /// Forward a StoreKit transaction's JWS representation for server-side verification.
@@ -209,6 +271,65 @@ internal final class Backend: @unchecked Sendable {
         try await httpClient.executeVoid(request)
     }
 
+    // MARK: - Error Wrapping
+
+    /// Convert any error thrown by the HTTP layer into a typed `ZeroSettleIAPError.apiError`.
+    /// If the error is already a `ZeroSettleIAPError`, it passes through unchanged.
+    static func wrapError(_ error: Error) -> ZeroSettleIAPError {
+        if let iapError = error as? ZeroSettleIAPError {
+            return iapError
+        }
+
+        let detail = parseAPIErrorDetail(from: error)
+        return .apiError(detail)
+    }
+
+    /// Parse an `HTTPError` (or any `Error`) into a structured `APIErrorDetail`.
+    private static func parseAPIErrorDetail(from error: Error) -> APIErrorDetail {
+        guard let httpError = error as? HTTPError else {
+            return APIErrorDetail(
+                statusCode: nil,
+                serverMessage: nil,
+                serverCode: nil,
+                underlyingError: error
+            )
+        }
+
+        switch httpError {
+        case .httpError(let statusCode, let body):
+            var serverMessage: String?
+            var serverCode: String?
+
+            if let body, let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
+                serverMessage = json["error"] as? String ?? json["message"] as? String ?? json["detail"] as? String
+                serverCode = json["code"] as? String
+            }
+
+            return APIErrorDetail(
+                statusCode: statusCode,
+                serverMessage: serverMessage,
+                serverCode: serverCode,
+                underlyingError: error
+            )
+
+        case .networkError:
+            return APIErrorDetail(
+                statusCode: nil,
+                serverMessage: nil,
+                serverCode: nil,
+                underlyingError: error
+            )
+
+        default:
+            return APIErrorDetail(
+                statusCode: nil,
+                serverMessage: nil,
+                serverCode: nil,
+                underlyingError: error
+            )
+        }
+    }
+
     // MARK: - Helpers
 
     private func apiURL(_ path: String) -> URL {
@@ -219,7 +340,7 @@ internal final class Backend: @unchecked Sendable {
 // MARK: - Request/Response Models
 
 private struct ProductsResponse: Decodable {
-    let products: [Product]
+    let products: [ZSProduct]
     let config: ConfigResponse?
 }
 
@@ -229,6 +350,12 @@ private struct ConfigResponse: Decodable {
 }
 
 private struct CheckoutConfigResponse: Decodable {
+    let sheetType: String
+    let isEnabled: Bool
+    let jurisdictions: [String: JurisdictionConfigResponse]?
+}
+
+private struct JurisdictionConfigResponse: Decodable {
     let sheetType: String
     let isEnabled: Bool
 }
@@ -278,4 +405,12 @@ private struct SyncStoreKitTransactionRequest: Encodable {
 
 private struct MigrationConversionRequest: Encodable {
     let userId: String
+}
+
+internal struct CreateCustomerPortalSessionRequest: Encodable {
+    let userId: String
+}
+
+internal struct CustomerPortalSession: Decodable {
+    let portalUrl: URL
 }

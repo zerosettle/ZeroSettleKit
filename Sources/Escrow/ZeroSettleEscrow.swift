@@ -20,10 +20,15 @@ public enum ZeroSettleEscrowError: Error, LocalizedError {
     case notConfigured
     case notAuthenticated
     case noActiveSession
-    case sessionNotReady(currentState: SessionState)
     case insufficientBalance(required: Int, available: Int)
     case invalidConfiguration(String)
     case signingFailed(String)
+    case authenticationFailed(operation: String, underlyingError: Error)
+    case backendError(ZeroSettleBackendError)
+    case transactionFailed(operation: String, message: String)
+
+    @available(*, deprecated, message: "This case is unused. Handle session state via SessionState directly.")
+    case sessionNotReady(currentState: SessionState)
 
     public var errorDescription: String? {
         switch self {
@@ -33,14 +38,20 @@ public enum ZeroSettleEscrowError: Error, LocalizedError {
             return "User is not authenticated. Complete authentication first."
         case .noActiveSession:
             return "No active game session."
-        case .sessionNotReady(let state):
-            return "Session is not ready for this operation. Current state: \(state.rawValue)"
         case .insufficientBalance(let required, let available):
             return "Insufficient balance. Required: \(required) cents, available: \(available) cents."
         case .invalidConfiguration(let message):
             return "Invalid configuration: \(message)"
         case .signingFailed(let message):
             return "Signing failed: \(message)"
+        case .authenticationFailed(let operation, let underlyingError):
+            return "Authentication failed during \(operation): \(underlyingError.localizedDescription)"
+        case .backendError(let error):
+            return error.errorDescription
+        case .transactionFailed(let operation, let message):
+            return "Transaction failed during \(operation): \(message)"
+        case .sessionNotReady(let state):
+            return "Session is not ready for this operation. Current state: \(state.rawValue)"
         }
     }
 }
@@ -206,7 +217,7 @@ public final class ZeroSettleEscrow: ObservableObject {
             try await authManager.sendOTP(to: phoneNumber)
         } catch {
             delegate?.zeroSettleEscrowAuthenticationFailed(operation: "sendOTP", error: error)
-            throw error
+            throw ZeroSettleEscrowError.authenticationFailed(operation: "sendOTP", underlyingError: error)
         }
     }
 
@@ -250,7 +261,7 @@ public final class ZeroSettleEscrow: ObservableObject {
 
         } catch {
             delegate?.zeroSettleEscrowAuthenticationFailed(operation: "verifyOTP", error: error)
-            throw error
+            throw ZeroSettleEscrowError.authenticationFailed(operation: "verifyOTP", underlyingError: error)
         }
     }
 
@@ -604,7 +615,11 @@ public final class ZeroSettleEscrow: ObservableObject {
             throw ZeroSettleEscrowError.notConfigured
         }
 
-        return try await backend.getGameDefinition(name: name)
+        do {
+            return try await backend.getGameDefinition(name: name)
+        } catch {
+            throw ZeroSettleEscrowError.backendError(ZeroSettleBackendError.from(error))
+        }
     }
 
     // MARK: - Signing (for H2H atomic transactions)
@@ -836,11 +851,11 @@ extension ZeroSettleEscrow: BalanceUpdateDelegate {
         let response = try JSONDecoder().decode(SendTxResponse.self, from: data)
 
         if let error = response.error {
-            throw ZeroSettleEscrowError.invalidConfiguration("RPC error: \(error.message)")
+            throw ZeroSettleEscrowError.transactionFailed(operation: "submitTransaction", message: "RPC error: \(error.message)")
         }
 
         guard let signature = response.result else {
-            throw ZeroSettleEscrowError.invalidConfiguration("No transaction signature returned")
+            throw ZeroSettleEscrowError.transactionFailed(operation: "submitTransaction", message: "No transaction signature returned")
         }
 
         return signature
@@ -880,7 +895,7 @@ extension ZeroSettleEscrow: BalanceUpdateDelegate {
             // Set up timeout task
             let timeoutTask = Task {
                 try await Task.sleep(nanoseconds: 30_000_000_000)  // 30 second timeout
-                safeResume(with: .failure(ZeroSettleEscrowError.invalidConfiguration("Transaction confirmation timeout")))
+                safeResume(with: .failure(ZeroSettleEscrowError.transactionFailed(operation: "waitForConfirmation", message: "Transaction confirmation timeout")))
             }
 
             task.resume()
@@ -899,7 +914,7 @@ extension ZeroSettleEscrow: BalanceUpdateDelegate {
             guard let messageData = try? JSONSerialization.data(withJSONObject: subscribeMessage),
                   let messageString = String(data: messageData, encoding: .utf8) else {
                 timeoutTask.cancel()
-                safeResume(with: .failure(ZeroSettleEscrowError.invalidConfiguration("Failed to create subscription message")))
+                safeResume(with: .failure(ZeroSettleEscrowError.transactionFailed(operation: "waitForConfirmation", message: "Failed to create subscription message")))
                 return
             }
 
@@ -940,7 +955,7 @@ extension ZeroSettleEscrow: BalanceUpdateDelegate {
                                 // Check for error in transaction
                                 if let err = value["err"], !(err is NSNull) {
                                     Logger.error("Transaction failed: \(err)", category: .escrow)
-                                    safeResume(with: .failure(ZeroSettleEscrowError.invalidConfiguration("Transaction failed: \(err)")))
+                                    safeResume(with: .failure(ZeroSettleEscrowError.transactionFailed(operation: "waitForConfirmation", message: "Transaction failed: \(err)")))
                                 } else {
                                     Logger.info("Transaction confirmed via WebSocket", category: .escrow)
                                     safeResume(with: .success(()))

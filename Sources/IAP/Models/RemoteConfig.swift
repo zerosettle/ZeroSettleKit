@@ -7,6 +7,58 @@
 
 import Foundation
 
+// MARK: - Jurisdiction
+
+/// Geographic jurisdiction for checkout configuration.
+/// The SDK detects the user's jurisdiction via StoreKit's `Storefront.current`
+/// and applies the matching override (or falls back to the global default).
+public enum Jurisdiction: String, Codable, Sendable, CaseIterable {
+    case us
+    case eu
+    case row
+
+    /// Map a StoreKit storefront country code to a jurisdiction.
+    /// Accepts both ISO 3166-1 alpha-3 (from StoreKit 2) and alpha-2 codes.
+    public static func from(storefrontCountryCode code: String) -> Jurisdiction {
+        let upper = code.uppercased()
+        if upper == "USA" || upper == "US" { return .us }
+        if euAlpha3Codes.contains(upper) || euAlpha2Codes.contains(upper) { return .eu }
+        return .row
+    }
+
+    /// EU member state ISO 3166-1 alpha-3 codes (StoreKit 2 uses these).
+    private static let euAlpha3Codes: Set<String> = [
+        "AUT", "BEL", "BGR", "HRV", "CYP", "CZE", "DNK", "EST",
+        "FIN", "FRA", "DEU", "GRC", "HUN", "IRL", "ITA", "LVA",
+        "LTU", "LUX", "MLT", "NLD", "POL", "PRT", "ROU", "SVK",
+        "SVN", "ESP", "SWE",
+    ]
+
+    /// EU member state ISO 3166-1 alpha-2 codes (fallback).
+    private static let euAlpha2Codes: Set<String> = [
+        "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE",
+        "FI", "FR", "DE", "GR", "HU", "IE", "IT", "LV",
+        "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK",
+        "SI", "ES", "SE",
+    ]
+}
+
+// MARK: - Jurisdiction Checkout Config
+
+/// Per-jurisdiction checkout configuration override.
+public struct JurisdictionCheckoutConfig: Sendable, Equatable {
+    /// The checkout sheet type for this jurisdiction
+    public let sheetType: CheckoutType
+
+    /// Whether web checkout is enabled for this jurisdiction
+    public let isEnabled: Bool
+
+    public init(sheetType: CheckoutType, isEnabled: Bool) {
+        self.sheetType = sheetType
+        self.isEnabled = isEnabled
+    }
+}
+
 // MARK: - Checkout Type
 
 /// The type of checkout UI to present.
@@ -25,16 +77,20 @@ public enum CheckoutType: String, Codable, Sendable {
 // MARK: - Checkout Config
 
 /// Configuration for the checkout UI behavior.
-public struct CheckoutConfig: Codable, Sendable, Equatable {
-    /// The type of checkout sheet to present
+public struct CheckoutConfig: Sendable, Equatable {
+    /// The global default checkout sheet type
     public let sheetType: CheckoutType
 
-    /// Whether web checkout is enabled for this app
+    /// Whether web checkout is enabled globally
     public let isEnabled: Bool
 
-    public init(sheetType: CheckoutType, isEnabled: Bool) {
+    /// Per-jurisdiction overrides (empty if no overrides configured)
+    public let jurisdictions: [Jurisdiction: JurisdictionCheckoutConfig]
+
+    public init(sheetType: CheckoutType, isEnabled: Bool, jurisdictions: [Jurisdiction: JurisdictionCheckoutConfig] = [:]) {
         self.sheetType = sheetType
         self.isEnabled = isEnabled
+        self.jurisdictions = jurisdictions
     }
 }
 

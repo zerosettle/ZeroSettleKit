@@ -31,7 +31,9 @@ public protocol ZeroSettleIAPDelegate: AnyObject {
     /// Called when a web checkout fails.
     /// - Parameters:
     ///   - productId: The product that was being purchased
-    ///   - error: The underlying error
+    ///   - error: The underlying error. Concrete types passed include
+    ///     ``ZeroSettleIAPError`` (`.checkoutSessionFailed`, `.apiError`, `.transactionVerificationFailed`)
+    ///     and ``PaymentSheetError`` (`.paymentFailed`, `.verificationFailed`).
     func zeroSettleIAPCheckoutDidFail(productId: String, error: Error)
 
     // MARK: - Entitlement Events
@@ -50,8 +52,25 @@ public protocol ZeroSettleIAPDelegate: AnyObject {
     func zeroSettleIAPDidSyncStoreKitTransaction(productId: String, transactionId: UInt64)
 
     /// Called when syncing a StoreKit transaction to ZeroSettle fails.
-    /// - Parameter error: The underlying error
+    /// - Parameter error: The underlying error. Concrete type is typically
+    ///   ``ZeroSettleIAPError/apiError(_:)`` wrapping the HTTP failure.
     func zeroSettleIAPStoreKitSyncFailed(error: Error)
+
+    // MARK: - Customer Portal Events
+
+    /// Called when the customer portal is opened in-app.
+    /// - Parameter userId: The user whose portal was opened
+    func zeroSettleIAPCustomerPortalDidOpen(userId: String)
+
+    /// Called when the customer portal is dismissed.
+    /// - Parameter userId: The user whose portal was closed
+    func zeroSettleIAPCustomerPortalDidClose(userId: String)
+
+    /// Called when opening the customer portal fails.
+    /// - Parameters:
+    ///   - userId: The user whose portal failed to open
+    ///   - error: The underlying error
+    func zeroSettleIAPCustomerPortalDidFail(userId: String, error: Error)
 }
 
 // MARK: - Default Implementations
@@ -64,4 +83,7 @@ public extension ZeroSettleIAPDelegate {
     func zeroSettleIAPEntitlementsDidUpdate(_ entitlements: [Entitlement]) {}
     func zeroSettleIAPDidSyncStoreKitTransaction(productId: String, transactionId: UInt64) {}
     func zeroSettleIAPStoreKitSyncFailed(error: Error) {}
+    func zeroSettleIAPCustomerPortalDidOpen(userId: String) {}
+    func zeroSettleIAPCustomerPortalDidClose(userId: String) {}
+    func zeroSettleIAPCustomerPortalDidFail(userId: String, error: Error) {}
 }

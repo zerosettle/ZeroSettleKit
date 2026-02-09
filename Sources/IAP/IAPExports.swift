@@ -23,8 +23,8 @@ import Foundation
 //   - ZeroSettleIAPDelegate
 //
 // From Models/Product.swift:
-//   - Product
-//   - ProductType
+//   - ZSProduct
+//   - ZSProductType
 //   - Price
 //
 // From Models/Transaction.swift:

@@ -51,7 +51,8 @@ public protocol ZeroSettleEscrowDelegate: AnyObject {
     /// Called when authentication fails.
     /// - Parameters:
     ///   - operation: The operation that failed (e.g., "sendOTP", "verifyOTP")
-    ///   - error: The underlying error
+    ///   - error: The underlying error. Concrete type is
+    ///     ``ZeroSettleEscrowError/authenticationFailed(operation:underlyingError:)``.
     func zeroSettleEscrowAuthenticationFailed(operation: String, error: Error)
 
     // MARK: - Balance Events
@@ -103,7 +104,25 @@ public protocol ZeroSettleEscrowDelegate: AnyObject {
     /// Called when settlement fails.
     /// - Parameters:
     ///   - sessionId: The session that failed to settle
-    ///   - error: The underlying error
+    ///   - error: The underlying error. Concrete type is typically
+    ///     ``ZeroSettleEscrowError/backendError(_:)`` or ``ZeroSettleEscrowError/transactionFailed(operation:message:)``.
     ///   - canRetry: Whether the operation can be retried
     func zeroSettleEscrowSettlementFailed(sessionId: UUID, error: Error, canRetry: Bool)
+}
+
+// MARK: - Default Implementations
+
+public extension ZeroSettleEscrowDelegate {
+    func zeroSettleEscrowDidAuthenticate(userId: UUID, walletAddress: SolanaAddress) {}
+    func zeroSettleEscrowDidLogout() {}
+    func zeroSettleEscrowAuthenticationFailed(operation: String, error: Error) {}
+    func zeroSettleEscrowDidUpdateBalance(_ balanceCents: Int) {}
+    func zeroSettleEscrowBalanceFetchFailed(error: Error) {}
+    func zeroSettleEscrowDidCreateSession(_ session: GameSession) {}
+    func zeroSettleEscrowSessionStateChanged(_ session: GameSession, from previousState: SessionState) {}
+    func zeroSettleEscrowDidConfirm(session: GameSession) {}
+    func zeroSettleEscrowDidSettleSession(_ result: SettlementResult) {}
+    func zeroSettleEscrowSessionCreationFailed(request: SessionCreationRequest, error: Error, canRetry: Bool) {}
+    func zeroSettleEscrowConfirmationFailed(sessionId: UUID, error: Error, canRetry: Bool) {}
+    func zeroSettleEscrowSettlementFailed(sessionId: UUID, error: Error, canRetry: Bool) {}
 }

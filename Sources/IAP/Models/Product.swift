@@ -12,7 +12,7 @@ import StoreKit
 
 /// A product available for web checkout via ZeroSettle.
 /// The `id` matches the StoreKit product identifier configured on the ZeroSettle dashboard.
-public struct Product: Identifiable, Sendable {
+public struct ZSProduct: Identifiable, Sendable {
     /// StoreKit product identifier (e.g., "com.app.premium_monthly")
     public let id: String
 
@@ -23,7 +23,7 @@ public struct Product: Identifiable, Sendable {
     public let productDescription: String
 
     /// The type of product (subscription, consumable, etc.)
-    public let type: ProductType
+    public let type: ZSProductType
 
     /// The web checkout price (may differ from App Store price)
     public let webPrice: Price
@@ -57,7 +57,7 @@ public struct Product: Identifiable, Sendable {
         id: String,
         displayName: String,
         productDescription: String,
-        type: ProductType,
+        type: ZSProductType,
         webPrice: Price,
         appStorePrice: Price? = nil,
         syncedToASC: Bool = false,
@@ -77,7 +77,7 @@ public struct Product: Identifiable, Sendable {
 
 // MARK: - Codable
 
-extension Product: Codable {
+extension ZSProduct: Codable {
     private enum CodingKeys: String, CodingKey {
         case id
         case displayName
@@ -94,7 +94,7 @@ extension Product: Codable {
         id = try container.decode(String.self, forKey: .id)
         displayName = try container.decode(String.self, forKey: .displayName)
         productDescription = try container.decode(String.self, forKey: .productDescription)
-        type = try container.decode(ProductType.self, forKey: .type)
+        type = try container.decode(ZSProductType.self, forKey: .type)
         webPrice = try container.decode(Price.self, forKey: .webPrice)
         appStorePrice = try container.decodeIfPresent(Price.self, forKey: .appStorePrice)
         syncedToASC = try container.decodeIfPresent(Bool.self, forKey: .syncedToASC) ?? false
@@ -117,8 +117,8 @@ extension Product: Codable {
 
 // MARK: - Equatable
 
-extension Product: Equatable {
-    public static func == (lhs: Product, rhs: Product) -> Bool {
+extension ZSProduct: Equatable {
+    public static func == (lhs: ZSProduct, rhs: ZSProduct) -> Bool {
         // Compare all codable properties (ignoring internal _storeKitProduct)
         lhs.id == rhs.id &&
         lhs.displayName == rhs.displayName &&
@@ -134,7 +134,7 @@ extension Product: Equatable {
 // MARK: - Product Type
 
 /// The type of in-app purchase product.
-public enum ProductType: String, Sendable, Codable {
+public enum ZSProductType: String, Sendable, Codable {
     case autoRenewableSubscription = "auto_renewable_subscription"
     case nonRenewingSubscription = "non_renewing_subscription"
     case consumable = "consumable"

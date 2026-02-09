@@ -13,16 +13,65 @@ import StoreKit
 import ZeroSettleCore
 #endif
 
+// MARK: - Supporting Error Types
+
+/// Structured detail for API/HTTP errors at the product boundary.
+/// Preserves the HTTP status code, server-provided error message, and error code
+/// so developers can take targeted action (e.g., retry on 503, show message on 422).
+public struct APIErrorDetail: Error, LocalizedError, Sendable {
+    /// HTTP status code from the server response, if available.
+    public let statusCode: Int?
+    /// Human-readable error message parsed from the response body.
+    public let serverMessage: String?
+    /// Machine-readable error code parsed from the response body (e.g., "product_not_found").
+    public let serverCode: String?
+    /// The original error that was thrown by the networking layer.
+    public let underlyingError: any Error
+
+    public var errorDescription: String? {
+        if let serverMessage {
+            return serverMessage
+        }
+        if let statusCode {
+            return "Server error (\(statusCode))"
+        }
+        return underlyingError.localizedDescription
+    }
+}
+
+/// Classifies checkout session failures into actionable reasons.
+/// Use this to distinguish between card declines, server errors, and network issues
+/// when handling ``ZeroSettleIAPError/checkoutSessionFailed(reason:)``.
+public enum CheckoutFailureReason: Sendable {
+    /// The requested product was not found on the server.
+    case productNotFound
+    /// The merchant has not completed Stripe onboarding.
+    case merchantNotOnboarded
+    /// Stripe returned an error (e.g., card declined, insufficient funds).
+    case stripeError(code: String?, message: String)
+    /// The server returned a non-2xx response.
+    case serverError(statusCode: Int, message: String?)
+    /// The device appears to have no network connectivity.
+    case networkUnavailable
+    /// An unclassified error occurred.
+    case other(String)
+}
+
 // MARK: - Errors
 
 public enum ZeroSettleIAPError: Error, LocalizedError {
     case notConfigured
     case invalidPublishableKey
     case productNotFound(String)
-    case checkoutSessionFailed(String)
+    case checkoutSessionFailed(reason: CheckoutFailureReason)
     case transactionVerificationFailed(String)
-    case networkError(Error)
+    case apiError(APIErrorDetail)
     case invalidCallbackURL
+    case webCheckoutDisabledForJurisdiction(Jurisdiction)
+    case restoreEntitlementsFailed(partialEntitlements: [Entitlement], underlyingError: Error)
+
+    @available(*, deprecated, message: "Use .apiError(APIErrorDetail) instead for richer error context")
+    case networkError(Error)
 
     public var errorDescription: String? {
         switch self {
@@ -32,14 +81,33 @@ public enum ZeroSettleIAPError: Error, LocalizedError {
             return "Invalid publishable key. Check your ZeroSettle dashboard."
         case .productNotFound(let productId):
             return "Product not found: \(productId)"
-        case .checkoutSessionFailed(let message):
-            return "Failed to create checkout session: \(message)"
+        case .checkoutSessionFailed(let reason):
+            switch reason {
+            case .productNotFound:
+                return "Checkout failed: product not found."
+            case .merchantNotOnboarded:
+                return "Checkout failed: merchant has not completed payment setup."
+            case .stripeError(_, let message):
+                return "Payment error: \(message)"
+            case .serverError(let statusCode, let message):
+                return "Checkout failed: server error (\(statusCode))\(message.map { " — \($0)" } ?? "")"
+            case .networkUnavailable:
+                return "Checkout failed: no network connection."
+            case .other(let message):
+                return "Checkout failed: \(message)"
+            }
         case .transactionVerificationFailed(let message):
             return "Transaction verification failed: \(message)"
+        case .apiError(let detail):
+            return detail.errorDescription
         case .networkError(let error):
             return "Network error: \(error.localizedDescription)"
         case .invalidCallbackURL:
             return "Invalid checkout callback URL."
+        case .webCheckoutDisabledForJurisdiction(let jurisdiction):
+            return "Web checkout is disabled for the \(jurisdiction.rawValue.uppercased()) jurisdiction. Use StoreKit instead."
+        case .restoreEntitlementsFailed(_, let underlyingError):
+            return "Failed to restore entitlements: \(underlyingError.localizedDescription)"
         }
     }
 }
@@ -65,11 +133,9 @@ public final class ZeroSettleIAP: ObservableObject {
 
     /// Configuration for the ZeroSettle IAP SDK.
     public struct Configuration: Sendable {
-        /// Your publishable key from the ZeroSettle dashboard (e.g., "pk_live_abc123")
+        /// Your publishable key from the ZeroSettle dashboard (e.g., "pk_live_abc123").
+        /// The key prefix determines sandbox vs live mode (`zs_pk_test_` vs `zs_pk_live_`).
         public let publishableKey: String
-
-        /// Network environment for the backend API
-        public let environment: NetworkEnvironment
 
         /// Whether to listen for and forward native StoreKit transactions to ZeroSettle.
         /// Set to `false` if you use RevenueCat (which handles StoreKit reporting itself).
@@ -78,15 +144,15 @@ public final class ZeroSettleIAP: ObservableObject {
 
         public init(
             publishableKey: String,
-            environment: NetworkEnvironment = .production,
             syncStoreKitTransactions: Bool = true
         ) {
             self.publishableKey = publishableKey
-            self.environment = environment
             self.syncStoreKitTransactions = syncStoreKitTransactions
         }
 
-        internal var backendURL: URL { environment.backendURL }
+        internal var backendURL: URL {
+            URL(string: "https://api.zerosettle.io/v1")!
+        }
     }
 
     // MARK: - Published State
@@ -95,7 +161,7 @@ public final class ZeroSettleIAP: ObservableObject {
     @Published public private(set) var isConfigured: Bool = false
 
     /// Cached products from the last `fetchProducts()` call.
-    @Published public private(set) var products: [Product] = []
+    @Published public private(set) var products: [ZSProduct] = []
 
     /// Current entitlements (merged from StoreKit and web checkout sources).
     @Published public private(set) var entitlements: [Entitlement] = []
@@ -107,12 +173,33 @@ public final class ZeroSettleIAP: ObservableObject {
     /// Contains checkout type settings and optional migration campaign data.
     @Published public private(set) var remoteConfig: RemoteConfig?
 
+    /// The detected jurisdiction based on the user's App Store storefront.
+    /// Populated after `fetchProducts()`. Defaults to `.row` if detection fails.
+    @Published public private(set) var detectedJurisdiction: Jurisdiction?
+
     // MARK: - Computed Properties
 
-    /// The configured checkout type. Returns `.safari` as the default fallback
-    /// if remote config hasn't been fetched yet.
+    /// The effective checkout type for the detected jurisdiction.
+    /// If a jurisdiction override exists, uses that; otherwise falls back to the global default.
+    /// Returns `.safari` if remote config hasn't been fetched yet.
     public var checkoutType: CheckoutType {
-        remoteConfig?.checkout.sheetType ?? .safari
+        guard let config = remoteConfig?.checkout else { return .safari }
+        let jurisdiction = detectedJurisdiction ?? .row
+        if let override = config.jurisdictions[jurisdiction] {
+            return override.sheetType
+        }
+        return config.sheetType
+    }
+
+    /// Whether web checkout is enabled for the detected jurisdiction.
+    /// Checks jurisdiction override first, then falls back to the global setting.
+    public var isWebCheckoutEnabled: Bool {
+        guard let config = remoteConfig?.checkout else { return true }
+        let jurisdiction = detectedJurisdiction ?? .row
+        if let override = config.jurisdictions[jurisdiction] {
+            return override.isEnabled
+        }
+        return config.isEnabled
     }
 
     // MARK: - Delegate
@@ -142,6 +229,7 @@ public final class ZeroSettleIAP: ObservableObject {
     private var config: Configuration?
     private var backend: Backend?
     private var checkoutFlow: WebCheckoutFlow?
+    private var customerPortalFlow: CustomerPortalFlow?
     private var storeKitManager: StoreKitManager?
     private var pendingTransactionId: String?
 
@@ -169,6 +257,7 @@ public final class ZeroSettleIAP: ObservableObject {
 
         let checkoutFlow = WebCheckoutFlow(backend: backend)
         self.checkoutFlow = checkoutFlow
+        self.customerPortalFlow = CustomerPortalFlow()
 
         if config.syncStoreKitTransactions {
             let storeKitManager = StoreKitManager(backend: backend)
@@ -178,7 +267,7 @@ public final class ZeroSettleIAP: ObservableObject {
         }
 
         isConfigured = true
-        Logger.info("ZeroSettleIAP configured for \(config.environment.rawValue)", category: .iap)
+        Logger.info("ZeroSettleIAP configured", category: .iap)
     }
 
     // MARK: - Products
@@ -188,10 +277,10 @@ public final class ZeroSettleIAP: ObservableObject {
     /// Results are cached in the `products` and `remoteConfig` published properties.
     ///
     /// - Parameter userId: Optional user ID to check for migration eligibility.
-    ///   Pass this to receive migration campaign data in `remoteConfig.migration`.
-    /// - Returns: Array of products with web prices, StoreKit prices, and any active promotions
+    ///   Pass this to receive migration campaign data in the returned catalog's `config.migration`.
+    /// - Returns: A ``ProductCatalog`` containing products and remote configuration
     @discardableResult
-    public func fetchProducts(userId: String? = nil) async throws -> [Product] {
+    public func fetchProducts(userId: String? = nil) async throws -> ProductCatalog {
         guard let backend else {
             throw ZeroSettleIAPError.notConfigured
         }
@@ -202,11 +291,14 @@ public final class ZeroSettleIAP: ObservableObject {
             var products = fetchedProducts
             Logger.info("Fetched \(products.count) products from backend", category: .iap)
 
-            // Store remote config if present
+            // Store remote config for computed properties (checkoutType, isWebCheckoutEnabled)
             if let config {
                 remoteConfig = config
-                Logger.info("Remote config received: checkoutType=\(config.checkout.sheetType.rawValue), migration=\(config.migration != nil)", category: .iap)
+                Logger.info("Remote config received: checkoutType=\(config.checkout.sheetType.rawValue), jurisdictions=\(config.checkout.jurisdictions.count), migration=\(config.migration != nil)", category: .iap)
             }
+
+            // Detect jurisdiction from App Store storefront
+            await detectJurisdiction()
 
             // 2. Try to fetch ALL products from StoreKit (let StoreKit tell us what exists)
             let allProductIds = products.map { $0.id }
@@ -229,10 +321,10 @@ public final class ZeroSettleIAP: ObservableObject {
             }
 
             self.products = products
-            return products
+            return ProductCatalog(products: products, config: config)
         } catch {
             Logger.error("Failed to fetch products: \(error)", category: .iap)
-            throw ZeroSettleIAPError.networkError(error)
+            throw Backend.wrapError(error)
         }
     }
 
@@ -248,6 +340,12 @@ public final class ZeroSettleIAP: ObservableObject {
     public func purchase(productId: String, userId: String) async throws {
         guard let checkoutFlow else {
             throw ZeroSettleIAPError.notConfigured
+        }
+
+        // Check if web checkout is enabled for the detected jurisdiction
+        if !isWebCheckoutEnabled {
+            let jurisdiction = detectedJurisdiction ?? .row
+            throw ZeroSettleIAPError.webCheckoutDisabledForJurisdiction(jurisdiction)
         }
 
         // Update StoreKit manager with user ID for future sync operations
@@ -267,7 +365,35 @@ public final class ZeroSettleIAP: ObservableObject {
         } catch {
             Logger.error("Checkout failed for \(productId): \(error)", category: .iap)
             delegate?.zeroSettleIAPCheckoutDidFail(productId: productId, error: error)
-            throw ZeroSettleIAPError.checkoutSessionFailed(error.localizedDescription)
+
+            let reason: CheckoutFailureReason
+            if let httpError = error as? HTTPError {
+                switch httpError {
+                case .httpError(let statusCode, let body):
+                    let parsed = Self.parseServerBody(body)
+                    switch parsed.code {
+                    case "product_not_found":
+                        reason = .productNotFound
+                    case "merchant_not_onboarded":
+                        reason = .merchantNotOnboarded
+                    default:
+                        if let code = parsed.code, code.hasPrefix("stripe_") {
+                            reason = .stripeError(code: parsed.code, message: parsed.message ?? "Payment failed")
+                        } else {
+                            reason = .serverError(statusCode: statusCode, message: parsed.message)
+                        }
+                    }
+                case .networkError:
+                    reason = .networkUnavailable
+                default:
+                    reason = .other(error.localizedDescription)
+                }
+            } else if let iapError = error as? ZeroSettleIAPError {
+                throw iapError
+            } else {
+                reason = .other(error.localizedDescription)
+            }
+            throw ZeroSettleIAPError.checkoutSessionFailed(reason: reason)
         }
     }
 
@@ -312,7 +438,63 @@ public final class ZeroSettleIAP: ObservableObject {
             Logger.info("Migration conversion tracked for user: \(userId)", category: .iap)
         } catch {
             Logger.error("Failed to track migration conversion: \(error)", category: .iap)
-            throw ZeroSettleIAPError.networkError(error)
+            throw Backend.wrapError(error)
+        }
+    }
+
+    // MARK: - Customer Portal
+
+    /// Open the Stripe customer portal for subscription management.
+    /// Creates a portal session via the backend, presents it in SFSafariViewController,
+    /// and automatically refreshes entitlements when the user dismisses.
+    ///
+    /// - Parameter userId: Your app's user identifier
+    public func openCustomerPortal(userId: String) async throws {
+        guard let backend, let customerPortalFlow else {
+            throw ZeroSettleIAPError.notConfigured
+        }
+
+        do {
+            let session = try await backend.createCustomerPortalSession(userId: userId)
+            Logger.info("Customer portal session created", category: .iap)
+
+            delegate?.zeroSettleIAPCustomerPortalDidOpen(userId: userId)
+            await customerPortalFlow.presentPortal(url: session.portalUrl)
+            delegate?.zeroSettleIAPCustomerPortalDidClose(userId: userId)
+
+            Logger.info("Customer portal dismissed, refreshing entitlements", category: .iap)
+            _ = try? await restoreEntitlements(userId: userId)
+        } catch {
+            Logger.error("Customer portal failed: \(error)", category: .iap)
+            delegate?.zeroSettleIAPCustomerPortalDidFail(userId: userId, error: error)
+            throw Backend.wrapError(error)
+        }
+    }
+
+    /// Smart subscription management that routes to the appropriate UI based on entitlement sources.
+    ///
+    /// - Web checkout entitlements (or no entitlements) → Opens Stripe customer portal
+    /// - StoreKit-only entitlements → Opens Apple's native subscription management
+    /// - Both sources → Opens Stripe customer portal (more comprehensive)
+    ///
+    /// - Parameter userId: Your app's user identifier
+    public func showManageSubscription(userId: String) async throws {
+        let hasWebEntitlements = entitlements.contains { $0.source == .webCheckout }
+        let hasStoreKitEntitlements = entitlements.contains { $0.source == .storeKit }
+
+        if hasStoreKitEntitlements && !hasWebEntitlements {
+            // StoreKit-only: use Apple's native management
+            Logger.info("Showing Apple subscription management (StoreKit-only entitlements)", category: .iap)
+            guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene else {
+                Logger.error("No window scene available for subscription management", category: .iap)
+                return
+            }
+            try await AppStore.showManageSubscriptions(in: windowScene)
+            _ = try? await restoreEntitlements(userId: userId)
+        } else {
+            // Web checkout, both sources, or no entitlements: use Stripe portal
+            Logger.info("Opening Stripe customer portal (web/mixed/no entitlements)", category: .iap)
+            try await openCustomerPortal(userId: userId)
         }
     }
 
@@ -366,6 +548,13 @@ public final class ZeroSettleIAP: ObservableObject {
 
         var allEntitlements: [Entitlement] = []
 
+        // Fetch StoreKit entitlements first (these always succeed locally)
+        if let storeKitManager {
+            let storeKitEntitlements = await storeKitManager.getCurrentEntitlements()
+            allEntitlements.append(contentsOf: storeKitEntitlements)
+            Logger.info("Restored \(storeKitEntitlements.count) StoreKit entitlements", category: .iap)
+        }
+
         // Fetch web checkout entitlements from ZeroSettle backend
         do {
             let webEntitlements = try await backend.getEntitlements(userId: userId)
@@ -373,13 +562,13 @@ public final class ZeroSettleIAP: ObservableObject {
             Logger.info("Restored \(webEntitlements.count) web entitlements", category: .iap)
         } catch {
             Logger.error("Failed to fetch web entitlements: \(error)", category: .iap)
-        }
-
-        // Fetch StoreKit entitlements if sync is enabled
-        if let storeKitManager {
-            let storeKitEntitlements = await storeKitManager.getCurrentEntitlements()
-            allEntitlements.append(contentsOf: storeKitEntitlements)
-            Logger.info("Restored \(storeKitEntitlements.count) StoreKit entitlements", category: .iap)
+            // Update with partial (StoreKit-only) entitlements before throwing
+            entitlements = allEntitlements
+            delegate?.zeroSettleIAPEntitlementsDidUpdate(allEntitlements)
+            throw ZeroSettleIAPError.restoreEntitlementsFailed(
+                partialEntitlements: allEntitlements,
+                underlyingError: error
+            )
         }
 
         entitlements = allEntitlements
@@ -388,7 +577,37 @@ public final class ZeroSettleIAP: ObservableObject {
         return allEntitlements
     }
 
+    // MARK: - Error Helpers
+
+    /// Parse JSON error body from an HTTP response for checkout failure classification.
+    private static func parseServerBody(_ body: Data?) -> (code: String?, message: String?) {
+        guard let body,
+              let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else {
+            return (nil, nil)
+        }
+        let code = json["code"] as? String
+        let message = json["error"] as? String ?? json["message"] as? String ?? json["detail"] as? String
+        return (code, message)
+    }
+
     // MARK: - Private
+
+    /// Detect the user's jurisdiction from the App Store storefront.
+    /// Falls back to `.row` (most restrictive) if storefront is unavailable
+    /// (e.g., user not signed into App Store on Simulator).
+    private func detectJurisdiction() async {
+        if #available(iOS 16.0, *) {
+            if let storefront = await Storefront.current {
+                let jurisdiction = Jurisdiction.from(storefrontCountryCode: storefront.countryCode)
+                detectedJurisdiction = jurisdiction
+                Logger.info("Detected jurisdiction: \(jurisdiction.rawValue) (storefront: \(storefront.countryCode))", category: .iap)
+                return
+            }
+        }
+        // Fallback: no storefront available → default to ROW (most restrictive)
+        detectedJurisdiction = .row
+        Logger.info("Storefront unavailable, defaulting to ROW jurisdiction", category: .iap)
+    }
 
     /// Process a checkout callback after the universal link is received.
     private func processCheckoutCallback(_ callback: CheckoutCallback) async {

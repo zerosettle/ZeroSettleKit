@@ -140,6 +140,7 @@ public struct ZeroSettleCheckoutView: View {
 // MARK: - Checkout Error
 
 /// Errors that can occur during embedded checkout.
+@available(*, deprecated, message: "Use ZSPaymentSheet and PaymentSheetError instead")
 public enum CheckoutError: Error, LocalizedError {
     case cancelled
     case sessionCreationFailed(String)
