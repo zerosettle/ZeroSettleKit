@@ -7,6 +7,8 @@ import WebKit
 public struct ZSMigrateTipView: View {
     let backgroundColor: Color
     
+    @ObservedObject private var iap = ZeroSettleIAP.shared
+    
     @State private var isExpanded = false
     @State private var isLoading = false
     @State private var webViewLoaded = false
@@ -17,6 +19,12 @@ public struct ZSMigrateTipView: View {
     @State private var confettiTrigger = 0
     @State private var checkoutURL: URL?
     @State private var checkoutError: Error?
+    
+    /// Whether the user already has an active web checkout entitlement.
+    /// If true, the migrate tip should not be shown.
+    private var hasWebEntitlement: Bool {
+        iap.entitlements.contains { $0.source == .webCheckout && $0.isActive }
+    }
     
     // MARK: - Hardcoded Configuration
     
@@ -54,7 +62,9 @@ public struct ZSMigrateTipView: View {
     }
     
     public var body: some View {
-        if !isDismissed && !Self.isPermanentlyDismissed {
+        if hasWebEntitlement && Self.isPermanentlyDismissed {
+            EmptyView()
+        } else if !isDismissed && !Self.isPermanentlyDismissed {
             VStack(spacing: 0) {
             // Tip header (always visible)
             HStack(alignment: .center, spacing: 12) {
@@ -255,6 +265,20 @@ public struct ZSMigrateTipView: View {
         checkoutError = nil
         isLoading = true
 
+        let checkoutType = iap.checkoutType
+
+        switch checkoutType {
+        case .webview:
+            // Native inline checkout: create payment intent and show embedded WebView
+            startWebViewCheckout()
+        case .safari, .safariVC:
+            // In-app browser or external Safari: use purchase flow (creates session, opens browser)
+            startBrowserCheckout()
+        }
+    }
+
+    /// Native inline checkout: create payment intent, expand to show embedded CheckoutWebView.
+    private func startWebViewCheckout() {
         print("🧾 Creating payment intent (productId=\(Self.productId), userId=\(Self.userId))")
 
         Task {
@@ -264,7 +288,7 @@ public struct ZSMigrateTipView: View {
                     productId: Self.productId,
                     userId: Self.userId
                 )
-                
+
                 await MainActor.run {
                     print("✅ Payment intent created. checkoutUrl=\(paymentIntent.checkoutUrl)")
                     checkoutURL = URL(string: paymentIntent.checkoutUrl)
@@ -278,6 +302,25 @@ public struct ZSMigrateTipView: View {
                     isLoading = false
                     print("❌ Payment intent failed (productId=\(Self.productId)): \(error)")
                 }
+            }
+        }
+    }
+
+    /// In-app browser (safariVC) or external Safari: create session and open in configured browser.
+    /// Completion is handled via universal link callback; entitlements update when user returns.
+    private func startBrowserCheckout() {
+        print("🧾 Starting browser checkout (productId=\(Self.productId), userId=\(Self.userId), type=\(iap.checkoutType.rawValue))")
+
+        Task { @MainActor in
+            do {
+                try await iap.purchase(productId: Self.productId, userId: Self.userId)
+                // Browser opened; show cancel state when they return from redirect
+                checkoutSucceeded = true
+                isLoading = false
+            } catch {
+                checkoutError = error
+                isLoading = false
+                print("❌ Browser checkout failed (productId=\(Self.productId)): \(error)")
             }
         }
     }
