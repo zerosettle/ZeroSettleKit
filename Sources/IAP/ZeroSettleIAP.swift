@@ -26,8 +26,8 @@ public struct APIErrorDetail: Error, LocalizedError, Sendable {
     public let serverMessage: String?
     /// Machine-readable error code parsed from the response body (e.g., "product_not_found").
     public let serverCode: String?
-    /// The original error that was thrown by the networking layer.
-    public let underlyingError: any Error
+    /// The original error that was thrown by the networking layer, if any.
+    public let underlyingError: (any Error)?
 
     public var errorDescription: String? {
         if let serverMessage {
@@ -36,7 +36,7 @@ public struct APIErrorDetail: Error, LocalizedError, Sendable {
         if let statusCode {
             return "Server error (\(statusCode))"
         }
-        return underlyingError.localizedDescription
+        return underlyingError?.localizedDescription ?? "Unknown API error"
     }
 }
 
@@ -654,15 +654,12 @@ public final class ZeroSettleIAP: ObservableObject {
             let session = try await backend.createCustomerPortalSession(userId: userId)
             Logger.info("Customer portal session created", category: .iap)
 
-            delegate?.zeroSettleIAPCustomerPortalDidOpen(userId: userId)
             await customerPortalFlow.presentPortal(url: session.portalUrl)
-            delegate?.zeroSettleIAPCustomerPortalDidClose(userId: userId)
 
             Logger.info("Customer portal dismissed, refreshing entitlements", category: .iap)
             _ = try? await restoreEntitlements(userId: userId)
         } catch {
             Logger.error("Customer portal failed: \(error)", category: .iap)
-            delegate?.zeroSettleIAPCustomerPortalDidFail(userId: userId, error: error)
             throw Backend.wrapError(error)
         }
     }
@@ -972,6 +969,7 @@ public final class ZeroSettleIAP: ObservableObject {
 
         pendingTransactionId = nil
     }
+
 }
 
 // MARK: - StoreKit Update Delegate
