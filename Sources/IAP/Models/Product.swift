@@ -53,6 +53,16 @@ public struct ZSProduct: Identifiable, Sendable {
         return appStorePrice
     }
 
+    /// The percentage savings of the web price compared to the App Store price.
+    /// Returns `nil` if the StoreKit price isn't available or web is more expensive.
+    /// Example: StoreKit = $9.99, web = $6.99 → `savingsPercent` = 30
+    public var savingsPercent: Int? {
+        guard let skPrice = storeKitPrice, skPrice.amountMicros > 0 else { return nil }
+        let savings = Double(skPrice.amountMicros - webPrice.amountMicros) / Double(skPrice.amountMicros)
+        let percent = Int((savings * 100).rounded())
+        return percent > 0 ? percent : nil
+    }
+
     public init(
         id: String,
         displayName: String,
