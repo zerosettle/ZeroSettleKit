@@ -17,11 +17,9 @@ import Foundation
 //
 // From ZeroSettleIAP.swift:
 //   - ZeroSettleIAP (main class)
-//   - ZSError (canonical error type)
-//   - CheckoutFailure (checkout failure reasons)
-//   - APIErrorDetail (structured API error detail)
-//   - ZeroSettleIAPError (deprecated typealias → ZSError)
-//   - CheckoutFailureReason (deprecated typealias → CheckoutFailure)
+//   - ZSError
+//   - CheckoutFailure
+//   - APIErrorDetail
 //
 // From ZeroSettleIAPDelegate.swift:
 //   - ZeroSettleIAPDelegate
@@ -50,9 +48,6 @@ import Foundation
 //   - CheckoutConfig
 //   - MigrationPrompt
 //   - RemoteConfig
-//
-// From Checkout/ZeroSettleCheckoutView.swift:
-//   - ZeroSettleCheckoutView (deprecated → ZSPaymentSheet)
 //
 // From UI/ZSPaymentSheet.swift:
 //   - ZSPaymentSheet

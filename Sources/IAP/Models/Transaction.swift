@@ -52,6 +52,7 @@ public struct ZSTransaction: Identifiable, Sendable, Codable, Equatable {
 public enum TransactionStatus: String, Sendable, Codable {
     case completed = "completed"
     case pending = "pending"
+    case processing = "processing"
     case failed = "failed"
     case refunded = "refunded"
 }

@@ -58,9 +58,6 @@ public enum CheckoutFailure: Sendable {
     case other(String)
 }
 
-/// Backward-compatible typealias for ``CheckoutFailure``.
-@available(*, deprecated, renamed: "CheckoutFailure")
-public typealias CheckoutFailureReason = CheckoutFailure
 
 // MARK: - Errors
 
@@ -76,8 +73,6 @@ public enum ZSError: Error, LocalizedError {
     case userIdRequired(productId: String)
     case restoreEntitlementsFailed(partialEntitlements: [Entitlement], underlyingError: Error)
 
-    @available(*, deprecated, message: "Use .apiError(APIErrorDetail) instead for richer error context")
-    case networkError(Error)
 
     public var errorDescription: String? {
         switch self {
@@ -106,8 +101,6 @@ public enum ZSError: Error, LocalizedError {
             return "Transaction verification failed: \(message)"
         case .apiError(let detail):
             return detail.errorDescription
-        case .networkError(let error):
-            return "Network error: \(error.localizedDescription)"
         case .invalidCallbackURL:
             return "Invalid checkout callback URL."
         case .webCheckoutDisabledForJurisdiction(let jurisdiction):
@@ -119,10 +112,6 @@ public enum ZSError: Error, LocalizedError {
         }
     }
 }
-
-/// Backward-compatible typealias for ``ZSError``.
-@available(*, deprecated, renamed: "ZSError")
-public typealias ZeroSettleIAPError = ZSError
 
 // MARK: - ZeroSettle IAP
 
@@ -219,14 +208,12 @@ public final class ZeroSettleIAP: ObservableObject {
     /// Delegate to receive IAP event callbacks.
     public weak var delegate: ZeroSettleIAPDelegate?
 
-    // MARK: - Internal State (for ZeroSettleCheckoutView)
+    // MARK: - Internal State
 
     /// Internal accessor for the current configuration.
-    /// Used by `ZeroSettleCheckoutView` to create checkout sessions.
     internal var currentConfig: Configuration? { config }
 
     /// The effective base URL, accounting for any debug override.
-    /// Used by `ZeroSettleCheckoutView` to ensure it uses the same backend URL.
     internal var effectiveBaseURL: URL? {
         guard let config else { return nil }
         #if DEBUG
@@ -736,30 +723,62 @@ public final class ZeroSettleIAP: ObservableObject {
             return
         }
 
-        do {
-            let transaction = try await backend.getTransaction(transactionId: transactionId)
+        // Poll with retries — payments (especially Apple Pay) can stay in
+        // "processing" for several seconds before transitioning to "completed".
+        let maxAttempts = 6
+        let pollInterval: UInt64 = 2_000_000_000 // 2s
 
-            if transaction.status == .completed {
-                // Payment succeeded — process as if callback was received
-                Logger.info("Transaction \(transactionId) confirmed completed via polling", category: .iap)
-                let callback = CheckoutCallback(
-                    transactionId: transactionId,
-                    productId: productId,
-                    success: true
-                )
-                await processCheckoutCallback(callback)
-            } else {
-                // Still pending or failed — user dismissed without completing
-                Logger.info("Transaction \(transactionId) still \(transaction.status.rawValue) — treating as cancelled", category: .iap)
-                pendingCheckout = false
-                pendingTransactionId = nil
-                delegate?.zeroSettleIAPCheckoutDidCancel(productId: productId)
+        for attempt in 1...maxAttempts {
+            do {
+                let transaction = try await backend.getTransaction(transactionId: transactionId)
+
+                if transaction.status == .completed {
+                    Logger.info("Transaction \(transactionId) confirmed completed via polling (attempt \(attempt))", category: .iap)
+                    let callback = CheckoutCallback(
+                        transactionId: transactionId,
+                        productId: productId,
+                        success: true
+                    )
+                    await processCheckoutCallback(callback)
+                    return
+                } else if transaction.status == .processing {
+                    Logger.info("Transaction \(transactionId) still processing (attempt \(attempt)/\(maxAttempts))", category: .iap)
+                    if attempt < maxAttempts {
+                        try? await Task.sleep(nanoseconds: pollInterval)
+                        guard pendingCheckout else {
+                            Logger.debug("Callback arrived during processing poll", category: .iap)
+                            return
+                        }
+                        continue
+                    }
+                    // Final attempt still processing — treat as success and let
+                    // the app resolve via entitlement check later
+                    Logger.info("Transaction \(transactionId) still processing after \(maxAttempts) attempts — treating as completed", category: .iap)
+                    let callback = CheckoutCallback(
+                        transactionId: transactionId,
+                        productId: productId,
+                        success: true
+                    )
+                    await processCheckoutCallback(callback)
+                    return
+                } else {
+                    // pending (no payment started), failed, etc. — user dismissed without completing
+                    Logger.info("Transaction \(transactionId) status \(transaction.status.rawValue) — treating as cancelled", category: .iap)
+                    pendingCheckout = false
+                    pendingTransactionId = nil
+                    delegate?.zeroSettleIAPCheckoutDidCancel(productId: productId)
+                    return
+                }
+            } catch {
+                Logger.error("Failed to poll transaction status (attempt \(attempt)): \(error)", category: .iap)
+                if attempt == maxAttempts {
+                    pendingCheckout = false
+                    pendingTransactionId = nil
+                    delegate?.zeroSettleIAPCheckoutDidCancel(productId: productId)
+                    return
+                }
+                try? await Task.sleep(nanoseconds: pollInterval)
             }
-        } catch {
-            Logger.error("Failed to poll transaction status: \(error)", category: .iap)
-            pendingCheckout = false
-            pendingTransactionId = nil
-            delegate?.zeroSettleIAPCheckoutDidCancel(productId: productId)
         }
     }
 
@@ -780,7 +799,7 @@ public final class ZeroSettleIAP: ObservableObject {
         do {
             let transaction = try await backend.getTransaction(transactionId: callback.transactionId)
 
-            guard transaction.status == .completed else {
+            guard transaction.status == .completed || transaction.status == .processing else {
                 let error = ZSError.transactionVerificationFailed(
                     "Transaction status: \(transaction.status.rawValue)"
                 )
@@ -789,7 +808,7 @@ public final class ZeroSettleIAP: ObservableObject {
                 return
             }
 
-            Logger.info("Checkout completed: \(transaction.id) for \(transaction.productId)", category: .iap)
+            Logger.info("Checkout \(transaction.status == .processing ? "processing" : "completed"): \(transaction.id) for \(transaction.productId)", category: .iap)
             delegate?.zeroSettleIAPCheckoutDidComplete(transaction: transaction)
 
             // Fetch fresh entitlements from backend to get proper expiry dates
