@@ -64,7 +64,7 @@ public struct JurisdictionCheckoutConfig: Sendable, Equatable {
 /// The type of checkout UI to present.
 /// Configured remotely via the ZeroSettle dashboard.
 public enum CheckoutType: String, Codable, Sendable {
-    /// Embedded WKWebView within the app (requires ZeroSettleCheckoutView)
+    /// Embedded WKWebView within the app
     case webview = "webview"
 
     /// In-app SFSafariViewController
