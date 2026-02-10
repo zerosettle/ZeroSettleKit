@@ -212,10 +212,10 @@ private final class CheckoutCache {
 
     private init() {}
 
-    func get(productId: String, userId: String) -> (checkoutURL: URL, transactionId: String)? {
+    func get(productId: String, userId: String?) -> (checkoutURL: URL, transactionId: String)? {
         lock.lock()
         defer { lock.unlock() }
-        let key = "\(productId):\(userId)"
+        let key = "\(productId):\(userId ?? "")"
         guard let entry = entries[key],
               Date().timeIntervalSince(entry.timestamp) < ttl else {
             entries.removeValue(forKey: key)
@@ -224,17 +224,17 @@ private final class CheckoutCache {
         return (entry.checkoutURL, entry.transactionId)
     }
 
-    func set(productId: String, userId: String, checkoutURL: URL, transactionId: String) {
+    func set(productId: String, userId: String?, checkoutURL: URL, transactionId: String) {
         lock.lock()
         defer { lock.unlock() }
-        let key = "\(productId):\(userId)"
+        let key = "\(productId):\(userId ?? "")"
         entries[key] = Entry(checkoutURL: checkoutURL, transactionId: transactionId, timestamp: Date())
     }
 
-    func invalidate(productId: String, userId: String) {
+    func invalidate(productId: String, userId: String?) {
         lock.lock()
         defer { lock.unlock() }
-        entries.removeValue(forKey: "\(productId):\(userId)")
+        entries.removeValue(forKey: "\(productId):\(userId ?? "")")
     }
 }
 
@@ -249,7 +249,7 @@ public struct ZSPaymentSheet<Header: View>: View {
     // MARK: - Configuration
 
     private let product: ZSProduct
-    private let userId: String
+    private let userId: String?
     private let dismissable: Bool
     private let prefetchedCheckoutURL: URL?
     private let prefetchedTransactionId: String?
@@ -277,7 +277,7 @@ public struct ZSPaymentSheet<Header: View>: View {
 
     public init(
         product: ZSProduct,
-        userId: String,
+        userId: String? = nil,
         dismissable: Bool = true,
         checkoutURL: URL? = nil,
         transactionId: String? = nil,
@@ -304,7 +304,7 @@ public struct ZSPaymentSheet<Header: View>: View {
 
     fileprivate init(
         product: ZSProduct,
-        userId: String,
+        userId: String? = nil,
         dismissable: Bool = true,
         preloader: CheckoutPreloader,
         checkoutURL: URL,
@@ -335,7 +335,7 @@ extension ZSPaymentSheet where Header == EmptyView {
     /// Creates a payment sheet without a native header — shows only payment buttons.
     public init(
         product: ZSProduct,
-        userId: String,
+        userId: String? = nil,
         dismissable: Bool = true,
         checkoutURL: URL? = nil,
         transactionId: String? = nil,
@@ -356,7 +356,7 @@ extension ZSPaymentSheet where Header == EmptyView {
     /// Results are cached for 5 minutes so repeated opens skip the API call.
     public static func preload(
         productId: String,
-        userId: String
+        userId: String? = nil
     ) async -> (checkoutURL: URL, transactionId: String)? {
         let trace = PaymentSheetTrace.current
         let span = trace?.begin("createPaymentIntent", metadata: ["productId": productId])
@@ -412,7 +412,7 @@ extension ZSPaymentSheet where Header == EmptyView {
     ///         let products = try await iap.fetchProducts()
     ///         await ZSPaymentSheet.warmUp(productId: products[0].id, userId: "user_123")
     ///     }
-    public static func warmUp(productId: String, userId: String) async {
+    public static func warmUp(productId: String, userId: String? = nil) async {
         let trace = PaymentSheetTrace("warmUp")
         PaymentSheetTrace.current = trace
         _ = await preload(productId: productId, userId: userId)
@@ -494,6 +494,15 @@ extension ZSPaymentSheet {
         .presentationBackground(.clear)
         .interactiveDismissDisabled(!dismissable)
         .task {
+            // Validate userId for subscription/non-consumable products
+            if userId == nil {
+                let type = product.type
+                if type == .autoRenewableSubscription || type == .nonRenewingSubscription || type == .nonConsumable {
+                    loadError = PaymentSheetError.userIdRequired
+                    return
+                }
+            }
+
             if let url = prefetchedCheckoutURL {
                 self.checkoutURL = url
                 self.transactionId = prefetchedTransactionId
@@ -984,6 +993,7 @@ public enum PaymentSheetError: Error, LocalizedError {
     case paymentFailed(PaymentFailureDetail)
     case verificationFailed(String)
     case preloadFailed(APIErrorDetail)
+    case userIdRequired
 
     public var errorDescription: String? {
         switch self {
@@ -994,6 +1004,7 @@ public enum PaymentSheetError: Error, LocalizedError {
         case .paymentFailed(let detail): return detail.message
         case .verificationFailed(let message): return "Verification failed: \(message)"
         case .preloadFailed(let detail): return detail.errorDescription
+        case .userIdRequired: return "A userId is required for subscriptions and non-consumable products."
         }
     }
 }
@@ -1005,7 +1016,7 @@ public enum PaymentSheetError: Error, LocalizedError {
 private struct ZSPaymentSheetModifier<Header: View>: ViewModifier {
     @Binding var isPresented: Bool
     let product: ZSProduct
-    let userId: String
+    let userId: String?
     let dismissable: Bool
     let header: () -> Header
     let onComplete: (Result<ZSTransaction, Error>) -> Void
@@ -1110,7 +1121,7 @@ private struct ZSPaymentSheetModifier<Header: View>: ViewModifier {
 /// is preserved for instant re-opens.
 private struct ZSPaymentSheetItemModifier<Header: View>: ViewModifier {
     @Binding var item: ZSProduct?
-    let userId: String
+    let userId: String?
     let dismissable: Bool
     let header: () -> Header
     let onComplete: (Result<ZSTransaction, Error>) -> Void
@@ -1213,7 +1224,7 @@ extension View {
     public func zsPaymentSheet(
         isPresented: Binding<Bool>,
         product: ZSProduct,
-        userId: String,
+        userId: String? = nil,
         dismissable: Bool = true,
         onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
     ) -> some View {
@@ -1231,7 +1242,7 @@ extension View {
     public func zsPaymentSheet<Header: View>(
         isPresented: Binding<Bool>,
         product: ZSProduct,
-        userId: String,
+        userId: String? = nil,
         dismissable: Bool = true,
         @ViewBuilder header: @escaping () -> Header,
         onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
@@ -1256,7 +1267,7 @@ extension View {
     ///     }
     public func zsPaymentSheet(
         item: Binding<ZSProduct?>,
-        userId: String,
+        userId: String? = nil,
         dismissable: Bool = true,
         onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
     ) -> some View {
@@ -1272,7 +1283,7 @@ extension View {
     /// Presents a ZeroSettle payment sheet with a custom header, driven by an optional product binding.
     public func zsPaymentSheet<Header: View>(
         item: Binding<ZSProduct?>,
-        userId: String,
+        userId: String? = nil,
         dismissable: Bool = true,
         @ViewBuilder header: @escaping () -> Header,
         onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
@@ -1295,7 +1306,7 @@ extension ZSPaymentSheet where Header == EmptyView {
     public static func present(
         from viewController: UIViewController,
         product: ZSProduct,
-        userId: String,
+        userId: String? = nil,
         dismissable: Bool = true,
         checkoutURL: URL? = nil,
         transactionId: String? = nil,
@@ -1327,7 +1338,7 @@ extension ZSPaymentSheet where Header == EmptyView {
 /// so all presentation modifiers work correctly when called from UIKit.
 private struct PaymentSheetBridge: View {
     let product: ZSProduct
-    let userId: String
+    let userId: String?
     let dismissable: Bool
     let checkoutURL: URL?
     let transactionId: String?

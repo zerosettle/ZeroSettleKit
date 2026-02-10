@@ -69,6 +69,7 @@ public enum ZeroSettleIAPError: Error, LocalizedError {
     case apiError(APIErrorDetail)
     case invalidCallbackURL
     case webCheckoutDisabledForJurisdiction(Jurisdiction)
+    case userIdRequired(productId: String)
     case restoreEntitlementsFailed(partialEntitlements: [Entitlement], underlyingError: Error)
 
     @available(*, deprecated, message: "Use .apiError(APIErrorDetail) instead for richer error context")
@@ -107,6 +108,8 @@ public enum ZeroSettleIAPError: Error, LocalizedError {
             return "Invalid checkout callback URL."
         case .webCheckoutDisabledForJurisdiction(let jurisdiction):
             return "Web checkout is disabled for the \(jurisdiction.rawValue.uppercased()) jurisdiction. Use StoreKit instead."
+        case .userIdRequired(let productId):
+            return "A userId is required to purchase \(productId). Subscriptions and non-consumable products require a user identity for entitlement tracking."
         case .restoreEntitlementsFailed(_, let underlyingError):
             return "Failed to restore entitlements: \(underlyingError.localizedDescription)"
         }
@@ -287,7 +290,7 @@ public final class ZeroSettleIAP: ObservableObject {
         Logger.info("ZeroSettleIAP configured", category: .iap)
 
         // Auto-fetch products, warm up, and restore entitlements when userId is provided
-        if let userId = config.userId {
+        if let userId = config.userId, !userId.isEmpty {
             Logger.info("userId provided — auto-fetching products, warming up, and restoring entitlements", category: .iap)
 
             if let catalog = try? await fetchProducts(userId: userId) {
@@ -375,9 +378,16 @@ public final class ZeroSettleIAP: ObservableObject {
     /// - Parameters:
     ///   - productId: The product identifier to purchase
     ///   - userId: Your app's user identifier (must match RevenueCat app user ID if using RC)
-    public func purchase(productId: String, userId: String) async throws {
+    public func purchase(productId: String, userId: String? = nil) async throws {
         guard let checkoutFlow else {
             throw ZeroSettleIAPError.notConfigured
+        }
+
+        // Subscriptions and non-consumables require a userId for entitlement tracking
+        if userId == nil,
+           let product = products.first(where: { $0.id == productId }),
+           product.type == .autoRenewableSubscription || product.type == .nonRenewingSubscription || product.type == .nonConsumable {
+            throw ZeroSettleIAPError.userIdRequired(productId: productId)
         }
 
         // Check if web checkout is enabled for the detected jurisdiction
@@ -387,7 +397,9 @@ public final class ZeroSettleIAP: ObservableObject {
         }
 
         // Update StoreKit manager with user ID for future sync operations
-        storeKitManager?.setUserId(userId)
+        if let userId {
+            storeKitManager?.setUserId(userId)
+        }
 
         // Signal checkout started BEFORE opening browser
         pendingCheckout = true
@@ -466,7 +478,7 @@ public final class ZeroSettleIAP: ObservableObject {
     ///   - productId: The product identifier to purchase
     ///   - userId: Your app's user ID (for syncing the transaction to ZeroSettle backend)
     /// - Returns: The StoreKit transaction
-    public func purchaseViaStoreKit(productId: String, userId: String) async throws -> StoreKit.Transaction {
+    public func purchaseViaStoreKit(productId: String, userId: String? = nil) async throws -> StoreKit.Transaction {
         guard let storeKitManager else {
             throw ZeroSettleIAPError.notConfigured
         }
@@ -475,11 +487,19 @@ public final class ZeroSettleIAP: ObservableObject {
             throw ZeroSettleIAPError.productNotFound(productId)
         }
 
+        // Subscriptions and non-consumables require a userId for entitlement tracking
+        if userId == nil,
+           product.type == .autoRenewableSubscription || product.type == .nonRenewingSubscription || product.type == .nonConsumable {
+            throw ZeroSettleIAPError.userIdRequired(productId: productId)
+        }
+
         guard let skProduct = product._storeKitProduct else {
             throw StoreKitPurchaseError.productNotFound(productId)
         }
 
-        storeKitManager.setUserId(userId)
+        if let userId {
+            storeKitManager.setUserId(userId)
+        }
         return try await storeKitManager.purchase(skProduct)
     }
 
