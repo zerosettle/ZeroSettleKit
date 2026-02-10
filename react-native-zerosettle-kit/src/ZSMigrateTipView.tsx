@@ -14,6 +14,11 @@ export interface ZSMigrateTipViewProps {
   backgroundColorHex?: string;
 
   /**
+   * The user identifier passed to the checkout backend.
+   */
+  userId: string;
+
+  /**
    * Style for the container view
    */
   style?: StyleProp<ViewStyle>;
@@ -21,6 +26,7 @@ export interface ZSMigrateTipViewProps {
 
 interface NativeProps {
   backgroundColorHex?: string;
+  userId?: string;
   style?: StyleProp<ViewStyle>;
 }
 
@@ -42,6 +48,7 @@ const NativeZSMigrateTipView =
  *   return (
  *     <ZSMigrateTipView
  *       backgroundColorHex="#1E1E1E"
+ *       userId="my_user_id"
  *       style={{ marginHorizontal: 16 }}
  *     />
  *   );
@@ -50,6 +57,7 @@ const NativeZSMigrateTipView =
  */
 export function ZSMigrateTipView({
   backgroundColorHex = '#000000',
+  userId,
   style,
 }: ZSMigrateTipViewProps) {
   if (Platform.OS !== 'ios' || !NativeZSMigrateTipView) {
@@ -60,6 +68,7 @@ export function ZSMigrateTipView({
   return (
     <NativeZSMigrateTipView
       backgroundColorHex={backgroundColorHex}
+      userId={userId}
       style={style}
     />
   );

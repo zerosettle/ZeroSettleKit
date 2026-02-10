@@ -10,6 +10,9 @@ public final class ZSMigrateTipViewContainer: UIView {
     @objc var backgroundColorHex: NSString = "#000000" {
         didSet { updateSwiftUIView() }
     }
+    @objc var userId: NSString = "" {
+        didSet { updateSwiftUIView() }
+    }
     
     public override init(frame: CGRect) {
         super.init(frame: frame)
@@ -26,7 +29,7 @@ public final class ZSMigrateTipViewContainer: UIView {
         let uiColor = UIColor(hex: backgroundColorHex as String) ?? .black
         let swiftUIColor = Color(uiColor)
         
-        let root = ZSMigrateTipView(backgroundColor: swiftUIColor)
+        let root = ZSMigrateTipView(backgroundColor: swiftUIColor, userId: userId as String)
         let any = AnyView(root)
         
         let hc = UIHostingController(rootView: any)
@@ -52,7 +55,7 @@ public final class ZSMigrateTipViewContainer: UIView {
         let uiColor = UIColor(hex: backgroundColorHex as String) ?? .black
         let swiftUIColor = Color(uiColor)
         
-        let root = ZSMigrateTipView(backgroundColor: swiftUIColor)
+        let root = ZSMigrateTipView(backgroundColor: swiftUIColor, userId: userId as String)
         hc.rootView = AnyView(root)
         hc.view.invalidateIntrinsicContentSize()
         setNeedsLayout()

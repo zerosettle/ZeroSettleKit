@@ -7,16 +7,17 @@ const { ZSMigrateTipModule } = NativeModules;
  * This is the recommended approach as it ensures Apple Pay works correctly.
  *
  * @param backgroundColorHex - Background color in hex format (e.g., "#1E1E1E")
+ * @param userId - The user identifier passed to the checkout backend.
  *
  * @example
  * ```tsx
  * import { presentMigrateTip } from 'react-native-zerosettle-kit';
  *
  * // Show the migrate tip modal
- * presentMigrateTip('#1E1E1E');
+ * presentMigrateTip('#1E1E1E', 'my_user_id');
  * ```
  */
-export function presentMigrateTip(backgroundColorHex: string = '#000000'): void {
+export function presentMigrateTip(backgroundColorHex: string = '#000000', userId: string): void {
   if (Platform.OS !== 'ios') {
     console.warn('[ZeroSettleKit] presentMigrateTip is only available on iOS');
     return;
@@ -27,7 +28,7 @@ export function presentMigrateTip(backgroundColorHex: string = '#000000'): void 
     return;
   }
 
-  ZSMigrateTipModule.presentMigrateTip(backgroundColorHex);
+  ZSMigrateTipModule.presentMigrateTip(backgroundColorHex, userId);
 }
 
 /**

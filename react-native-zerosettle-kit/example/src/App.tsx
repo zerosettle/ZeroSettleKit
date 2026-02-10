@@ -8,6 +8,7 @@ export default function App() {
         {/* The migrate tip view - always visible */}
         <ZSMigrateTipView
           backgroundColorHex="#1E1E1E"
+          userId="example_user"
           style={styles.tipView}
         />
       </ScrollView>

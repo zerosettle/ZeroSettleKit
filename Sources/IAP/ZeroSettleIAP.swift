@@ -707,7 +707,10 @@ public final class ZeroSettleIAP: ObservableObject {
     /// - Returns: The merged entitlements from all sources
     @discardableResult
     public func restoreEntitlements(userId: String) async throws -> [Entitlement] {
+        Logger.info("[restoreEntitlements] Called with userId=\"\(userId)\"", category: .iap)
+
         guard let backend else {
+            Logger.error("[restoreEntitlements] SDK not configured, throwing notConfigured", category: .iap)
             throw ZSError.notConfigured
         }
 
@@ -720,16 +723,19 @@ public final class ZeroSettleIAP: ObservableObject {
         if let storeKitManager {
             let storeKitEntitlements = await storeKitManager.getCurrentEntitlements()
             allEntitlements.append(contentsOf: storeKitEntitlements)
-            Logger.info("Restored \(storeKitEntitlements.count) StoreKit entitlements", category: .iap)
+            Logger.info("[restoreEntitlements] Restored \(storeKitEntitlements.count) StoreKit entitlements for userId=\"\(userId)\": \(storeKitEntitlements.map { "[\($0.productId) active=\($0.isActive)]" })", category: .iap)
+        } else {
+            Logger.info("[restoreEntitlements] No StoreKit manager configured, skipping StoreKit entitlements", category: .iap)
         }
 
         // Fetch web checkout entitlements from ZeroSettle backend
         do {
+            Logger.info("[restoreEntitlements] Fetching web entitlements from backend for userId=\"\(userId)\"...", category: .iap)
             let webEntitlements = try await backend.getEntitlements(userId: userId)
             allEntitlements.append(contentsOf: webEntitlements)
-            Logger.info("Restored \(webEntitlements.count) web entitlements", category: .iap)
+            Logger.info("[restoreEntitlements] Restored \(webEntitlements.count) web entitlements for userId=\"\(userId)\": \(webEntitlements.map { "[\($0.productId) active=\($0.isActive)]" })", category: .iap)
         } catch {
-            Logger.error("Failed to fetch web entitlements: \(error)", category: .iap)
+            Logger.error("[restoreEntitlements] Failed to fetch web entitlements for userId=\"\(userId)\": \(error)", category: .iap)
             // Update with partial (StoreKit-only) entitlements before throwing
             updateEntitlements(allEntitlements)
             throw ZSError.restoreEntitlementsFailed(
@@ -739,6 +745,7 @@ public final class ZeroSettleIAP: ObservableObject {
         }
 
         updateEntitlements(allEntitlements)
+        Logger.info("[restoreEntitlements] Final entitlements for userId=\"\(userId)\": \(allEntitlements.map { "[\($0.productId) source=\($0.source) active=\($0.isActive)]" })", category: .iap)
 
         return allEntitlements
     }

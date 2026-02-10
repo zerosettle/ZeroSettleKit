@@ -6,6 +6,7 @@ import WebKit
 // MARK: - Expandable Web Billing Tip View
 public struct ZSMigrateTipView: View {
     let backgroundColor: Color
+    let userId: String
     
     @ObservedObject private var iap = ZeroSettleIAP.shared
     
@@ -19,6 +20,7 @@ public struct ZSMigrateTipView: View {
     @State private var confettiTrigger = 0
     @State private var checkoutURL: URL?
     @State private var checkoutError: Error?
+    @State private var entitlementsLoaded = false
     
     /// Whether the user already has an active web checkout entitlement.
     /// If true, the migrate tip should not be shown.
@@ -26,10 +28,15 @@ public struct ZSMigrateTipView: View {
         iap.entitlements.contains { $0.source == .webCheckout && $0.isActive }
     }
     
+    /// Whether the user has an active StoreKit subscription (paying through Apple).
+    /// Only these users are candidates for migration to web billing.
+    private var hasStoreKitSubscription: Bool {
+        iap.entitlements.contains { $0.source == .storeKit && $0.isActive }
+    }
+    
     // MARK: - Hardcoded Configuration
     
     private static let productId = "divegeniusmonthly"
-    private static let userId = "divegenius_migrate_user"
     static let collapsedHeight: CGFloat = 190
     static let applePayExpandedHeight: CGFloat = 690
     static let cardExpandedHeight: CGFloat = 690
@@ -56,15 +63,32 @@ public struct ZSMigrateTipView: View {
     }
     
     /// Creates a new migrate tip view.
-    /// - Parameter backgroundColor: The background color for the view.
-    public init(backgroundColor: Color) {
+    /// - Parameters:
+    ///   - backgroundColor: The background color for the view.
+    ///   - userId: The user identifier passed to the checkout backend.
+    public init(backgroundColor: Color, userId: String) {
         self.backgroundColor = backgroundColor
+        self.userId = userId
     }
     
     public var body: some View {
-        if hasWebEntitlement && Self.isPermanentlyDismissed {
+        Group {
+        if !entitlementsLoaded {
+            Color.clear.frame(height: 0)
+        } else if hasWebEntitlement {
+            let _ = print("[ZSMigrateTipView Business Logic] Hidden: user already has active web checkout entitlement.")
             EmptyView()
-        } else if !isDismissed && !Self.isPermanentlyDismissed {
+        } else if !hasStoreKitSubscription {
+            let _ = print("[ZSMigrateTipView Business Logic] Hidden: user has no active StoreKit subscription — not a migration candidate.")
+            EmptyView()
+        } else if Self.isPermanentlyDismissed {
+            let _ = print("[ZSMigrateTipView Business Logic] Hidden: tip was permanently dismissed by user.")
+            EmptyView()
+        } else if isDismissed {
+            let _ = print("[ZSMigrateTipView Business Logic] Hidden: tip was dismissed this session.")
+            EmptyView()
+        } else {
+            let _ = print("[ZSMigrateTipView Business Logic] Showing: user has active StoreKit subscription, no web entitlement, not dismissed.")
             VStack(spacing: 0) {
             // Tip header (always visible)
             HStack(alignment: .center, spacing: 12) {
@@ -226,6 +250,14 @@ public struct ZSMigrateTipView: View {
             .background(backgroundColor)
             .cornerRadius(16)
         }
+        }
+        .task {
+            guard !entitlementsLoaded else { return }
+            print("[ZSMigrateTipView Business Logic] Restoring entitlements for userId=\(userId)...")
+            _ = try? await iap.restoreEntitlements(userId: userId)
+            entitlementsLoaded = true
+            print("[ZSMigrateTipView Business Logic] Entitlements loaded. hasStoreKitSubscription=\(hasStoreKitSubscription), hasWebEntitlement=\(hasWebEntitlement), isPermanentlyDismissed=\(Self.isPermanentlyDismissed), entitlements=\(iap.entitlements.map { "[\($0.productId) source=\($0.source) active=\($0.isActive)]" })")
+        }
     }
     
     @MainActor
@@ -279,14 +311,14 @@ public struct ZSMigrateTipView: View {
 
     /// Native inline checkout: create payment intent, expand to show embedded CheckoutWebView.
     private func startWebViewCheckout() {
-        print("🧾 Creating payment intent (productId=\(Self.productId), userId=\(Self.userId))")
+        print("🧾 Creating payment intent (productId=\(Self.productId), userId=\(userId))")
 
         Task {
             do {
                 let backend = try getBackend()
                 let paymentIntent = try await backend.createPaymentIntent(
                     productId: Self.productId,
-                    userId: Self.userId
+                    userId: userId
                 )
 
                 await MainActor.run {
@@ -309,11 +341,11 @@ public struct ZSMigrateTipView: View {
     /// In-app browser (safariVC) or external Safari: create session and open in configured browser.
     /// Completion is handled via universal link callback; entitlements update when user returns.
     private func startBrowserCheckout() {
-        print("🧾 Starting browser checkout (productId=\(Self.productId), userId=\(Self.userId), type=\(iap.checkoutType.rawValue))")
+        print("🧾 Starting browser checkout (productId=\(Self.productId), userId=\(userId), type=\(iap.checkoutType.rawValue))")
 
         Task { @MainActor in
             do {
-                try await iap.purchase(productId: Self.productId, userId: Self.userId)
+                try await iap.purchase(productId: Self.productId, userId: userId)
                 // Browser opened; show cancel state when they return from redirect
                 checkoutSucceeded = true
                 isLoading = false
