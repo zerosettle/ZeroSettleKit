@@ -50,8 +50,6 @@ private final class CheckoutPreloader: ObservableObject {
         let createSpan = trace?.begin("webView.create")
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
-        // Use non-persistent data store to prevent caching between sessions
-        config.websiteDataStore = .nonPersistent()
         config.userContentController.add(messageRouter, name: "checkoutComplete")
         config.userContentController.add(messageRouter, name: "consoleLog")
 
@@ -87,8 +85,8 @@ private final class CheckoutPreloader: ObservableObject {
         self.webView = wv
 
         let loadSpan = trace?.begin("webView.loadURL")
-        var request = URLRequest(url: url)
-        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        PaymentSheetTrace.logger.info("⏱  ▶ webView.loadURL: \(url.absoluteString)")
+        let request = URLRequest(url: url)
         wv.load(request)
 
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
@@ -393,6 +391,11 @@ extension ZSPaymentSheet where Header == EmptyView {
                 checkoutURL: url, transactionId: paymentIntent.transactionId
             )
             trace?.event("cache.store", metadata: ["txnId": paymentIntent.transactionId])
+
+            // Prefetch the checkout page to prime DNS, TLS, and URL cache
+            let prefetchSpan = trace?.begin("prefetch")
+            _ = try? await URLSession.shared.data(from: url)
+            if let prefetchSpan { trace?.end(prefetchSpan) }
 
             if let span { trace?.end(span, metadata: ["source": "network"]) }
             return (url, paymentIntent.transactionId)
@@ -707,8 +710,6 @@ private struct PaymentWebView: UIViewRepresentable {
         // Standard path: create a new WebView
         let configuration = WKWebViewConfiguration()
         configuration.allowsInlineMediaPlayback = true
-        // Use non-persistent data store to prevent caching between sessions
-        configuration.websiteDataStore = .nonPersistent()
         configuration.userContentController.add(context.coordinator, name: "checkoutComplete")
         configuration.userContentController.add(context.coordinator, name: "consoleLog")
 

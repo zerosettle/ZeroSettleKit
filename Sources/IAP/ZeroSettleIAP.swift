@@ -351,6 +351,10 @@ public final class ZeroSettleIAP: ObservableObject {
         // Update StoreKit manager with user ID for future sync operations
         storeKitManager?.setUserId(userId)
 
+        // Signal checkout started BEFORE opening browser
+        pendingCheckout = true
+        delegate?.zeroSettleIAPCheckoutDidBegin(productId: productId)
+
         do {
             let session = try await checkoutFlow.beginCheckout(
                 productId: productId,
@@ -358,11 +362,31 @@ public final class ZeroSettleIAP: ObservableObject {
             )
 
             pendingTransactionId = session.transactionId
-            pendingCheckout = true
-            delegate?.zeroSettleIAPCheckoutDidBegin(productId: productId)
 
-            Logger.info("Checkout started for \(productId), transaction: \(session.transactionId ?? "none")", category: .iap)
+            Logger.info("Checkout browser dismissed for \(productId), transaction: \(session.transactionId ?? "none")", category: .iap)
+
+            // If callback already processed (universal link worked), we're done
+            guard pendingCheckout else {
+                Logger.debug("Callback already processed via universal link", category: .iap)
+                return
+            }
+
+            // Universal link didn't fire — poll the backend for transaction status
+            guard let transactionId = session.transactionId, let _ = backend else {
+                // No transaction ID or backend — treat as cancelled
+                pendingCheckout = false
+                pendingTransactionId = nil
+                delegate?.zeroSettleIAPCheckoutDidCancel(productId: productId)
+                return
+            }
+
+            await resolveTransactionStatus(
+                transactionId: transactionId,
+                productId: productId
+            )
         } catch {
+            pendingCheckout = false
+            pendingTransactionId = nil
             Logger.error("Checkout failed for \(productId): \(error)", category: .iap)
             delegate?.zeroSettleIAPCheckoutDidFail(productId: productId, error: error)
 
@@ -607,6 +631,47 @@ public final class ZeroSettleIAP: ObservableObject {
         // Fallback: no storefront available → default to ROW (most restrictive)
         detectedJurisdiction = .row
         Logger.info("Storefront unavailable, defaulting to ROW jurisdiction", category: .iap)
+    }
+
+    /// Poll the backend to determine whether a checkout completed or was abandoned.
+    /// Called when SFSafariViewController is dismissed without a universal link callback.
+    private func resolveTransactionStatus(transactionId: String, productId: String) async {
+        guard let backend else { return }
+
+        // Brief delay to allow Stripe webhook to process
+        try? await Task.sleep(nanoseconds: 1_500_000_000) // 1.5s
+
+        // If universal link callback arrived during the delay, we're done
+        guard pendingCheckout else {
+            Logger.debug("Callback arrived during polling delay", category: .iap)
+            return
+        }
+
+        do {
+            let transaction = try await backend.getTransaction(transactionId: transactionId)
+
+            if transaction.status == .completed {
+                // Payment succeeded — process as if callback was received
+                Logger.info("Transaction \(transactionId) confirmed completed via polling", category: .iap)
+                let callback = CheckoutCallback(
+                    transactionId: transactionId,
+                    productId: productId,
+                    success: true
+                )
+                await processCheckoutCallback(callback)
+            } else {
+                // Still pending or failed — user dismissed without completing
+                Logger.info("Transaction \(transactionId) still \(transaction.status.rawValue) — treating as cancelled", category: .iap)
+                pendingCheckout = false
+                pendingTransactionId = nil
+                delegate?.zeroSettleIAPCheckoutDidCancel(productId: productId)
+            }
+        } catch {
+            Logger.error("Failed to poll transaction status: \(error)", category: .iap)
+            pendingCheckout = false
+            pendingTransactionId = nil
+            delegate?.zeroSettleIAPCheckoutDidCancel(productId: productId)
+        }
     }
 
     /// Process a checkout callback after the universal link is received.
