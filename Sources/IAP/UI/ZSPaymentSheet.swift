@@ -250,7 +250,7 @@ public struct ZSPaymentSheet<Header: View>: View {
 
     private let product: ZSProduct
     private let userId: String?
-    private let dismissable: Bool
+    private let dismissible: Bool
     private let prefetchedCheckoutURL: URL?
     private let prefetchedTransactionId: String?
     private let preloadedWebView: WKWebView?
@@ -278,7 +278,7 @@ public struct ZSPaymentSheet<Header: View>: View {
     public init(
         product: ZSProduct,
         userId: String? = nil,
-        dismissable: Bool = true,
+        dismissible: Bool = true,
         checkoutURL: URL? = nil,
         transactionId: String? = nil,
         @ViewBuilder header: () -> Header,
@@ -286,7 +286,7 @@ public struct ZSPaymentSheet<Header: View>: View {
     ) {
         self.product = product
         self.userId = userId
-        self.dismissable = dismissable
+        self.dismissible = dismissible
         self.prefetchedCheckoutURL = checkoutURL
         self.prefetchedTransactionId = transactionId
         self.preloadedWebView = nil
@@ -305,7 +305,7 @@ public struct ZSPaymentSheet<Header: View>: View {
     fileprivate init(
         product: ZSProduct,
         userId: String? = nil,
-        dismissable: Bool = true,
+        dismissible: Bool = true,
         preloader: CheckoutPreloader,
         checkoutURL: URL,
         transactionId: String?,
@@ -314,7 +314,7 @@ public struct ZSPaymentSheet<Header: View>: View {
     ) {
         self.product = product
         self.userId = userId
-        self.dismissable = dismissable
+        self.dismissible = dismissible
         self.prefetchedCheckoutURL = checkoutURL
         self.prefetchedTransactionId = transactionId
         self.preloadedWebView = preloader.webView
@@ -336,7 +336,7 @@ extension ZSPaymentSheet where Header == EmptyView {
     public init(
         product: ZSProduct,
         userId: String? = nil,
-        dismissable: Bool = true,
+        dismissible: Bool = true,
         checkoutURL: URL? = nil,
         transactionId: String? = nil,
         onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
@@ -344,7 +344,7 @@ extension ZSPaymentSheet where Header == EmptyView {
         self.init(
             product: product,
             userId: userId,
-            dismissable: dismissable,
+            dismissible: dismissible,
             checkoutURL: checkoutURL,
             transactionId: transactionId,
             header: { EmptyView() },
@@ -460,8 +460,7 @@ extension ZSPaymentSheet {
                     )
 
                     if isLoading {
-//                        Color(.systemBackground)
-                        Color(.orange)
+                        Color(.systemBackground)
                     }
                 }
             } else {
@@ -472,7 +471,7 @@ extension ZSPaymentSheet {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(.systemBackground))
         .overlay(alignment: .topTrailing) {
-            if dismissable {
+            if dismissible {
                 Button {
                     dismiss()
                     onComplete(.failure(PaymentSheetError.cancelled))
@@ -492,7 +491,7 @@ extension ZSPaymentSheet {
         .presentationDetents(isExpanded ? [.height(compactHeight), .large] : [.height(compactHeight)], selection: $selectedDetent)
         .presentationDragIndicator(.hidden)
         .presentationBackground(.clear)
-        .interactiveDismissDisabled(!dismissable)
+        .interactiveDismissDisabled(!dismissible)
         .task {
             // Validate userId for subscription/non-consumable products
             if userId == nil {
@@ -1017,7 +1016,7 @@ private struct ZSPaymentSheetModifier<Header: View>: ViewModifier {
     @Binding var isPresented: Bool
     let product: ZSProduct
     let userId: String?
-    let dismissable: Bool
+    let dismissible: Bool
     let header: () -> Header
     let onComplete: (Result<ZSTransaction, Error>) -> Void
 
@@ -1052,7 +1051,7 @@ private struct ZSPaymentSheetModifier<Header: View>: ViewModifier {
                     ZSPaymentSheet(
                         product: product,
                         userId: userId,
-                        dismissable: dismissable,
+                        dismissible: dismissible,
                         preloader: preloader,
                         checkoutURL: url,
                         transactionId: preloadedTransactionId,
@@ -1070,7 +1069,7 @@ private struct ZSPaymentSheetModifier<Header: View>: ViewModifier {
                     ZSPaymentSheet(
                         product: product,
                         userId: userId,
-                        dismissable: dismissable,
+                        dismissible: dismissible,
                         header: header
                     ) { result in
                         PaymentSheetTrace.logger.info("⏱  ● sheet.result: \(String(describing: result))")
@@ -1122,7 +1121,7 @@ private struct ZSPaymentSheetModifier<Header: View>: ViewModifier {
 private struct ZSPaymentSheetItemModifier<Header: View>: ViewModifier {
     @Binding var item: ZSProduct?
     let userId: String?
-    let dismissable: Bool
+    let dismissible: Bool
     let header: () -> Header
     let onComplete: (Result<ZSTransaction, Error>) -> Void
 
@@ -1157,7 +1156,7 @@ private struct ZSPaymentSheetItemModifier<Header: View>: ViewModifier {
                         ZSPaymentSheet(
                             product: product,
                             userId: userId,
-                            dismissable: dismissable,
+                            dismissible: dismissible,
                             preloader: preloader,
                             checkoutURL: url,
                             transactionId: preloadedTransactionId,
@@ -1175,7 +1174,7 @@ private struct ZSPaymentSheetItemModifier<Header: View>: ViewModifier {
                         ZSPaymentSheet(
                             product: product,
                             userId: userId,
-                            dismissable: dismissable,
+                            dismissible: dismissible,
                             header: header
                         ) { result in
                             PaymentSheetTrace.logger.info("⏱  ● sheet.result: \(String(describing: result))")
@@ -1225,14 +1224,14 @@ extension View {
         isPresented: Binding<Bool>,
         product: ZSProduct,
         userId: String? = nil,
-        dismissable: Bool = true,
+        dismissible: Bool = true,
         onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
     ) -> some View {
         modifier(ZSPaymentSheetModifier<EmptyView>(
             isPresented: isPresented,
             product: product,
             userId: userId,
-            dismissable: dismissable,
+            dismissible: dismissible,
             header: { EmptyView() },
             onComplete: onComplete
         ))
@@ -1243,7 +1242,7 @@ extension View {
         isPresented: Binding<Bool>,
         product: ZSProduct,
         userId: String? = nil,
-        dismissable: Bool = true,
+        dismissible: Bool = true,
         @ViewBuilder header: @escaping () -> Header,
         onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
     ) -> some View {
@@ -1251,7 +1250,7 @@ extension View {
             isPresented: isPresented,
             product: product,
             userId: userId,
-            dismissable: dismissable,
+            dismissible: dismissible,
             header: header,
             onComplete: onComplete
         ))
@@ -1268,13 +1267,13 @@ extension View {
     public func zsPaymentSheet(
         item: Binding<ZSProduct?>,
         userId: String? = nil,
-        dismissable: Bool = true,
+        dismissible: Bool = true,
         onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
     ) -> some View {
         modifier(ZSPaymentSheetItemModifier<EmptyView>(
             item: item,
             userId: userId,
-            dismissable: dismissable,
+            dismissible: dismissible,
             header: { EmptyView() },
             onComplete: onComplete
         ))
@@ -1284,14 +1283,14 @@ extension View {
     public func zsPaymentSheet<Header: View>(
         item: Binding<ZSProduct?>,
         userId: String? = nil,
-        dismissable: Bool = true,
+        dismissible: Bool = true,
         @ViewBuilder header: @escaping () -> Header,
         onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
     ) -> some View {
         modifier(ZSPaymentSheetItemModifier(
             item: item,
             userId: userId,
-            dismissable: dismissable,
+            dismissible: dismissible,
             header: header,
             onComplete: onComplete
         ))
@@ -1307,7 +1306,7 @@ extension ZSPaymentSheet where Header == EmptyView {
         from viewController: UIViewController,
         product: ZSProduct,
         userId: String? = nil,
-        dismissable: Bool = true,
+        dismissible: Bool = true,
         checkoutURL: URL? = nil,
         transactionId: String? = nil,
         onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
@@ -1317,7 +1316,7 @@ extension ZSPaymentSheet where Header == EmptyView {
         let bridge = PaymentSheetBridge(
             product: product,
             userId: userId,
-            dismissable: dismissable,
+            dismissible: dismissible,
             checkoutURL: checkoutURL,
             transactionId: transactionId,
             onComplete: onComplete,
@@ -1339,7 +1338,7 @@ extension ZSPaymentSheet where Header == EmptyView {
 private struct PaymentSheetBridge: View {
     let product: ZSProduct
     let userId: String?
-    let dismissable: Bool
+    let dismissible: Bool
     let checkoutURL: URL?
     let transactionId: String?
     let onComplete: (Result<ZSTransaction, Error>) -> Void
@@ -1353,7 +1352,7 @@ private struct PaymentSheetBridge: View {
                 ZSPaymentSheet(
                     product: product,
                     userId: userId,
-                    dismissable: dismissable,
+                    dismissible: dismissible,
                     checkoutURL: checkoutURL,
                     transactionId: transactionId,
                     onComplete: onComplete

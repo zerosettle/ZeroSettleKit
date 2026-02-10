@@ -42,8 +42,8 @@ public struct APIErrorDetail: Error, LocalizedError, Sendable {
 
 /// Classifies checkout session failures into actionable reasons.
 /// Use this to distinguish between card declines, server errors, and network issues
-/// when handling ``ZeroSettleIAPError/checkoutSessionFailed(reason:)``.
-public enum CheckoutFailureReason: Sendable {
+/// when handling ``ZSError/checkoutSessionFailed(reason:)``.
+public enum CheckoutFailure: Sendable {
     /// The requested product was not found on the server.
     case productNotFound
     /// The merchant has not completed Stripe onboarding.
@@ -58,13 +58,17 @@ public enum CheckoutFailureReason: Sendable {
     case other(String)
 }
 
+/// Backward-compatible typealias for ``CheckoutFailure``.
+@available(*, deprecated, renamed: "CheckoutFailure")
+public typealias CheckoutFailureReason = CheckoutFailure
+
 // MARK: - Errors
 
-public enum ZeroSettleIAPError: Error, LocalizedError {
+public enum ZSError: Error, LocalizedError {
     case notConfigured
     case invalidPublishableKey
     case productNotFound(String)
-    case checkoutSessionFailed(reason: CheckoutFailureReason)
+    case checkoutSessionFailed(reason: CheckoutFailure)
     case transactionVerificationFailed(String)
     case apiError(APIErrorDetail)
     case invalidCallbackURL
@@ -116,6 +120,10 @@ public enum ZeroSettleIAPError: Error, LocalizedError {
     }
 }
 
+/// Backward-compatible typealias for ``ZSError``.
+@available(*, deprecated, renamed: "ZSError")
+public typealias ZeroSettleIAPError = ZSError
+
 // MARK: - ZeroSettle IAP
 
 /// Main entry point for the ZeroSettle IAP SDK.
@@ -146,19 +154,12 @@ public final class ZeroSettleIAP: ObservableObject {
         /// Defaults to `true`.
         public let syncStoreKitTransactions: Bool
 
-        /// Optional user ID to auto-fetch products, warm up the payment sheet, and restore entitlements.
-        /// When provided, `configure()` will automatically call `fetchProducts(userId:)`,
-        /// warm up the first product's `PaymentIntent`, and `restoreEntitlements(userId:)`.
-        public let userId: String?
-
         public init(
             publishableKey: String,
-            syncStoreKitTransactions: Bool = true,
-            userId: String? = nil
+            syncStoreKitTransactions: Bool = true
         ) {
             self.publishableKey = publishableKey
             self.syncStoreKitTransactions = syncStoreKitTransactions
-            self.userId = userId
         }
 
         internal var backendURL: URL {
@@ -244,6 +245,10 @@ public final class ZeroSettleIAP: ObservableObject {
     private var storeKitManager: StoreKitManager?
     private var pendingTransactionId: String?
 
+    /// Whether `.zeroSettleIAPHandler()` has been installed on a view.
+    /// Used to warn developers in DEBUG builds if they forget the modifier.
+    internal var handlerInstalled: Bool = false
+
     // MARK: - Initialization
 
     private init() {
@@ -254,16 +259,21 @@ public final class ZeroSettleIAP: ObservableObject {
 
     /// Configure the SDK. Must be called before any other methods.
     ///
-    /// When `config.userId` is provided, this method automatically:
-    /// 1. Fetches the product catalog
-    /// 2. Warms up the first product's `PaymentIntent` for instant sheet opens
-    /// 3. Restores entitlements
+    /// This is a synchronous call that sets up the SDK's internal state.
+    /// After calling this, use ``fetchProducts(userId:)`` and ``restoreEntitlements(userId:)``
+    /// to load your catalog and entitlements, or use ``bootstrap(userId:)`` as a convenience
+    /// that does both in one call.
     ///
-    /// All automatic steps are non-fatal — failures are logged as warnings
-    /// but won't prevent the SDK from being used.
+    /// ```swift
+    /// // In your App init or early in the launch sequence:
+    /// ZeroSettleIAP.shared.configure(.init(publishableKey: "zs_pk_live_..."))
+    ///
+    /// // Then, in a .task or async context:
+    /// let catalog = try await ZeroSettleIAP.shared.fetchProducts(userId: userId)
+    /// ```
     ///
     /// - Parameter config: The IAP configuration with your publishable key
-    public func configure(_ config: Configuration) async {
+    public func configure(_ config: Configuration) {
         self.config = config
 
         #if DEBUG
@@ -288,27 +298,35 @@ public final class ZeroSettleIAP: ObservableObject {
 
         isConfigured = true
         Logger.info("ZeroSettleIAP configured", category: .iap)
+    }
 
-        // Auto-fetch products, warm up, and restore entitlements when userId is provided
-        if let userId = config.userId, !userId.isEmpty {
-            Logger.info("userId provided — auto-fetching products, warming up, and restoring entitlements", category: .iap)
+    // MARK: - Bootstrap
 
-            if let catalog = try? await fetchProducts(userId: userId) {
-                if let first = catalog.products.first {
-                    await ZSPaymentSheet<EmptyView>.warmUp(productId: first.id, userId: userId)
-                }
-            } else {
-                Logger.error("Auto-fetch products failed (non-fatal)", category: .iap)
-            }
+    /// Convenience that fetches products, warms up the payment sheet, and restores entitlements.
+    ///
+    /// Equivalent to calling ``fetchProducts(userId:)``, ``ZSPaymentSheet/warmUp(productId:userId:)``,
+    /// and ``restoreEntitlements(userId:)`` in sequence. Throws if the product fetch or entitlement
+    /// restore fails (warm-up failures are non-fatal).
+    ///
+    /// ```swift
+    /// ZeroSettleIAP.shared.configure(.init(publishableKey: "zs_pk_live_..."))
+    /// try await ZeroSettleIAP.shared.bootstrap(userId: currentUser.id)
+    /// ```
+    ///
+    /// - Parameter userId: Your app's user identifier for fetching entitlements and migration data
+    /// - Returns: A ``ProductCatalog`` containing products and remote configuration
+    @discardableResult
+    public func bootstrap(userId: String) async throws -> ProductCatalog {
+        let catalog = try await fetchProducts(userId: userId)
 
-            if let _ = try? await restoreEntitlements(userId: userId) {
-                Logger.info("Auto-restored entitlements", category: .iap)
-            } else {
-                Logger.error("Auto-restore entitlements failed (non-fatal)", category: .iap)
-            }
-        } else {
-            Logger.info("No userId provided — skipping auto-fetch and entitlement restore", category: .iap)
+        // Warm up is non-fatal — just improves first-open latency
+        if let first = catalog.products.first {
+            await ZSPaymentSheet<EmptyView>.warmUp(productId: first.id, userId: userId)
         }
+
+        try await restoreEntitlements(userId: userId)
+
+        return catalog
     }
 
     // MARK: - Products
@@ -323,7 +341,7 @@ public final class ZeroSettleIAP: ObservableObject {
     @discardableResult
     public func fetchProducts(userId: String? = nil) async throws -> ProductCatalog {
         guard let backend else {
-            throw ZeroSettleIAPError.notConfigured
+            throw ZSError.notConfigured
         }
 
         do {
@@ -380,20 +398,30 @@ public final class ZeroSettleIAP: ObservableObject {
     ///   - userId: Your app's user identifier (must match RevenueCat app user ID if using RC)
     public func purchase(productId: String, userId: String? = nil) async throws {
         guard let checkoutFlow else {
-            throw ZeroSettleIAPError.notConfigured
+            throw ZSError.notConfigured
         }
+
+        // Warn if the universal link handler isn't installed
+        #if DEBUG
+        if !handlerInstalled {
+            Logger.error("⚠️ .zeroSettleIAPHandler() is not installed on any view. Universal link callbacks from Safari checkout will not be received. Add .zeroSettleIAPHandler() to your root view.", category: .iap)
+        }
+        #endif
 
         // Subscriptions and non-consumables require a userId for entitlement tracking
         if userId == nil,
            let product = products.first(where: { $0.id == productId }),
            product.type == .autoRenewableSubscription || product.type == .nonRenewingSubscription || product.type == .nonConsumable {
-            throw ZeroSettleIAPError.userIdRequired(productId: productId)
+            #if DEBUG
+            assertionFailure("userId is required for \(product.type.rawValue) products. Pass a userId to purchase() or purchaseViaStoreKit().")
+            #endif
+            throw ZSError.userIdRequired(productId: productId)
         }
 
         // Check if web checkout is enabled for the detected jurisdiction
         if !isWebCheckoutEnabled {
             let jurisdiction = detectedJurisdiction ?? .row
-            throw ZeroSettleIAPError.webCheckoutDisabledForJurisdiction(jurisdiction)
+            throw ZSError.webCheckoutDisabledForJurisdiction(jurisdiction)
         }
 
         // Update StoreKit manager with user ID for future sync operations
@@ -440,7 +468,7 @@ public final class ZeroSettleIAP: ObservableObject {
             Logger.error("Checkout failed for \(productId): \(error)", category: .iap)
             delegate?.zeroSettleIAPCheckoutDidFail(productId: productId, error: error)
 
-            let reason: CheckoutFailureReason
+            let reason: CheckoutFailure
             if let httpError = error as? HTTPError {
                 switch httpError {
                 case .httpError(let statusCode, let body):
@@ -462,12 +490,12 @@ public final class ZeroSettleIAP: ObservableObject {
                 default:
                     reason = .other(error.localizedDescription)
                 }
-            } else if let iapError = error as? ZeroSettleIAPError {
+            } else if let iapError = error as? ZSError {
                 throw iapError
             } else {
                 reason = .other(error.localizedDescription)
             }
-            throw ZeroSettleIAPError.checkoutSessionFailed(reason: reason)
+            throw ZSError.checkoutSessionFailed(reason: reason)
         }
     }
 
@@ -480,17 +508,20 @@ public final class ZeroSettleIAP: ObservableObject {
     /// - Returns: The StoreKit transaction
     public func purchaseViaStoreKit(productId: String, userId: String? = nil) async throws -> StoreKit.Transaction {
         guard let storeKitManager else {
-            throw ZeroSettleIAPError.notConfigured
+            throw ZSError.notConfigured
         }
 
         guard let product = products.first(where: { $0.id == productId }) else {
-            throw ZeroSettleIAPError.productNotFound(productId)
+            throw ZSError.productNotFound(productId)
         }
 
         // Subscriptions and non-consumables require a userId for entitlement tracking
         if userId == nil,
            product.type == .autoRenewableSubscription || product.type == .nonRenewingSubscription || product.type == .nonConsumable {
-            throw ZeroSettleIAPError.userIdRequired(productId: productId)
+            #if DEBUG
+            assertionFailure("userId is required for \(product.type.rawValue) products. Pass a userId to purchase() or purchaseViaStoreKit().")
+            #endif
+            throw ZSError.userIdRequired(productId: productId)
         }
 
         guard let skProduct = product._storeKitProduct else {
@@ -512,7 +543,7 @@ public final class ZeroSettleIAP: ObservableObject {
     /// - Parameter userId: Your app's user identifier
     public func trackMigrationConversion(userId: String) async throws {
         guard let backend else {
-            throw ZeroSettleIAPError.notConfigured
+            throw ZSError.notConfigured
         }
 
         do {
@@ -533,7 +564,7 @@ public final class ZeroSettleIAP: ObservableObject {
     /// - Parameter userId: Your app's user identifier
     public func openCustomerPortal(userId: String) async throws {
         guard let backend, let customerPortalFlow else {
-            throw ZeroSettleIAPError.notConfigured
+            throw ZSError.notConfigured
         }
 
         do {
@@ -622,7 +653,7 @@ public final class ZeroSettleIAP: ObservableObject {
     @discardableResult
     public func restoreEntitlements(userId: String) async throws -> [Entitlement] {
         guard let backend else {
-            throw ZeroSettleIAPError.notConfigured
+            throw ZSError.notConfigured
         }
 
         // Update StoreKit manager with user ID
@@ -647,7 +678,7 @@ public final class ZeroSettleIAP: ObservableObject {
             // Update with partial (StoreKit-only) entitlements before throwing
             entitlements = allEntitlements
             delegate?.zeroSettleIAPEntitlementsDidUpdate(allEntitlements)
-            throw ZeroSettleIAPError.restoreEntitlementsFailed(
+            throw ZSError.restoreEntitlementsFailed(
                 partialEntitlements: allEntitlements,
                 underlyingError: error
             )
@@ -750,7 +781,7 @@ public final class ZeroSettleIAP: ObservableObject {
             let transaction = try await backend.getTransaction(transactionId: callback.transactionId)
 
             guard transaction.status == .completed else {
-                let error = ZeroSettleIAPError.transactionVerificationFailed(
+                let error = ZSError.transactionVerificationFailed(
                     "Transaction status: \(transaction.status.rawValue)"
                 )
                 delegate?.zeroSettleIAPCheckoutDidFail(productId: callback.productId, error: error)
@@ -803,7 +834,7 @@ public final class ZeroSettleIAP: ObservableObject {
             Logger.error("Transaction verification failed: \(error)", category: .iap)
             delegate?.zeroSettleIAPCheckoutDidFail(
                 productId: callback.productId,
-                error: ZeroSettleIAPError.transactionVerificationFailed(error.localizedDescription)
+                error: ZSError.transactionVerificationFailed(error.localizedDescription)
             )
         }
 

@@ -18,6 +18,9 @@ public typealias SKTransaction = StoreKit.Transaction
 // MARK: - StoreKit Purchase Error
 
 /// Errors that can occur during StoreKit purchases.
+///
+/// > Note: In a future release these cases will be folded into ``ZSError``.
+/// > For now, catch `StoreKitPurchaseError` when calling ``ZeroSettleIAP/purchaseViaStoreKit(productId:userId:)``.
 public enum StoreKitPurchaseError: Error, LocalizedError {
     case productNotFound(String)
     case verificationFailed(Error)

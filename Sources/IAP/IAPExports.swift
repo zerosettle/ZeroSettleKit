@@ -17,15 +17,22 @@ import Foundation
 //
 // From ZeroSettleIAP.swift:
 //   - ZeroSettleIAP (main class)
-//   - ZeroSettleIAPError
+//   - ZSError (canonical error type)
+//   - CheckoutFailure (checkout failure reasons)
+//   - APIErrorDetail (structured API error detail)
+//   - ZeroSettleIAPError (deprecated typealias → ZSError)
+//   - CheckoutFailureReason (deprecated typealias → CheckoutFailure)
 //
 // From ZeroSettleIAPDelegate.swift:
 //   - ZeroSettleIAPDelegate
 //
 // From Models/Product.swift:
-//   - ZSProduct
+//   - ZSProduct (includes savingsPercent, storeKitPrice, storeKitAvailable)
 //   - ZSProductType
 //   - Price
+//
+// From Models/ProductCatalog.swift:
+//   - ProductCatalog
 //
 // From Models/Transaction.swift:
 //   - ZSTransaction
@@ -45,9 +52,13 @@ import Foundation
 //   - RemoteConfig
 //
 // From Checkout/ZeroSettleCheckoutView.swift:
-//   - ZeroSettleCheckoutView
-//   - CheckoutError
+//   - ZeroSettleCheckoutView (deprecated → ZSPaymentSheet)
 //
 // From UI/ZSPaymentSheet.swift:
 //   - ZSPaymentSheet
 //   - PaymentSheetError
+//   - PaymentFailureDetail
+//
+// From StoreKit/StoreKitManager.swift:
+//   - StoreKitPurchaseError
+//

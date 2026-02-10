@@ -25,6 +25,9 @@ public struct ZeroSettleIAPHandlerModifier: ViewModifier {
             .onOpenURL { url in
                 ZeroSettleIAP.shared.handleUniversalLink(url)
             }
+            .onAppear {
+                ZeroSettleIAP.shared.handlerInstalled = true
+            }
     }
 }
 

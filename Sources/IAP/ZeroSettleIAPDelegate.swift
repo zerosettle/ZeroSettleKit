@@ -32,7 +32,7 @@ public protocol ZeroSettleIAPDelegate: AnyObject {
     /// - Parameters:
     ///   - productId: The product that was being purchased
     ///   - error: The underlying error. Concrete types passed include
-    ///     ``ZeroSettleIAPError`` (`.checkoutSessionFailed`, `.apiError`, `.transactionVerificationFailed`)
+    ///     ``ZSError`` (`.checkoutSessionFailed`, `.apiError`, `.transactionVerificationFailed`)
     ///     and ``PaymentSheetError`` (`.paymentFailed`, `.verificationFailed`).
     func zeroSettleIAPCheckoutDidFail(productId: String, error: Error)
 
@@ -53,7 +53,7 @@ public protocol ZeroSettleIAPDelegate: AnyObject {
 
     /// Called when syncing a StoreKit transaction to ZeroSettle fails.
     /// - Parameter error: The underlying error. Concrete type is typically
-    ///   ``ZeroSettleIAPError/apiError(_:)`` wrapping the HTTP failure.
+    ///   ``ZSError/apiError(_:)`` wrapping the HTTP failure.
     func zeroSettleIAPStoreKitSyncFailed(error: Error)
 
     // MARK: - Customer Portal Events
