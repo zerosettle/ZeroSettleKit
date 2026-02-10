@@ -8,6 +8,7 @@
 
 import Foundation
 import StoreKit
+import SwiftUI
 
 #if canImport(ZeroSettleCore)
 import ZeroSettleCore
@@ -142,12 +143,19 @@ public final class ZeroSettleIAP: ObservableObject {
         /// Defaults to `true`.
         public let syncStoreKitTransactions: Bool
 
+        /// Optional user ID to auto-fetch products, warm up the payment sheet, and restore entitlements.
+        /// When provided, `configure()` will automatically call `fetchProducts(userId:)`,
+        /// warm up the first product's `PaymentIntent`, and `restoreEntitlements(userId:)`.
+        public let userId: String?
+
         public init(
             publishableKey: String,
-            syncStoreKitTransactions: Bool = true
+            syncStoreKitTransactions: Bool = true,
+            userId: String? = nil
         ) {
             self.publishableKey = publishableKey
             self.syncStoreKitTransactions = syncStoreKitTransactions
+            self.userId = userId
         }
 
         internal var backendURL: URL {
@@ -242,8 +250,17 @@ public final class ZeroSettleIAP: ObservableObject {
     // MARK: - Configuration
 
     /// Configure the SDK. Must be called before any other methods.
+    ///
+    /// When `config.userId` is provided, this method automatically:
+    /// 1. Fetches the product catalog
+    /// 2. Warms up the first product's `PaymentIntent` for instant sheet opens
+    /// 3. Restores entitlements
+    ///
+    /// All automatic steps are non-fatal — failures are logged as warnings
+    /// but won't prevent the SDK from being used.
+    ///
     /// - Parameter config: The IAP configuration with your publishable key
-    public func configure(_ config: Configuration) {
+    public func configure(_ config: Configuration) async {
         self.config = config
 
         #if DEBUG
@@ -268,6 +285,27 @@ public final class ZeroSettleIAP: ObservableObject {
 
         isConfigured = true
         Logger.info("ZeroSettleIAP configured", category: .iap)
+
+        // Auto-fetch products, warm up, and restore entitlements when userId is provided
+        if let userId = config.userId {
+            Logger.info("userId provided — auto-fetching products, warming up, and restoring entitlements", category: .iap)
+
+            if let catalog = try? await fetchProducts(userId: userId) {
+                if let first = catalog.products.first {
+                    await ZSPaymentSheet<EmptyView>.warmUp(productId: first.id, userId: userId)
+                }
+            } else {
+                Logger.error("Auto-fetch products failed (non-fatal)", category: .iap)
+            }
+
+            if let _ = try? await restoreEntitlements(userId: userId) {
+                Logger.info("Auto-restored entitlements", category: .iap)
+            } else {
+                Logger.error("Auto-restore entitlements failed (non-fatal)", category: .iap)
+            }
+        } else {
+            Logger.info("No userId provided — skipping auto-fetch and entitlement restore", category: .iap)
+        }
     }
 
     // MARK: - Products

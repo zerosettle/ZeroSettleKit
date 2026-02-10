@@ -428,7 +428,16 @@ extension ZSPaymentSheet {
             if let error = loadError {
                 errorView(error)
             } else if let url = checkoutURL {
-                if !(Header.self == EmptyView.self) {
+                if Header.self == EmptyView.self {
+                    defaultHeader
+                        .background(GeometryReader { geo in
+                            Color.clear.preference(key: HeaderHeightKey.self, value: geo.size.height)
+                        })
+                        .onPreferenceChange(HeaderHeightKey.self) { newHeight in
+                            headerHeight = newHeight
+                            recalculateHeight()
+                        }
+                } else {
                     header
                         .frame(maxWidth: .infinity)
                         .padding(.bottom, 8)
@@ -492,6 +501,17 @@ extension ZSPaymentSheet {
                 await createPaymentIntent()
             }
         }
+    }
+
+    // MARK: - Default Header
+
+    private var defaultHeader: some View {
+        Text(product.displayName)
+            .font(.headline)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
+            .padding(.bottom, 8)
     }
 
     // MARK: - Height Calculation
