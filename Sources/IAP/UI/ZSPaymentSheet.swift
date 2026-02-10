@@ -670,21 +670,50 @@ extension ZSPaymentSheet {
             return
         }
 
-        do {
-            let backend = Backend(baseURL: baseURL, publishableKey: config.publishableKey)
-            let transaction = try await backend.getTransaction(transactionId: transactionId)
-            trace.event("verified", metadata: ["status": transaction.status.rawValue, "productId": transaction.productId])
-            trace.finish()
-            await MainActor.run {
-                dismiss()
-                onComplete(.success(transaction))
-            }
-        } catch {
-            trace.event("verification failed", metadata: ["error": "\(error)"])
-            trace.finish()
-            await MainActor.run {
-                dismiss()
-                onComplete(.failure(PaymentSheetError.verificationFailed(error.localizedDescription)))
+        let backend = Backend(baseURL: baseURL, publishableKey: config.publishableKey)
+
+        // Poll for up to ~12s if the payment is still processing (common with
+        // Apple Pay in test mode). Once we get completed/failed/other, return.
+        let maxAttempts = 6
+        var lastTransaction: ZSTransaction?
+
+        for attempt in 1...maxAttempts {
+            do {
+                let transaction = try await backend.getTransaction(transactionId: transactionId)
+                lastTransaction = transaction
+
+                if transaction.status == .processing && attempt < maxAttempts {
+                    trace.event("still processing", metadata: ["attempt": "\(attempt)"])
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    continue
+                }
+
+                trace.event("verified", metadata: ["status": transaction.status.rawValue, "productId": transaction.productId, "attempts": "\(attempt)"])
+                trace.finish()
+                await MainActor.run {
+                    dismiss()
+                    onComplete(.success(transaction))
+                }
+                return
+            } catch {
+                trace.event("verification failed", metadata: ["error": "\(error)", "attempt": "\(attempt)"])
+                if attempt == maxAttempts {
+                    trace.finish()
+                    // If we got a processing transaction before the error, return it
+                    if let txn = lastTransaction {
+                        await MainActor.run {
+                            dismiss()
+                            onComplete(.success(txn))
+                        }
+                    } else {
+                        await MainActor.run {
+                            dismiss()
+                            onComplete(.failure(PaymentSheetError.verificationFailed(error.localizedDescription)))
+                        }
+                    }
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
     }
@@ -943,7 +972,7 @@ private struct PaymentWebView: UIViewRepresentable {
                 return
             }
 
-            if status == "success" {
+            if status == "success" || status == "processing" {
                 onAction(.complete(transactionId: transactionId))
             } else {
                 onAction(.cancelled)
