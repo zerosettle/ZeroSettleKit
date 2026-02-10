@@ -328,7 +328,7 @@ public struct ZSMigrateTipView: View {
     private func getBackend() throws -> Backend {
         guard let config = ZeroSettleIAP.shared.currentConfig,
               let baseURL = ZeroSettleIAP.shared.effectiveBaseURL else {
-            throw ZeroSettleIAPError.notConfigured
+            throw ZSError.notConfigured
         }
         return Backend(baseURL: baseURL, publishableKey: config.publishableKey)
     }

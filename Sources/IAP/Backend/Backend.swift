@@ -47,8 +47,8 @@ internal final class Backend: @unchecked Sendable {
 
     /// Fetch the product catalog for this developer's app.
     /// - Parameter userId: Optional user ID to check for migration eligibility
-    /// - Returns: Tuple of products and optional remote config
-    func fetchProducts(userId: String? = nil) async throws -> (products: [ZSProduct], config: RemoteConfig?) {
+    /// - Returns: A ``ProductCatalog`` containing products and remote configuration
+    func fetchProducts(userId: String? = nil) async throws -> ProductCatalog {
         let span = PaymentSheetTrace.current?.begin("fetchProducts", metadata: ["userId": userId ?? "(none)"])
 
         var components = URLComponents(url: apiURL("iap/products/"), resolvingAgainstBaseURL: false)!
@@ -123,7 +123,7 @@ internal final class Backend: @unchecked Sendable {
         }
 
         if let span { PaymentSheetTrace.current?.end(span, metadata: ["products": "\(response.products.count)"]) }
-        return (response.products, remoteConfig)
+        return ProductCatalog(products: response.products, config: remoteConfig)
     }
 
     // MARK: - Checkout Sessions
@@ -273,10 +273,10 @@ internal final class Backend: @unchecked Sendable {
 
     // MARK: - Error Wrapping
 
-    /// Convert any error thrown by the HTTP layer into a typed `ZeroSettleIAPError.apiError`.
-    /// If the error is already a `ZeroSettleIAPError`, it passes through unchanged.
-    static func wrapError(_ error: Error) -> ZeroSettleIAPError {
-        if let iapError = error as? ZeroSettleIAPError {
+    /// Convert any error thrown by the HTTP layer into a typed `ZSError.apiError`.
+    /// If the error is already a `ZSError`, it passes through unchanged.
+    static func wrapError(_ error: Error) -> ZSError {
+        if let iapError = error as? ZSError {
             return iapError
         }
 

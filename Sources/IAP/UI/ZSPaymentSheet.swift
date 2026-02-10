@@ -985,6 +985,16 @@ public struct PaymentFailureDetail: Sendable {
 
 // MARK: - Payment Sheet Error
 
+/// Errors specific to the payment sheet UI.
+///
+/// - Note: Prefer catching ``ZSError`` instead for a unified error type.
+///   `PaymentSheetError` cases map to `ZSError` as follows:
+///   - `.cancelled` → ``ZSError/cancelled``
+///   - `.notConfigured` → ``ZSError/notConfigured``
+///   - `.paymentFailed` → ``ZSError/checkoutFailed(reason:)``
+///   - `.verificationFailed` → ``ZSError/transactionVerificationFailed(_:)``
+///   - `.preloadFailed` → ``ZSError/apiError(_:)``
+///   - `.userIdRequired` → ``ZSError/userIdRequired(productId:)``
 public enum PaymentSheetError: Error, LocalizedError {
     case cancelled
     case notConfigured
