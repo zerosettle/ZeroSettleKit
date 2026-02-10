@@ -27,10 +27,10 @@ ZeroSettleKit ships two independent products you can import separately:
 
 | Product | Import | Purpose |
 |---------|--------|---------|
-| **ZeroSettleIAP** | `import ZeroSettleIAP` | Merchant of Record web checkout for subscriptions and one-time purchases |
+| **ZeroSettleKit** | `import ZeroSettleKit` | Merchant of Record web checkout for subscriptions and one-time purchases |
 | **ZeroSettleEscrow** | `import ZeroSettleEscrow` | Skill-based competitive gaming with on-chain Solana escrow |
 
-This README covers **ZeroSettleIAP**. For Escrow documentation, see [docs.zerosettle.io](https://docs.zerosettle.io).
+This README covers **ZeroSettleKit**. For Escrow documentation, see [docs.zerosettle.io](https://docs.zerosettle.io).
 
 ## Installation
 
@@ -40,7 +40,7 @@ Add ZeroSettleKit to your project in Xcode:
 
 1. File > Add Package Dependencies...
 2. Enter: `https://github.com/zerosettle/ZeroSettleKit`
-3. Add `ZeroSettleIAP` to your target
+3. Add `ZeroSettleKit` to your target
 
 Or in `Package.swift`:
 
@@ -52,7 +52,7 @@ targets: [
     .target(
         name: "YourApp",
         dependencies: [
-            .product(name: "ZeroSettleIAP", package: "ZeroSettleKit")
+            .product(name: "ZeroSettleKit", package: "ZeroSettleKit")
         ]
     )
 ]
@@ -65,9 +65,9 @@ targets: [
 Call `configure` early in your app lifecycle — typically in your `App` init or `AppDelegate`:
 
 ```swift
-import ZeroSettleIAP
+import ZeroSettleKit
 
-ZeroSettleIAP.shared.configure(.init(
+ZeroSettle.shared.configure(.init(
     publishableKey: "pk_live_your_key",
     environment: .production,
     syncStoreKitTransactions: true
@@ -84,7 +84,7 @@ struct MyApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .zeroSettleIAPHandler()
+                .zeroSettleHandler()
         }
     }
 }
@@ -95,7 +95,7 @@ struct MyApp: App {
 Products are defined in the [ZeroSettle Dashboard](https://zerosettle.io) and include both web pricing and App Store pricing:
 
 ```swift
-let products = try await ZeroSettleIAP.shared.fetchProducts(userId: user.id)
+let products = try await ZeroSettle.shared.fetchProducts(userId: user.id)
 
 for product in products {
     print("\(product.displayName): \(product.webPrice.formatted)")
@@ -125,7 +125,7 @@ Use the built-in payment sheet for an embedded checkout experience with Apple Pa
 Or trigger a Safari-based checkout directly:
 
 ```swift
-try await ZeroSettleIAP.shared.purchase(
+try await ZeroSettle.shared.purchase(
     productId: "pro_monthly",
     userId: user.id
 )
@@ -136,7 +136,7 @@ try await ZeroSettleIAP.shared.purchase(
 Entitlements unify purchases from both web checkout and StoreKit into a single state:
 
 ```swift
-let entitlements = try await ZeroSettleIAP.shared.restoreEntitlements(userId: user.id)
+let entitlements = try await ZeroSettle.shared.restoreEntitlements(userId: user.id)
 
 let isPro = entitlements.contains { $0.productId == "pro_monthly" && $0.isActive }
 ```
@@ -157,7 +157,7 @@ The SDK reads this configuration automatically — no client-side changes needed
 
 ## User Identity
 
-ZeroSettleIAP works with any authentication system:
+ZeroSettleKit works with any authentication system:
 
 | Approach | When to use | userId value |
 |----------|-------------|--------------|
@@ -169,23 +169,23 @@ Use a stable, non-email identifier. See [User Identity](https://docs.zerosettle.
 
 ## Delegate
 
-Implement `ZeroSettleIAPDelegate` to observe checkout and entitlement events:
+Implement `ZeroSettleDelegate` to observe checkout and entitlement events:
 
 ```swift
-extension AppState: ZeroSettleIAPDelegate {
-    func zeroSettleIAPCheckoutDidComplete(transaction: ZSTransaction) {
+extension AppState: ZeroSettleDelegate {
+    func zeroSettleCheckoutDidComplete(transaction: ZSTransaction) {
         // Purchase succeeded — entitlements are already updated
     }
 
-    func zeroSettleIAPCheckoutDidCancel(productId: String) {
+    func zeroSettleCheckoutDidCancel(productId: String) {
         // User dismissed checkout
     }
 
-    func zeroSettleIAPCheckoutDidFail(productId: String, error: Error) {
+    func zeroSettleCheckoutDidFail(productId: String, error: Error) {
         // Handle error
     }
 
-    func zeroSettleIAPEntitlementsDidUpdate(_ entitlements: [Entitlement]) {
+    func zeroSettleEntitlementsDidUpdate(_ entitlements: [Entitlement]) {
         // Entitlement state changed
     }
 }
@@ -197,13 +197,13 @@ Offer both web checkout (lower fees) and native StoreKit on the same paywall:
 
 ```swift
 // Web checkout — 5% + 50¢
-try await ZeroSettleIAP.shared.purchase(
+try await ZeroSettle.shared.purchase(
     productId: "pro_monthly",
     userId: user.id
 )
 
 // StoreKit fallback — standard App Store pricing
-let transaction = try await ZeroSettleIAP.shared.purchaseViaStoreKit(
+let transaction = try await ZeroSettle.shared.purchaseViaStoreKit(
     productId: "pro_monthly",
     userId: user.id
 )
@@ -221,7 +221,7 @@ Web checkout callbacks require universal links. Add an Apple App Site Associatio
 
 | Type | Description |
 |------|-------------|
-| `ZeroSettleIAP` | Main SDK singleton — configure, fetch, purchase, restore |
+| `ZeroSettle` | Main SDK singleton — configure, fetch, purchase, restore |
 | `Product` | A purchasable item with web and App Store pricing |
 | `Entitlement` | An active access right with source tracking (`.webCheckout` or `.storeKit`) |
 | `ZSTransaction` | Result of a completed purchase |
@@ -234,7 +234,7 @@ Web checkout callbacks require universal links. Add an Apple App Site Associatio
 - iOS 17.0+
 - Swift 5.9+
 - Xcode 15.0+
-- No third-party dependencies (for ZeroSettleIAP)
+- No third-party dependencies (for ZeroSettleKit)
 
 ## Best Practices
 
