@@ -15,6 +15,9 @@ import Foundation
 public protocol ZeroSettleIAPDelegate: AnyObject {
 
     // MARK: - Checkout Events
+    //
+    // Note: These callbacks are supplementary — checkout results are also returned
+    // via the `purchase()` async method and the `zsPaymentSheet` completion handler.
 
     /// Called when a web checkout begins (Safari is opening).
     /// - Parameter productId: The product being purchased
@@ -31,14 +34,16 @@ public protocol ZeroSettleIAPDelegate: AnyObject {
     /// Called when a web checkout fails.
     /// - Parameters:
     ///   - productId: The product that was being purchased
-    ///   - error: The underlying error. Concrete types passed include
-    ///     ``ZeroSettleIAPError`` (`.checkoutSessionFailed`, `.apiError`, `.transactionVerificationFailed`)
-    ///     and ``PaymentSheetError`` (`.paymentFailed`, `.verificationFailed`).
+    ///   - error: The underlying error (``ZSError`` or ``PaymentSheetError``)
     func zeroSettleIAPCheckoutDidFail(productId: String, error: Error)
 
     // MARK: - Entitlement Events
 
     /// Called when the user's entitlements are updated (from either source).
+    ///
+    /// - Note: For async/await code, prefer ``ZeroSettleIAP/entitlementUpdates``
+    ///   (`AsyncStream<[Entitlement]>`) over this delegate method.
+    ///
     /// - Parameter entitlements: The updated list of all entitlements
     func zeroSettleIAPEntitlementsDidUpdate(_ entitlements: [Entitlement])
 
@@ -53,23 +58,28 @@ public protocol ZeroSettleIAPDelegate: AnyObject {
 
     /// Called when syncing a StoreKit transaction to ZeroSettle fails.
     /// - Parameter error: The underlying error. Concrete type is typically
-    ///   ``ZeroSettleIAPError/apiError(_:)`` wrapping the HTTP failure.
+    ///   ``ZSError/apiError(_:)`` wrapping the HTTP failure.
     func zeroSettleIAPStoreKitSyncFailed(error: Error)
 
     // MARK: - Customer Portal Events
+    //
+    // Note: Portal results are also returned from the async `openCustomerPortal(userId:)` method.
 
     /// Called when the customer portal is opened in-app.
     /// - Parameter userId: The user whose portal was opened
+    @available(*, deprecated, message: "Use the async openCustomerPortal(userId:) return value instead")
     func zeroSettleIAPCustomerPortalDidOpen(userId: String)
 
     /// Called when the customer portal is dismissed.
     /// - Parameter userId: The user whose portal was closed
+    @available(*, deprecated, message: "Use the async openCustomerPortal(userId:) return value instead")
     func zeroSettleIAPCustomerPortalDidClose(userId: String)
 
     /// Called when opening the customer portal fails.
     /// - Parameters:
     ///   - userId: The user whose portal failed to open
     ///   - error: The underlying error
+    @available(*, deprecated, message: "Use the async openCustomerPortal(userId:) throws pattern instead")
     func zeroSettleIAPCustomerPortalDidFail(userId: String, error: Error)
 }
 

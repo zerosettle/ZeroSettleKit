@@ -18,6 +18,13 @@ public typealias SKTransaction = StoreKit.Transaction
 // MARK: - StoreKit Purchase Error
 
 /// Errors that can occur during StoreKit purchases.
+///
+/// - Note: Prefer catching ``ZSError`` instead, which unifies all SDK errors.
+///   `StoreKitPurchaseError` cases map to `ZSError` as follows:
+///   - `.productNotFound` → ``ZSError/productNotFound(_:)``
+///   - `.verificationFailed` → ``ZSError/storeKitVerificationFailed(underlyingError:)``
+///   - `.userCancelled` → ``ZSError/cancelled``
+///   - `.pending` → ``ZSError/purchasePending``
 public enum StoreKitPurchaseError: Error, LocalizedError {
     case productNotFound(String)
     case verificationFailed(Error)

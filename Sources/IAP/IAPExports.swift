@@ -17,7 +17,9 @@ import Foundation
 //
 // From ZeroSettleIAP.swift:
 //   - ZeroSettleIAP (main class)
-//   - ZeroSettleIAPError
+//   - ZSError (unified error type; typealias ZeroSettleIAPError = ZSError)
+//   - CheckoutFailure (checkout failure reasons; typealias CheckoutFailureReason = CheckoutFailure)
+//   - APIErrorDetail
 //
 // From ZeroSettleIAPDelegate.swift:
 //   - ZeroSettleIAPDelegate
@@ -37,17 +39,26 @@ import Foundation
 //
 // From Models/Promotion.swift:
 //   - Promotion
+//   - PromotionType
+//
+// From Models/ProductCatalog.swift:
+//   - ProductCatalog
 //
 // From Models/RemoteConfig.swift:
 //   - CheckoutType
 //   - CheckoutConfig
+//   - JurisdictionCheckoutConfig
 //   - MigrationPrompt
 //   - RemoteConfig
-//
-// From Checkout/ZeroSettleCheckoutView.swift:
-//   - ZeroSettleCheckoutView
-//   - CheckoutError
+//   - Jurisdiction
 //
 // From UI/ZSPaymentSheet.swift:
 //   - ZSPaymentSheet
-//   - PaymentSheetError
+//   - PaymentSheetError (deprecated — prefer ZSError)
+//   - PaymentFailureDetail
+//
+// From UI/ZSManageSubscription.swift:
+//   - View.zsManageSubscription(isPresented:userId:)
+//
+// From StoreKit/StoreKitManager.swift:
+//   - StoreKitPurchaseError (deprecated — prefer ZSError)

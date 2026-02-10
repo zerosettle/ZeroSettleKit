@@ -48,7 +48,7 @@ internal final class WebCheckoutFlow: NSObject {
     ///   - userId: The developer's user identifier
     /// - Returns: The checkout session (contains transactionId for status polling)
     @MainActor
-    func beginCheckout(productId: String, userId: String) async throws -> CheckoutSession {
+    func beginCheckout(productId: String, userId: String? = nil) async throws -> CheckoutSession {
         Logger.info("Creating checkout session for product: \(productId)", category: .iap)
 
         let session = try await backend.createCheckoutSession(
