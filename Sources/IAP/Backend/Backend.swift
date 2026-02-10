@@ -273,8 +273,8 @@ internal final class Backend: @unchecked Sendable {
 
     // MARK: - Error Wrapping
 
-    /// Convert any error thrown by the HTTP layer into a typed `ZSError.apiError`.
-    /// If the error is already a `ZSError`, it passes through unchanged.
+    /// Convert any error thrown by the HTTP layer into a typed ``ZSError/apiError(_:)``.
+    /// If the error is already a ``ZSError``, it passes through unchanged.
     static func wrapError(_ error: Error) -> ZSError {
         if let iapError = error as? ZSError {
             return iapError
