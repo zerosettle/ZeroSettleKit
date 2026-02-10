@@ -60,27 +60,6 @@ public protocol ZeroSettleIAPDelegate: AnyObject {
     /// - Parameter error: The underlying error. Concrete type is typically
     ///   ``ZSError/apiError(_:)`` wrapping the HTTP failure.
     func zeroSettleIAPStoreKitSyncFailed(error: Error)
-
-    // MARK: - Customer Portal Events
-    //
-    // Note: Portal results are also returned from the async `openCustomerPortal(userId:)` method.
-
-    /// Called when the customer portal is opened in-app.
-    /// - Parameter userId: The user whose portal was opened
-    @available(*, deprecated, message: "Use the async openCustomerPortal(userId:) return value instead")
-    func zeroSettleIAPCustomerPortalDidOpen(userId: String)
-
-    /// Called when the customer portal is dismissed.
-    /// - Parameter userId: The user whose portal was closed
-    @available(*, deprecated, message: "Use the async openCustomerPortal(userId:) return value instead")
-    func zeroSettleIAPCustomerPortalDidClose(userId: String)
-
-    /// Called when opening the customer portal fails.
-    /// - Parameters:
-    ///   - userId: The user whose portal failed to open
-    ///   - error: The underlying error
-    @available(*, deprecated, message: "Use the async openCustomerPortal(userId:) throws pattern instead")
-    func zeroSettleIAPCustomerPortalDidFail(userId: String, error: Error)
 }
 
 // MARK: - Default Implementations
@@ -93,7 +72,4 @@ public extension ZeroSettleIAPDelegate {
     func zeroSettleIAPEntitlementsDidUpdate(_ entitlements: [Entitlement]) {}
     func zeroSettleIAPDidSyncStoreKitTransaction(productId: String, transactionId: UInt64) {}
     func zeroSettleIAPStoreKitSyncFailed(error: Error) {}
-    func zeroSettleIAPCustomerPortalDidOpen(userId: String) {}
-    func zeroSettleIAPCustomerPortalDidClose(userId: String) {}
-    func zeroSettleIAPCustomerPortalDidFail(userId: String, error: Error) {}
 }

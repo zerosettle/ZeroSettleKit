@@ -643,13 +643,11 @@ struct CheckoutWebView: UIViewRepresentable {
                 return
             }
 
-            let urlString = url.absoluteString
             let host = (url.host ?? "").lowercased()
             let path = url.path.lowercased()
             let query = (url.query ?? "").lowercased()
 
             let isNewWindow = (navigationAction.targetFrame == nil)
-            let isMainFrame = (navigationAction.targetFrame?.isMainFrame ?? false)
 
             // Don't treat the main checkout URL as a universal link.
             let isCheckoutPage = host == "api.zerosettle.io" && path.hasPrefix("/elements/checkout")
