@@ -11,6 +11,7 @@ let package = Package(
     products: [
         .library(
             name: "ZeroSettleKit",
+            type: .dynamic,
             targets: ["ZeroSettleKit"]
         ),
     ],

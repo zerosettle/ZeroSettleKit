@@ -11,7 +11,7 @@ import SwiftUI
 import WebKit
 
 #if canImport(ZeroSettleCore)
-import ZeroSettleCore
+@_implementationOnly import ZeroSettleCore
 #endif
 
 // MARK: - Message Router

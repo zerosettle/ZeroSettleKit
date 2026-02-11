@@ -1,34 +1,32 @@
 Pod::Spec.new do |s|
   s.name             = 'ZeroSettleKit'
-  s.version          = '1.0.0'
-  s.summary          = 'ZeroSettle SDK for iOS - In-App Purchase solutions'
+  s.version          = '0.5.0'
+  s.summary          = 'Merchant of Record SDK for iOS — web checkout, entitlements, and compliance.'
   s.description      = <<-DESC
-    ZeroSettleKit provides the ZeroSettleIAP module for Merchant of Record web checkout.
-    
-    For the full ZeroSettleEscrow module (blockchain escrow functionality), 
-    please use Swift Package Manager instead, as it requires dependencies
-    (Privy, Solana, MetaMask, Coinbase) that are only available via SPM.
+    ZeroSettleKit lets iOS developers process payments via web checkout
+    while ZeroSettle handles sales tax, VAT, compliance, and liability
+    as the Merchant of Record.
   DESC
 
-  s.homepage         = 'https://github.com/ZeroSettle/ZeroSettleKit'
+  s.homepage         = 'https://github.com/zerosettle/ZeroSettleKit'
   s.license          = { :type => 'MIT', :file => 'LICENSE' }
-  s.author           = { 'ZeroSettle' => 'gabe@zerosettle.com' }
-  s.source           = { :git => 'https://github.com/ZeroSettle/ZeroSettleKit.git', :tag => s.version.to_s }
+  s.author           = { 'ZeroSettle, Inc.' => 'ryan@zerosettle.io' }
+  s.source           = { :git => 'https://github.com/zerosettle/ZeroSettleKit.git', :tag => s.version.to_s }
 
   s.ios.deployment_target = '17.0'
   s.swift_version = '5.9'
 
-  # Source files - include both Core and IAP
-  # CocoaPods compiles everything into a single module, so no inter-module imports needed
+  # Compile both targets into a single CocoaPods module.
+  # The #if canImport(ZeroSettleCore) guards in source skip
+  # the inter-module imports since everything is in one module.
   s.source_files = [
-    'Sources/Core/**/*.swift',
-    'Sources/IAP/**/*.swift'
+    'Sources/ZeroSettleCore/**/*.swift',
+    'Sources/ZeroSettleKit/**/*.swift'
   ]
 
-  # System frameworks
-  s.frameworks = 'Foundation', 'UIKit', 'SwiftUI', 'StoreKit', 'WebKit'
+  s.frameworks = 'Foundation', 'UIKit', 'SwiftUI', 'StoreKit',
+                 'WebKit', 'SafariServices', 'Combine'
 
-  # Build settings
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',
     'SWIFT_COMPILATION_MODE' => 'wholemodule'

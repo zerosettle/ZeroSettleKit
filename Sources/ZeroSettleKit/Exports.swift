@@ -8,7 +8,7 @@
 import Foundation
 
 #if canImport(ZeroSettleCore)
-@_exported import ZeroSettleCore
+@_implementationOnly import ZeroSettleCore
 #endif
 
 // MARK: - Public Types

@@ -23,6 +23,10 @@ DerivedData
 .swiftpm/
 Package.resolved
 
+# XCFramework build artifacts
+archives/
+*.xcframework/
+
 # CocoaPods
 Pods/
 
