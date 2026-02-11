@@ -49,29 +49,14 @@ internal final class WebCheckoutFlow: NSObject {
     /// - Returns: The checkout session (contains transactionId for status polling)
     @MainActor
     func beginCheckout(productId: String, userId: String? = nil) async throws -> CheckoutSession {
-        ZSLogger.info("Creating payment intent for product: \(productId)", category: .iap)
+        ZSLogger.info("Creating checkout session for product: \(productId)", category: .iap)
 
-        let response = try await backend.createPaymentIntent(
+        let session = try await backend.createCheckoutSession(
             productId: productId,
             userId: userId
         )
 
-        guard let checkoutUrl = URL(string: response.checkoutUrl) else {
-            throw ZSError.apiError(APIErrorDetail(
-                statusCode: nil,
-                serverMessage: "Invalid checkout URL returned by server",
-                serverCode: nil,
-                underlyingError: nil
-            ))
-        }
-
-        let session = CheckoutSession(
-            sessionId: response.transactionId,
-            checkoutUrl: checkoutUrl,
-            transactionId: response.transactionId
-        )
-
-        ZSLogger.info("Payment intent created, transaction: \(response.transactionId)", category: .iap)
+        ZSLogger.info("Checkout session created, transaction: \(session.transactionId ?? "none")", category: .iap)
 
         // Determine checkout type from remote config
         let checkoutType = ZeroSettle.shared.checkoutType

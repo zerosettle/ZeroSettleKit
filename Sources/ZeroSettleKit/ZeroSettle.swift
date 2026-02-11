@@ -308,7 +308,6 @@ public final class ZeroSettle: ObservableObject {
     private var checkoutFlow: WebCheckoutFlow?
     private var customerPortalFlow: CustomerPortalFlow?
     private var storeKitManager: StoreKitManager?
-    private var pendingTransactionId: String?
 
     /// Whether `.zeroSettleHandler()` has been installed on a view.
     /// Used to warn developers in DEBUG builds if they forget the modifier.
@@ -464,8 +463,10 @@ public final class ZeroSettle: ObservableObject {
 
     /// Initiate a web checkout for the given product.
     ///
-    /// Opens a Stripe checkout page. The result arrives via the universal link
-    /// callback (see ``handleUniversalLink(_:)``).
+    /// Opens a Stripe checkout page in the configured checkout type (Safari, SFSafariViewController,
+    /// or WebView) and returns the verified transaction on success. For Safari/SafariVC paths, the
+    /// result may arrive via the universal link callback or by polling the backend after the browser
+    /// is dismissed.
     ///
     /// - Important: `userId` is **required** for subscriptions and non-consumable products.
     ///   Passing `nil` for these product types throws ``ZSError/userIdRequired(productId:)``.
@@ -475,8 +476,10 @@ public final class ZeroSettle: ObservableObject {
     ///   - productId: The product identifier to purchase
     ///   - userId: Your app's user identifier. Required for subscriptions and non-consumables.
     ///     Must match your RevenueCat app user ID if using RC.
-    public func purchase(productId: String, userId: String? = nil) async throws {
-        guard let checkoutFlow else {
+    /// - Returns: The verified ``ZSTransaction`` on success
+    @discardableResult
+    public func purchase(productId: String, userId: String? = nil) async throws -> ZSTransaction {
+        guard let checkoutFlow, let backend else {
             throw ZSError.notConfigured
         }
 
@@ -518,32 +521,57 @@ public final class ZeroSettle: ObservableObject {
                 userId: userId
             )
 
-            pendingTransactionId = session.transactionId
-
             ZSLogger.info("Checkout browser dismissed for \(productId), transaction: \(session.transactionId ?? "none")", category: .iap)
 
-            // If callback already processed (universal link worked), we're done
+            // If the universal link callback already fired, pendingCheckout is false
+            // and processCheckoutCallback already handled delegate/entitlements.
+            // Just fetch the transaction to return it.
             guard pendingCheckout else {
                 ZSLogger.debug("Callback already processed via universal link", category: .iap)
-                return
+                if let transactionId = session.transactionId {
+                    let transaction = try await backend.getTransaction(transactionId: transactionId)
+                    return transaction
+                }
+                throw ZSError.cancelled
             }
 
-            // Universal link didn't fire — poll the backend for transaction status
-            guard let transactionId = session.transactionId, let _ = backend else {
-                // No transaction ID or backend — treat as cancelled
+            // Universal link didn't fire — verify via polling
+            guard let transactionId = session.transactionId else {
                 pendingCheckout = false
-                pendingTransactionId = nil
+
                 delegate?.zeroSettleCheckoutDidCancel(productId: productId)
-                return
+                throw ZSError.cancelled
             }
 
-            await resolveTransactionStatus(
-                transactionId: transactionId,
-                productId: productId
-            )
+            do {
+                let transaction = try await backend.verifyTransaction(transactionId: transactionId)
+                pendingCheckout = false
+
+
+                ZSLogger.info("Transaction \(transactionId) verified via polling", category: .iap)
+                delegate?.zeroSettleCheckoutDidComplete(transaction: transaction)
+                await refreshEntitlementsAfterCheckout(transaction: transaction)
+                return transaction
+            } catch let sheetError as PaymentSheetError {
+                pendingCheckout = false
+
+                switch sheetError {
+                case .cancelled:
+                    delegate?.zeroSettleCheckoutDidCancel(productId: productId)
+                    throw ZSError.cancelled
+                case .verificationFailed(let message):
+                    delegate?.zeroSettleCheckoutDidFail(productId: productId, error: sheetError)
+                    throw ZSError.transactionVerificationFailed(message)
+                default:
+                    delegate?.zeroSettleCheckoutDidFail(productId: productId, error: sheetError)
+                    throw ZSError.checkoutFailed(reason: .other(sheetError.localizedDescription ?? "Unknown error"))
+                }
+            }
+        } catch let error as ZSError {
+            pendingCheckout = false
+            throw error
         } catch {
             pendingCheckout = false
-            pendingTransactionId = nil
             ZSLogger.error("Checkout failed for \(productId): \(error)", category: .iap)
             delegate?.zeroSettleCheckoutDidFail(productId: productId, error: error)
 
@@ -569,8 +597,6 @@ public final class ZeroSettle: ObservableObject {
                 default:
                     reason = .other(error.localizedDescription)
                 }
-            } else if let iapError = error as? ZSError {
-                throw iapError
             } else {
                 reason = .other(error.localizedDescription)
             }
@@ -818,91 +844,19 @@ public final class ZeroSettle: ObservableObject {
         ZSLogger.info("Storefront unavailable, defaulting to ROW jurisdiction", category: .iap)
     }
 
-    /// Poll the backend to determine whether a checkout completed or was abandoned.
-    /// Called when SFSafariViewController is dismissed without a universal link callback.
-    private func resolveTransactionStatus(transactionId: String, productId: String) async {
-        guard let backend else { return }
-
-        // Brief delay to allow Stripe webhook to process
-        try? await Task.sleep(nanoseconds: 1_500_000_000) // 1.5s
-
-        // If universal link callback arrived during the delay, we're done
-        guard pendingCheckout else {
-            ZSLogger.debug("Callback arrived during polling delay", category: .iap)
-            return
-        }
-
-        // Poll with retries — payments (especially Apple Pay) can stay in
-        // "processing" for several seconds before transitioning to "completed".
-        let maxAttempts = 6
-        let pollInterval: UInt64 = 2_000_000_000 // 2s
-
-        for attempt in 1...maxAttempts {
-            do {
-                let transaction = try await backend.getTransaction(transactionId: transactionId)
-
-                if transaction.status == .completed {
-                    ZSLogger.info("Transaction \(transactionId) confirmed completed via polling (attempt \(attempt))", category: .iap)
-                    let callback = CheckoutCallback(
-                        transactionId: transactionId,
-                        productId: productId,
-                        success: true
-                    )
-                    await processCheckoutCallback(callback)
-                    return
-                } else if transaction.status == .processing {
-                    ZSLogger.info("Transaction \(transactionId) still processing (attempt \(attempt)/\(maxAttempts))", category: .iap)
-                    if attempt < maxAttempts {
-                        try? await Task.sleep(nanoseconds: pollInterval)
-                        guard pendingCheckout else {
-                            ZSLogger.debug("Callback arrived during processing poll", category: .iap)
-                            return
-                        }
-                        continue
-                    }
-                    // Final attempt still processing — treat as success and let
-                    // the app resolve via entitlement check later
-                    ZSLogger.info("Transaction \(transactionId) still processing after \(maxAttempts) attempts — treating as completed", category: .iap)
-                    let callback = CheckoutCallback(
-                        transactionId: transactionId,
-                        productId: productId,
-                        success: true
-                    )
-                    await processCheckoutCallback(callback)
-                    return
-                } else {
-                    // pending (no payment started), failed, etc. — user dismissed without completing
-                    ZSLogger.info("Transaction \(transactionId) status \(transaction.status.rawValue) — treating as cancelled", category: .iap)
-                    pendingCheckout = false
-                    pendingTransactionId = nil
-                    delegate?.zeroSettleCheckoutDidCancel(productId: productId)
-                    return
-                }
-            } catch {
-                ZSLogger.error("Failed to poll transaction status (attempt \(attempt)): \(error)", category: .iap)
-                if attempt == maxAttempts {
-                    pendingCheckout = false
-                    pendingTransactionId = nil
-                    delegate?.zeroSettleCheckoutDidCancel(productId: productId)
-                    return
-                }
-                try? await Task.sleep(nanoseconds: pollInterval)
-            }
-        }
-    }
-
     /// Process a checkout callback after the universal link is received.
+    /// Verifies the transaction via the shared `Backend.verifyTransaction()` method,
+    /// fires delegate callbacks, refreshes entitlements, and — if `purchase()` is
+    /// awaiting — resumes its continuation with the result.
     private func processCheckoutCallback(_ callback: CheckoutCallback) async {
         pendingCheckout = false
 
         guard callback.success else {
             ZSLogger.info("Checkout cancelled for product: \(callback.productId)", category: .iap)
             delegate?.zeroSettleCheckoutDidCancel(productId: callback.productId)
-            pendingTransactionId = nil
             return
         }
 
-        // Verify the transaction with the backend
         guard let backend else { return }
 
         do {
@@ -913,51 +867,14 @@ public final class ZeroSettle: ObservableObject {
                     "Transaction status: \(transaction.status.rawValue)"
                 )
                 delegate?.zeroSettleCheckoutDidFail(productId: callback.productId, error: error)
-                pendingTransactionId = nil
+
                 return
             }
 
             ZSLogger.info("Checkout \(transaction.status == .processing ? "processing" : "completed"): \(transaction.id) for \(transaction.productId)", category: .iap)
             delegate?.zeroSettleCheckoutDidComplete(transaction: transaction)
 
-            // Fetch fresh entitlements from backend to get proper expiry dates
-            // This ensures subscription expiresAt is populated correctly from the server
-            if let userId = storeKitManager?.currentUserId {
-                do {
-                    let freshEntitlements = try await backend.getEntitlements(userId: userId)
-                    // Merge: keep StoreKit entitlements, add/replace web entitlements
-                    let storeKitEnts = entitlements.filter { $0.source == .storeKit }
-                    updateEntitlements(storeKitEnts + freshEntitlements)
-                    ZSLogger.info("Refreshed entitlements after checkout: \(freshEntitlements.count) web entitlements", category: .iap)
-                } catch {
-                    ZSLogger.error("Failed to refresh entitlements after checkout: \(error)", category: .iap)
-                    // Fall back to creating local entitlement with available info
-                    let entitlement = Entitlement(
-                        id: "web_\(transaction.id)",
-                        productId: transaction.productId,
-                        source: .webCheckout,
-                        isActive: true,
-                        expiresAt: transaction.expiresAt,
-                        purchasedAt: transaction.purchasedAt
-                    )
-                    var updated = entitlements
-                    updated.append(entitlement)
-                    updateEntitlements(updated)
-                }
-            } else {
-                // No user ID available, create local entitlement
-                let entitlement = Entitlement(
-                    id: "web_\(transaction.id)",
-                    productId: transaction.productId,
-                    source: .webCheckout,
-                    isActive: true,
-                    expiresAt: transaction.expiresAt,
-                    purchasedAt: transaction.purchasedAt
-                )
-                var updated = entitlements
-                updated.append(entitlement)
-                updateEntitlements(updated)
-            }
+            await refreshEntitlementsAfterCheckout(transaction: transaction)
 
         } catch {
             ZSLogger.error("Transaction verification failed: \(error)", category: .iap)
@@ -966,8 +883,42 @@ public final class ZeroSettle: ObservableObject {
                 error: ZSError.transactionVerificationFailed(error.localizedDescription)
             )
         }
+    }
 
-        pendingTransactionId = nil
+    /// Refresh entitlements after a successful checkout.
+    /// Fetches fresh entitlements from the backend and merges with StoreKit entitlements.
+    /// Falls back to creating a local entitlement if the backend call fails.
+    private func refreshEntitlementsAfterCheckout(transaction: ZSTransaction) async {
+        guard let backend else { return }
+
+        if let userId = storeKitManager?.currentUserId {
+            do {
+                let freshEntitlements = try await backend.getEntitlements(userId: userId)
+                let storeKitEnts = entitlements.filter { $0.source == .storeKit }
+                updateEntitlements(storeKitEnts + freshEntitlements)
+                ZSLogger.info("Refreshed entitlements after checkout: \(freshEntitlements.count) web entitlements", category: .iap)
+            } catch {
+                ZSLogger.error("Failed to refresh entitlements after checkout: \(error)", category: .iap)
+                appendLocalEntitlement(for: transaction)
+            }
+        } else {
+            appendLocalEntitlement(for: transaction)
+        }
+    }
+
+    /// Create and append a local entitlement from a transaction when backend fetch fails.
+    private func appendLocalEntitlement(for transaction: ZSTransaction) {
+        let entitlement = Entitlement(
+            id: "web_\(transaction.id)",
+            productId: transaction.productId,
+            source: .webCheckout,
+            isActive: true,
+            expiresAt: transaction.expiresAt,
+            purchasedAt: transaction.purchasedAt
+        )
+        var updated = entitlements
+        updated.append(entitlement)
+        updateEntitlements(updated)
     }
 
 }

@@ -199,6 +199,47 @@ internal final class Backend: @unchecked Sendable {
         }
     }
 
+    // MARK: - Transaction Verification
+
+    /// Poll the backend to verify a transaction has completed.
+    /// Used by both `ZSPaymentSheet` (webview path) and `ZeroSettle.purchase()` (safari paths).
+    ///
+    /// Waits an initial 1.5s for webhook processing, then polls `getTransaction()`
+    /// up to `maxAttempts` times. Returns the transaction on `.completed` or
+    /// `.processing` (final attempt), throws `PaymentSheetError.cancelled` on
+    /// pending/failed, and `PaymentSheetError.verificationFailed` on timeout.
+    func verifyTransaction(
+        transactionId: String,
+        maxAttempts: Int = 6,
+        pollInterval: UInt64 = 2_000_000_000
+    ) async throws -> ZSTransaction {
+        // Initial delay for webhook processing
+        try? await Task.sleep(nanoseconds: 1_500_000_000)
+
+        var lastTransaction: ZSTransaction?
+        for attempt in 1...maxAttempts {
+            let transaction = try await getTransaction(transactionId: transactionId)
+            lastTransaction = transaction
+
+            switch transaction.status {
+            case .completed:
+                return transaction
+            case .processing:
+                if attempt < maxAttempts {
+                    try? await Task.sleep(nanoseconds: pollInterval)
+                    continue
+                }
+                // Final attempt still processing — treat as completed
+                return transaction
+            default:
+                // pending/failed — user didn't complete payment
+                throw PaymentSheetError.cancelled
+            }
+        }
+        if let txn = lastTransaction { return txn }
+        throw PaymentSheetError.verificationFailed("Verification timed out")
+    }
+
     // MARK: - Entitlements
 
     /// Get the current entitlements for a user.

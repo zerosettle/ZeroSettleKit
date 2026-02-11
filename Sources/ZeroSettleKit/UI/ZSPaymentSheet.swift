@@ -354,10 +354,13 @@ extension ZSPaymentSheet where Header == EmptyView {
 
     /// Pre-create a PaymentIntent and return the checkout URL.
     /// Results are cached for 5 minutes so repeated opens skip the API call.
+    /// Returns `nil` immediately for non-webview checkout types (no API call needed).
     public static func preload(
         productId: String,
         userId: String? = nil
     ) async -> (checkoutURL: URL, transactionId: String)? {
+        // Only webview checkout uses PaymentIntents — safari/safariVC use checkout sessions
+        guard ZeroSettle.shared.checkoutType == .webview else { return nil }
         let trace = PaymentSheetTrace.current
         let span = trace?.begin("createPaymentIntent", metadata: ["productId": productId])
 
@@ -527,12 +530,14 @@ extension ZSPaymentSheet {
     private func recalculateHeight() {
         let contentH = webContentHeight > 0 ? webContentHeight : 400
         let totalHeight = headerHeight + contentH
-        let clamped = min(max(totalHeight, 200), 700)
+        let newHeight = min(max(totalHeight, 200), 700)
+
+        guard newHeight != compactHeight else { return }
 
         withAnimation(.easeInOut(duration: 0.3)) {
-            compactHeight = clamped
+            compactHeight = newHeight
             if !isExpanded {
-                selectedDetent = .height(clamped)
+                selectedDetent = .height(newHeight)
             }
         }
     }
@@ -656,65 +661,23 @@ extension ZSPaymentSheet {
     }
 
     private func verifyAndComplete(transactionId: String) async {
-        let trace = PaymentSheetTrace("verifyAndComplete")
-        PaymentSheetTrace.current = trace
-
         guard let config = ZeroSettle.shared.currentConfig,
               let baseURL = ZeroSettle.shared.effectiveBaseURL else {
-            trace.event("error: SDK not configured")
-            trace.finish()
-            await MainActor.run {
-                dismiss()
-                onComplete(.failure(PaymentSheetError.notConfigured))
-            }
+            dismiss()
+            onComplete(.failure(PaymentSheetError.notConfigured))
             return
         }
 
         let backend = Backend(baseURL: baseURL, publishableKey: config.publishableKey)
-
-        // Poll for up to ~12s if the payment is still processing (common with
-        // Apple Pay in test mode). Once we get completed/failed/other, return.
-        let maxAttempts = 6
-        var lastTransaction: ZSTransaction?
-
-        for attempt in 1...maxAttempts {
-            do {
-                let transaction = try await backend.getTransaction(transactionId: transactionId)
-                lastTransaction = transaction
-
-                if transaction.status == .processing && attempt < maxAttempts {
-                    trace.event("still processing", metadata: ["attempt": "\(attempt)"])
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
-                    continue
-                }
-
-                trace.event("verified", metadata: ["status": transaction.status.rawValue, "productId": transaction.productId, "attempts": "\(attempt)"])
-                trace.finish()
-                await MainActor.run {
-                    dismiss()
-                    onComplete(.success(transaction))
-                }
-                return
-            } catch {
-                trace.event("verification failed", metadata: ["error": "\(error)", "attempt": "\(attempt)"])
-                if attempt == maxAttempts {
-                    trace.finish()
-                    // If we got a processing transaction before the error, return it
-                    if let txn = lastTransaction {
-                        await MainActor.run {
-                            dismiss()
-                            onComplete(.success(txn))
-                        }
-                    } else {
-                        await MainActor.run {
-                            dismiss()
-                            onComplete(.failure(PaymentSheetError.verificationFailed(error.localizedDescription)))
-                        }
-                    }
-                    return
-                }
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-            }
+        do {
+            let transaction = try await backend.verifyTransaction(transactionId: transactionId)
+            dismiss()
+            onComplete(.success(transaction))
+            // Fire delegate for consistency across all checkout types
+            await ZeroSettle.shared.delegate?.zeroSettleCheckoutDidComplete(transaction: transaction)
+        } catch {
+            dismiss()
+            onComplete(.failure(PaymentSheetError.verificationFailed(error.localizedDescription)))
         }
     }
 }
@@ -1026,8 +989,6 @@ public struct PaymentFailureDetail: Sendable {
 public enum PaymentSheetError: Error, LocalizedError {
     case cancelled
     case notConfigured
-    case presentationFailed
-    case invalidCard
     case paymentFailed(PaymentFailureDetail)
     case verificationFailed(String)
     case preloadFailed(APIErrorDetail)
@@ -1037,8 +998,6 @@ public enum PaymentSheetError: Error, LocalizedError {
         switch self {
         case .cancelled: return "Payment was cancelled"
         case .notConfigured: return "ZeroSettle is not configured"
-        case .presentationFailed: return "Unable to present payment UI"
-        case .invalidCard: return "Please enter valid card details"
         case .paymentFailed(let detail): return detail.message
         case .verificationFailed(let message): return "Verification failed: \(message)"
         case .preloadFailed(let detail): return detail.errorDescription
@@ -1122,6 +1081,23 @@ private struct ZSPaymentSheetModifier<Header: View>: ViewModifier {
     }
 
     private func preloadAll() async {
+        let checkoutType = ZeroSettle.shared.checkoutType
+
+        // Safari / SafariVC — delegate to purchase() which opens the browser
+        guard checkoutType == .webview else {
+            do {
+                let transaction = try await ZeroSettle.shared.purchase(
+                    productId: product.id, userId: userId
+                )
+                onComplete(.success(transaction))
+            } catch {
+                onComplete(.failure(error))
+            }
+            isPresented = false
+            return
+        }
+
+        // Webview path — preload PaymentIntent + WebView, then present sheet
         let trace = PaymentSheetTrace("preloadAll(isPresented:)")
         PaymentSheetTrace.current = trace
 
@@ -1228,6 +1204,23 @@ private struct ZSPaymentSheetItemModifier<Header: View>: ViewModifier {
     }
 
     private func preloadAll(product: ZSProduct) async {
+        let checkoutType = ZeroSettle.shared.checkoutType
+
+        // Safari / SafariVC — delegate to purchase() which opens the browser
+        guard checkoutType == .webview else {
+            do {
+                let transaction = try await ZeroSettle.shared.purchase(
+                    productId: product.id, userId: userId
+                )
+                onComplete(.success(transaction))
+            } catch {
+                onComplete(.failure(error))
+            }
+            item = nil
+            return
+        }
+
+        // Webview path — preload PaymentIntent + WebView, then present sheet
         let trace = PaymentSheetTrace("preloadAll(item:)")
         PaymentSheetTrace.current = trace
 
@@ -1350,53 +1343,153 @@ extension ZSPaymentSheet where Header == EmptyView {
         transactionId: String? = nil,
         onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
     ) {
-        weak var bridgeController: UIViewController?
-
-        let bridge = PaymentSheetBridge(
+        present(
+            from: viewController,
             product: product,
             userId: userId,
             dismissible: dismissible,
             checkoutURL: checkoutURL,
             transactionId: transactionId,
+            header: { EmptyView() },
+            onComplete: onComplete
+        )
+    }
+}
+
+extension ZSPaymentSheet {
+    /// Present a ZeroSettle payment sheet with a custom header from a UIKit view controller.
+    ///
+    /// Uses a transparent overlay that presents `ZSPaymentSheet` via SwiftUI's
+    /// `.sheet()` modifier, so `.presentationDetents` works correctly.
+    @MainActor
+    public static func present<H: View>(
+        from viewController: UIViewController,
+        product: ZSProduct,
+        userId: String? = nil,
+        dismissible: Bool = true,
+        checkoutURL: URL? = nil,
+        transactionId: String? = nil,
+        @ViewBuilder header: @escaping () -> H,
+        onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
+    ) {
+        let bridge = UIKitSheetBridge<H>(
+            product: product,
+            userId: userId,
+            dismissible: dismissible,
+            checkoutURL: checkoutURL,
+            transactionId: transactionId,
+            header: header,
             onComplete: onComplete,
             onDismissed: {
-                bridgeController?.dismiss(animated: false)
+                viewController.dismiss(animated: false)
             }
         )
 
         let hosting = UIHostingController(rootView: bridge)
         hosting.view.backgroundColor = .clear
         hosting.modalPresentationStyle = .overFullScreen
-        bridgeController = hosting
         viewController.present(hosting, animated: false)
     }
 }
 
-/// Transparent bridge that presents ZSPaymentSheet via SwiftUI's `.sheet`
-/// so all presentation modifiers work correctly when called from UIKit.
-private struct PaymentSheetBridge: View {
+/// Transparent bridge that preloads the PaymentIntent and WebView, then
+/// presents `ZSPaymentSheet` via SwiftUI's `.sheet()` so
+/// `.presentationDetents` works correctly when called from UIKit.
+///
+/// Mirrors the preloading behavior of `ZSPaymentSheetModifier` so the
+/// user sees a fully-rendered checkout the moment the sheet slides up.
+private struct UIKitSheetBridge<SheetHeader: View>: View {
     let product: ZSProduct
     let userId: String?
     let dismissible: Bool
     let checkoutURL: URL?
     let transactionId: String?
+    let header: () -> SheetHeader
     let onComplete: (Result<ZSTransaction, Error>) -> Void
     let onDismissed: () -> Void
 
-    @State private var isPresented = true
+    @StateObject private var preloader = CheckoutPreloader()
+    @State private var showSheet = false
+    @State private var preloadedURL: URL?
+    @State private var preloadedTransactionId: String?
 
     var body: some View {
         Color.clear
-            .sheet(isPresented: $isPresented, onDismiss: onDismissed) {
-                ZSPaymentSheet(
-                    product: product,
-                    userId: userId,
-                    dismissible: dismissible,
-                    checkoutURL: checkoutURL,
-                    transactionId: transactionId,
-                    onComplete: onComplete
-                )
+            .background(
+                PreloaderHost(webView: preloader.webView)
+                    .frame(width: 1, height: 1)
+                    .allowsHitTesting(false)
+            )
+            .task { await preloadAll() }
+            .sheet(isPresented: $showSheet, onDismiss: onDismissed) {
+                if let url = preloadedURL {
+                    ZSPaymentSheet(
+                        product: product,
+                        userId: userId,
+                        dismissible: dismissible,
+                        preloader: preloader,
+                        checkoutURL: url,
+                        transactionId: preloadedTransactionId,
+                        header: header
+                    ) { result in
+                        if case .success = result {
+                            CheckoutCache.shared.invalidate(productId: product.id, userId: userId)
+                            preloadedURL = nil
+                            preloadedTransactionId = nil
+                        }
+                        onComplete(result)
+                    }
+                } else {
+                    ZSPaymentSheet(
+                        product: product,
+                        userId: userId,
+                        dismissible: dismissible,
+                        checkoutURL: checkoutURL,
+                        transactionId: transactionId,
+                        header: header,
+                        onComplete: onComplete
+                    )
+                }
             }
+    }
+
+    private func preloadAll() async {
+        let checkoutType = ZeroSettle.shared.checkoutType
+
+        // Safari / SafariVC — delegate to purchase() which opens the browser
+        guard checkoutType == .webview else {
+            do {
+                let transaction = try await ZeroSettle.shared.purchase(
+                    productId: product.id, userId: userId
+                )
+                onComplete(.success(transaction))
+            } catch {
+                onComplete(.failure(error))
+            }
+            onDismissed()
+            return
+        }
+
+        // Webview path — preload PaymentIntent + WebView, then present sheet
+        if let checkoutURL {
+            preloadedURL = checkoutURL
+            preloadedTransactionId = transactionId
+            await preloader.loadAndWait(url: checkoutURL)
+            showSheet = true
+            return
+        }
+
+        guard let result = await ZSPaymentSheet<EmptyView>.preload(
+            productId: product.id, userId: userId
+        ) else {
+            showSheet = true
+            return
+        }
+
+        preloadedURL = result.checkoutURL
+        preloadedTransactionId = result.transactionId
+        await preloader.loadAndWait(url: result.checkoutURL)
+        showSheet = true
     }
 }
 
