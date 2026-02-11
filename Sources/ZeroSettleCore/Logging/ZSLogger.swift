@@ -8,7 +8,7 @@
 import Foundation
 import os.log
 
-public enum Logger {
+public enum ZSLogger {
     private static let subsystem = "com.zerosettle.kit"
 
     public enum Category: String {

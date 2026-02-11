@@ -115,7 +115,7 @@ public final class HTTPClient: @unchecked Sendable {
         do {
             return try decoder.decode(T.self, from: data)
         } catch {
-            Logger.error("Decoding failed: \(error)", category: .network)
+            ZSLogger.error("Decoding failed: \(error)", category: .network)
             throw HTTPError.decodingFailed(error)
         }
     }
@@ -128,7 +128,7 @@ public final class HTTPClient: @unchecked Sendable {
 
         // Try to parse JSON error response
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            Logger.error("[ZeroSettle] HTTP \(statusCode) from \(urlString)", category: .network)
+            ZSLogger.error("[ZeroSettle] HTTP \(statusCode) from \(urlString)", category: .network)
             return
         }
 
@@ -136,33 +136,33 @@ public final class HTTPClient: @unchecked Sendable {
         let errorCode = json["code"] as? String ?? "unknown"
 
         // Log the main error
-        Logger.error(
+        ZSLogger.error(
             "[ZeroSettle] API Error: \(errorMessage) (code: \(errorCode), status: \(statusCode))",
             category: .network
         )
 
         // Log debug info if present - this helps developers troubleshoot
         if let debug = json["debug"] as? [String: Any] {
-            Logger.error("[ZeroSettle] Debug Info:", category: .network)
+            ZSLogger.error("[ZeroSettle] Debug Info:", category: .network)
 
             if let reason = debug["reason"] as? String {
-                Logger.error("  → Reason: \(reason)", category: .network)
+                ZSLogger.error("  → Reason: \(reason)", category: .network)
             }
             if let action = debug["action"] as? String {
-                Logger.error("  → Action: \(action)", category: .network)
+                ZSLogger.error("  → Action: \(action)", category: .network)
             }
             if let docs = debug["docs"] as? String {
-                Logger.error("  → Docs: \(docs)", category: .network)
+                ZSLogger.error("  → Docs: \(docs)", category: .network)
             }
             if let stripeError = debug["stripe_error"] as? String {
-                Logger.error("  → Stripe Error: \(stripeError)", category: .network)
+                ZSLogger.error("  → Stripe Error: \(stripeError)", category: .network)
             }
             if let stripeCode = debug["stripe_error_code"] as? String {
-                Logger.error("  → Stripe Code: \(stripeCode)", category: .network)
+                ZSLogger.error("  → Stripe Code: \(stripeCode)", category: .network)
             }
             if let capabilities = debug["capabilities"] as? [String: Any] {
                 let capsStr = capabilities.map { "\($0.key): \($0.value)" }.joined(separator: ", ")
-                Logger.error("  → Capabilities: \(capsStr)", category: .network)
+                ZSLogger.error("  → Capabilities: \(capsStr)", category: .network)
             }
         }
     }

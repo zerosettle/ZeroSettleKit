@@ -35,7 +35,7 @@ internal final class CustomerPortalFlow: NSObject {
             .compactMap({ $0 as? UIWindowScene })
             .first(where: { $0.activationState == .foregroundActive }),
               let rootViewController = windowScene.windows.first(where: { $0.isKeyWindow })?.rootViewController else {
-            Logger.error("Unable to find root view controller for customer portal", category: .iap)
+            ZSLogger.error("Unable to find root view controller for customer portal", category: .iap)
             return
         }
 
@@ -73,7 +73,7 @@ internal final class CustomerPortalFlow: NSObject {
 
 extension CustomerPortalFlow: SFSafariViewControllerDelegate {
     func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
-        Logger.debug("Customer portal dismissed by user", category: .iap)
+        ZSLogger.debug("Customer portal dismissed by user", category: .iap)
         presentedSafariVC = nil
         continuation?.resume()
         continuation = nil

@@ -84,7 +84,7 @@ internal final class StoreKitManager: @unchecked Sendable {
             await self?.listenForUpdates()
         }
 
-        Logger.info("StoreKit transaction listener started", category: .iap)
+        ZSLogger.info("StoreKit transaction listener started", category: .iap)
     }
 
     /// Stop listening for StoreKit transaction updates.
@@ -111,25 +111,25 @@ internal final class StoreKitManager: @unchecked Sendable {
     func fetchProducts(for productIds: [String]) async -> [String: StoreKit.Product] {
         guard !productIds.isEmpty else { return [:] }
 
-        Logger.info("Requesting \(productIds.count) products from StoreKit: \(productIds)", category: .iap)
+        ZSLogger.info("Requesting \(productIds.count) products from StoreKit: \(productIds)", category: .iap)
 
         do {
             let products = try await StoreKit.Product.products(for: Set(productIds))
             var productMap: [String: StoreKit.Product] = [:]
             for product in products {
                 productMap[product.id] = product
-                Logger.info("StoreKit found: \(product.id) - \(product.displayName) - \(product.displayPrice)", category: .iap)
+                ZSLogger.info("StoreKit found: \(product.id) - \(product.displayName) - \(product.displayPrice)", category: .iap)
             }
 
             let missingIds = Set(productIds).subtracting(productMap.keys)
             if !missingIds.isEmpty {
-                Logger.info("StoreKit did NOT find these product IDs: \(Array(missingIds))", category: .iap)
+                ZSLogger.info("StoreKit did NOT find these product IDs: \(Array(missingIds))", category: .iap)
             }
 
-            Logger.info("Fetched \(products.count)/\(productIds.count) StoreKit products", category: .iap)
+            ZSLogger.info("Fetched \(products.count)/\(productIds.count) StoreKit products", category: .iap)
             return productMap
         } catch {
-            Logger.error("Failed to fetch StoreKit products: \(error)", category: .iap)
+            ZSLogger.error("Failed to fetch StoreKit products: \(error)", category: .iap)
             return [:]
         }
     }
@@ -187,20 +187,20 @@ internal final class StoreKitManager: @unchecked Sendable {
                 let jws = result.jwsRepresentation
                 await handleVerifiedTransaction(transaction, jwsRepresentation: jws)
             case .unverified(_, let error):
-                Logger.error("Unverified transaction: \(error.localizedDescription)", category: .iap)
+                ZSLogger.error("Unverified transaction: \(error.localizedDescription)", category: .iap)
             }
         }
     }
 
     private func handleVerifiedTransaction(_ transaction: SKTransaction, jwsRepresentation: String) async {
-        Logger.info("StoreKit transaction received: \(transaction.productID) (id: \(transaction.id))", category: .iap)
+        ZSLogger.info("StoreKit transaction received: \(transaction.productID) (id: \(transaction.id))", category: .iap)
 
         // Finish the transaction
         await transaction.finish()
 
         // Forward JWS to ZeroSettle backend for server-side verification
         guard let userId = userId else {
-            Logger.debug("No userId set, skipping StoreKit sync", category: .iap)
+            ZSLogger.debug("No userId set, skipping StoreKit sync", category: .iap)
             return
         }
 
@@ -210,7 +210,7 @@ internal final class StoreKitManager: @unchecked Sendable {
                 userId: userId
             )
 
-            Logger.info("StoreKit transaction synced: \(transaction.productID)", category: .iap)
+            ZSLogger.info("StoreKit transaction synced: \(transaction.productID)", category: .iap)
             await MainActor.run {
                 delegate?.storeKitDidSyncTransaction(
                     productId: transaction.productID,
@@ -218,7 +218,7 @@ internal final class StoreKitManager: @unchecked Sendable {
                 )
             }
         } catch {
-            Logger.error("Failed to sync StoreKit transaction: \(error)", category: .iap)
+            ZSLogger.error("Failed to sync StoreKit transaction: \(error)", category: .iap)
             await MainActor.run {
                 delegate?.storeKitSyncFailed(error: error)
             }

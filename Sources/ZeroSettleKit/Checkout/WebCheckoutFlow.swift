@@ -49,7 +49,7 @@ internal final class WebCheckoutFlow: NSObject {
     /// - Returns: The checkout session (contains transactionId for status polling)
     @MainActor
     func beginCheckout(productId: String, userId: String? = nil) async throws -> CheckoutSession {
-        Logger.info("Creating payment intent for product: \(productId)", category: .iap)
+        ZSLogger.info("Creating payment intent for product: \(productId)", category: .iap)
 
         let response = try await backend.createPaymentIntent(
             productId: productId,
@@ -71,23 +71,23 @@ internal final class WebCheckoutFlow: NSObject {
             transactionId: response.transactionId
         )
 
-        Logger.info("Payment intent created, transaction: \(response.transactionId)", category: .iap)
+        ZSLogger.info("Payment intent created, transaction: \(response.transactionId)", category: .iap)
 
         // Determine checkout type from remote config
         let checkoutType = ZeroSettle.shared.checkoutType
 
         switch checkoutType {
         case .safari:
-            Logger.debug("Opening checkout URL in Safari", category: .iap)
+            ZSLogger.debug("Opening checkout URL in Safari", category: .iap)
             await openInSafari(session.checkoutUrl)
 
         case .safariVC:
-            Logger.debug("Opening checkout URL in SFSafariViewController", category: .iap)
+            ZSLogger.debug("Opening checkout URL in SFSafariViewController", category: .iap)
             await openInSafariVC(session.checkoutUrl)
 
         case .webview:
             // WebView handled by ZSPaymentSheet, not WebCheckoutFlow
-            Logger.debug("WebView checkout - session created but not opening browser", category: .iap)
+            ZSLogger.debug("WebView checkout - session created but not opening browser", category: .iap)
         }
 
         return session
@@ -106,7 +106,7 @@ internal final class WebCheckoutFlow: NSObject {
               Self.callbackHosts.contains(host),
               let path = components.path.removingPercentEncoding,
               path.hasPrefix(Self.callbackPathPrefix) else {
-            Logger.error("Unable to handle callback due to invalid components: \(url)")
+            ZSLogger.error("Unable to handle callback due to invalid components: \(url)")
             return nil
         }
 
@@ -118,17 +118,17 @@ internal final class WebCheckoutFlow: NSObject {
         guard let transactionId = params["transaction_id"],
               let productId = params["product_id"],
               let statusString = params["status"] else {
-            Logger.error("Checkout callback missing required parameters: \(url)", category: .iap)
+            ZSLogger.error("Checkout callback missing required parameters: \(url)", category: .iap)
             return nil
         }
 
         let success = statusString == "success"
 
-        Logger.info("Checkout callback received: transaction=\(transactionId), status=\(statusString)", category: .iap)
+        ZSLogger.info("Checkout callback received: transaction=\(transactionId), status=\(statusString)", category: .iap)
 
         // Auto-dismiss inline checkout when callback is received
         if safariViewController != nil {
-            Logger.debug("Auto-dismissing inline checkout after callback", category: .iap)
+            ZSLogger.debug("Auto-dismissing inline checkout after callback", category: .iap)
             dismissInlineCheckout()
         }
 
@@ -168,7 +168,7 @@ internal final class WebCheckoutFlow: NSObject {
             .compactMap({ $0 as? UIWindowScene })
             .first(where: { $0.activationState == .foregroundActive }),
               let rootViewController = windowScene.windows.first(where: { $0.isKeyWindow })?.rootViewController else {
-            Logger.error("Unable to find root view controller for inline checkout", category: .iap)
+            ZSLogger.error("Unable to find root view controller for inline checkout", category: .iap)
             // Fall back to external browser
             await openInSafari(url)
             return
@@ -221,7 +221,7 @@ internal final class WebCheckoutFlow: NSObject {
 
 extension WebCheckoutFlow: SFSafariViewControllerDelegate {
     func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
-        Logger.debug("Inline checkout dismissed by user", category: .iap)
+        ZSLogger.debug("Inline checkout dismissed by user", category: .iap)
         safariViewController = nil
         presentedSafariVC = nil
         inlineCheckoutContinuation?.resume()

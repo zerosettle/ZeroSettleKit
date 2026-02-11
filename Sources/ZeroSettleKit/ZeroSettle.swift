@@ -317,7 +317,7 @@ public final class ZeroSettle: ObservableObject {
     // MARK: - Initialization
 
     private init() {
-        Logger.info("ZeroSettle initialized", category: .iap)
+        ZSLogger.info("ZeroSettle initialized", category: .iap)
     }
 
     // MARK: - Configuration
@@ -370,7 +370,7 @@ public final class ZeroSettle: ObservableObject {
         }
 
         isConfigured = true
-        Logger.info("ZeroSettle configured", category: .iap)
+        ZSLogger.info("ZeroSettle configured", category: .iap)
     }
 
     // MARK: - Bootstrap
@@ -421,12 +421,12 @@ public final class ZeroSettle: ObservableObject {
             // 1. Fetch from ZeroSettle backend (includes config when userId is provided)
             let catalog = try await backend.fetchProducts(userId: userId)
             var products = catalog.products
-            Logger.info("Fetched \(products.count) products from backend", category: .iap)
+            ZSLogger.info("Fetched \(products.count) products from backend", category: .iap)
 
             // Store remote config for computed properties (checkoutType, isWebCheckoutEnabled)
             if let config = catalog.config {
                 remoteConfig = config
-                Logger.info("Remote config received: checkoutType=\(config.checkout.sheetType.rawValue), jurisdictions=\(config.checkout.jurisdictions.count), migration=\(config.migration != nil)", category: .iap)
+                ZSLogger.info("Remote config received: checkoutType=\(config.checkout.sheetType.rawValue), jurisdictions=\(config.checkout.jurisdictions.count), migration=\(config.migration != nil)", category: .iap)
             }
 
             // Detect jurisdiction from App Store storefront
@@ -449,13 +449,13 @@ public final class ZeroSettle: ObservableObject {
                 }
 
                 let matched = products.filter { $0.storeKitAvailable }.count
-                Logger.info("Reconciled \(matched)/\(products.count) products with StoreKit", category: .iap)
+                ZSLogger.info("Reconciled \(matched)/\(products.count) products with StoreKit", category: .iap)
             }
 
             self.products = products
             return ProductCatalog(products: products, config: catalog.config)
         } catch {
-            Logger.error("Failed to fetch products: \(error)", category: .iap)
+            ZSLogger.error("Failed to fetch products: \(error)", category: .iap)
             throw Backend.wrapError(error)
         }
     }
@@ -483,7 +483,7 @@ public final class ZeroSettle: ObservableObject {
         // Warn if the universal link handler isn't installed
         #if DEBUG
         if !handlerInstalled {
-            Logger.error("⚠️ .zeroSettleHandler() is not installed on any view. Universal link callbacks from Safari checkout will not be received. Add .zeroSettleHandler() to your root view.", category: .iap)
+            ZSLogger.error("⚠️ .zeroSettleHandler() is not installed on any view. Universal link callbacks from Safari checkout will not be received. Add .zeroSettleHandler() to your root view.", category: .iap)
         }
         #endif
 
@@ -520,11 +520,11 @@ public final class ZeroSettle: ObservableObject {
 
             pendingTransactionId = session.transactionId
 
-            Logger.info("Checkout browser dismissed for \(productId), transaction: \(session.transactionId ?? "none")", category: .iap)
+            ZSLogger.info("Checkout browser dismissed for \(productId), transaction: \(session.transactionId ?? "none")", category: .iap)
 
             // If callback already processed (universal link worked), we're done
             guard pendingCheckout else {
-                Logger.debug("Callback already processed via universal link", category: .iap)
+                ZSLogger.debug("Callback already processed via universal link", category: .iap)
                 return
             }
 
@@ -544,7 +544,7 @@ public final class ZeroSettle: ObservableObject {
         } catch {
             pendingCheckout = false
             pendingTransactionId = nil
-            Logger.error("Checkout failed for \(productId): \(error)", category: .iap)
+            ZSLogger.error("Checkout failed for \(productId): \(error)", category: .iap)
             delegate?.zeroSettleCheckoutDidFail(productId: productId, error: error)
 
             let reason: CheckoutFailure
@@ -631,9 +631,9 @@ public final class ZeroSettle: ObservableObject {
 
         do {
             try await backend.trackMigrationConversion(userId: userId)
-            Logger.info("Migration conversion tracked for user: \(userId)", category: .iap)
+            ZSLogger.info("Migration conversion tracked for user: \(userId)", category: .iap)
         } catch {
-            Logger.error("Failed to track migration conversion: \(error)", category: .iap)
+            ZSLogger.error("Failed to track migration conversion: \(error)", category: .iap)
             throw Backend.wrapError(error)
         }
     }
@@ -652,14 +652,14 @@ public final class ZeroSettle: ObservableObject {
 
         do {
             let session = try await backend.createCustomerPortalSession(userId: userId)
-            Logger.info("Customer portal session created", category: .iap)
+            ZSLogger.info("Customer portal session created", category: .iap)
 
             await customerPortalFlow.presentPortal(url: session.portalUrl)
 
-            Logger.info("Customer portal dismissed, refreshing entitlements", category: .iap)
+            ZSLogger.info("Customer portal dismissed, refreshing entitlements", category: .iap)
             _ = try? await restoreEntitlements(userId: userId)
         } catch {
-            Logger.error("Customer portal failed: \(error)", category: .iap)
+            ZSLogger.error("Customer portal failed: \(error)", category: .iap)
             throw Backend.wrapError(error)
         }
     }
@@ -677,16 +677,16 @@ public final class ZeroSettle: ObservableObject {
 
         if hasStoreKitEntitlements && !hasWebEntitlements {
             // StoreKit-only: use Apple's native management
-            Logger.info("Showing Apple subscription management (StoreKit-only entitlements)", category: .iap)
+            ZSLogger.info("Showing Apple subscription management (StoreKit-only entitlements)", category: .iap)
             guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene else {
-                Logger.error("No window scene available for subscription management", category: .iap)
+                ZSLogger.error("No window scene available for subscription management", category: .iap)
                 return
             }
             try await AppStore.showManageSubscriptions(in: windowScene)
             _ = try? await restoreEntitlements(userId: userId)
         } else {
             // Web checkout, both sources, or no entitlements: use Stripe portal
-            Logger.info("Opening Stripe customer portal (web/mixed/no entitlements)", category: .iap)
+            ZSLogger.info("Opening Stripe customer portal (web/mixed/no entitlements)", category: .iap)
             try await openCustomerPortal(userId: userId)
         }
     }
@@ -701,10 +701,10 @@ public final class ZeroSettle: ObservableObject {
     /// - Returns: `true` if the URL was handled by ZeroSettle, `false` otherwise
     @discardableResult
     public func handleUniversalLink(_ url: URL) -> Bool {
-        Logger.info("Handling universal link redirect")
+        ZSLogger.info("Handling universal link redirect")
 
         guard let checkoutFlow else {
-            Logger.error("handleUniversalLink called but SDK not configured", category: .iap)
+            ZSLogger.error("handleUniversalLink called but SDK not configured", category: .iap)
             return false
         }
 
@@ -737,10 +737,10 @@ public final class ZeroSettle: ObservableObject {
     /// - Returns: The merged entitlements from all sources
     @discardableResult
     public func restoreEntitlements(userId: String) async throws -> [Entitlement] {
-        Logger.info("[restoreEntitlements] Called with userId=\"\(userId)\"", category: .iap)
+        ZSLogger.info("[restoreEntitlements] Called with userId=\"\(userId)\"", category: .iap)
 
         guard let backend else {
-            Logger.error("[restoreEntitlements] SDK not configured, throwing notConfigured", category: .iap)
+            ZSLogger.error("[restoreEntitlements] SDK not configured, throwing notConfigured", category: .iap)
             throw ZSError.notConfigured
         }
 
@@ -753,19 +753,19 @@ public final class ZeroSettle: ObservableObject {
         if let storeKitManager {
             let storeKitEntitlements = await storeKitManager.getCurrentEntitlements()
             allEntitlements.append(contentsOf: storeKitEntitlements)
-            Logger.info("[restoreEntitlements] Restored \(storeKitEntitlements.count) StoreKit entitlements for userId=\"\(userId)\": \(storeKitEntitlements.map { "[\($0.productId) active=\($0.isActive)]" })", category: .iap)
+            ZSLogger.info("[restoreEntitlements] Restored \(storeKitEntitlements.count) StoreKit entitlements for userId=\"\(userId)\": \(storeKitEntitlements.map { "[\($0.productId) active=\($0.isActive)]" })", category: .iap)
         } else {
-            Logger.info("[restoreEntitlements] No StoreKit manager configured, skipping StoreKit entitlements", category: .iap)
+            ZSLogger.info("[restoreEntitlements] No StoreKit manager configured, skipping StoreKit entitlements", category: .iap)
         }
 
         // Fetch web checkout entitlements from ZeroSettle backend
         do {
-            Logger.info("[restoreEntitlements] Fetching web entitlements from backend for userId=\"\(userId)\"...", category: .iap)
+            ZSLogger.info("[restoreEntitlements] Fetching web entitlements from backend for userId=\"\(userId)\"...", category: .iap)
             let webEntitlements = try await backend.getEntitlements(userId: userId)
             allEntitlements.append(contentsOf: webEntitlements)
-            Logger.info("[restoreEntitlements] Restored \(webEntitlements.count) web entitlements for userId=\"\(userId)\": \(webEntitlements.map { "[\($0.productId) active=\($0.isActive)]" })", category: .iap)
+            ZSLogger.info("[restoreEntitlements] Restored \(webEntitlements.count) web entitlements for userId=\"\(userId)\": \(webEntitlements.map { "[\($0.productId) active=\($0.isActive)]" })", category: .iap)
         } catch {
-            Logger.error("[restoreEntitlements] Failed to fetch web entitlements for userId=\"\(userId)\": \(error)", category: .iap)
+            ZSLogger.error("[restoreEntitlements] Failed to fetch web entitlements for userId=\"\(userId)\": \(error)", category: .iap)
             // Update with partial (StoreKit-only) entitlements before throwing
             updateEntitlements(allEntitlements)
             throw ZSError.restoreEntitlementsFailed(
@@ -775,7 +775,7 @@ public final class ZeroSettle: ObservableObject {
         }
 
         updateEntitlements(allEntitlements)
-        Logger.info("[restoreEntitlements] Final entitlements for userId=\"\(userId)\": \(allEntitlements.map { "[\($0.productId) source=\($0.source) active=\($0.isActive)]" })", category: .iap)
+        ZSLogger.info("[restoreEntitlements] Final entitlements for userId=\"\(userId)\": \(allEntitlements.map { "[\($0.productId) source=\($0.source) active=\($0.isActive)]" })", category: .iap)
 
         return allEntitlements
     }
@@ -809,13 +809,13 @@ public final class ZeroSettle: ObservableObject {
             if let storefront = await Storefront.current {
                 let jurisdiction = Jurisdiction.from(storefrontCountryCode: storefront.countryCode)
                 detectedJurisdiction = jurisdiction
-                Logger.info("Detected jurisdiction: \(jurisdiction.rawValue) (storefront: \(storefront.countryCode))", category: .iap)
+                ZSLogger.info("Detected jurisdiction: \(jurisdiction.rawValue) (storefront: \(storefront.countryCode))", category: .iap)
                 return
             }
         }
         // Fallback: no storefront available → default to ROW (most restrictive)
         detectedJurisdiction = .row
-        Logger.info("Storefront unavailable, defaulting to ROW jurisdiction", category: .iap)
+        ZSLogger.info("Storefront unavailable, defaulting to ROW jurisdiction", category: .iap)
     }
 
     /// Poll the backend to determine whether a checkout completed or was abandoned.
@@ -828,7 +828,7 @@ public final class ZeroSettle: ObservableObject {
 
         // If universal link callback arrived during the delay, we're done
         guard pendingCheckout else {
-            Logger.debug("Callback arrived during polling delay", category: .iap)
+            ZSLogger.debug("Callback arrived during polling delay", category: .iap)
             return
         }
 
@@ -842,7 +842,7 @@ public final class ZeroSettle: ObservableObject {
                 let transaction = try await backend.getTransaction(transactionId: transactionId)
 
                 if transaction.status == .completed {
-                    Logger.info("Transaction \(transactionId) confirmed completed via polling (attempt \(attempt))", category: .iap)
+                    ZSLogger.info("Transaction \(transactionId) confirmed completed via polling (attempt \(attempt))", category: .iap)
                     let callback = CheckoutCallback(
                         transactionId: transactionId,
                         productId: productId,
@@ -851,18 +851,18 @@ public final class ZeroSettle: ObservableObject {
                     await processCheckoutCallback(callback)
                     return
                 } else if transaction.status == .processing {
-                    Logger.info("Transaction \(transactionId) still processing (attempt \(attempt)/\(maxAttempts))", category: .iap)
+                    ZSLogger.info("Transaction \(transactionId) still processing (attempt \(attempt)/\(maxAttempts))", category: .iap)
                     if attempt < maxAttempts {
                         try? await Task.sleep(nanoseconds: pollInterval)
                         guard pendingCheckout else {
-                            Logger.debug("Callback arrived during processing poll", category: .iap)
+                            ZSLogger.debug("Callback arrived during processing poll", category: .iap)
                             return
                         }
                         continue
                     }
                     // Final attempt still processing — treat as success and let
                     // the app resolve via entitlement check later
-                    Logger.info("Transaction \(transactionId) still processing after \(maxAttempts) attempts — treating as completed", category: .iap)
+                    ZSLogger.info("Transaction \(transactionId) still processing after \(maxAttempts) attempts — treating as completed", category: .iap)
                     let callback = CheckoutCallback(
                         transactionId: transactionId,
                         productId: productId,
@@ -872,14 +872,14 @@ public final class ZeroSettle: ObservableObject {
                     return
                 } else {
                     // pending (no payment started), failed, etc. — user dismissed without completing
-                    Logger.info("Transaction \(transactionId) status \(transaction.status.rawValue) — treating as cancelled", category: .iap)
+                    ZSLogger.info("Transaction \(transactionId) status \(transaction.status.rawValue) — treating as cancelled", category: .iap)
                     pendingCheckout = false
                     pendingTransactionId = nil
                     delegate?.zeroSettleCheckoutDidCancel(productId: productId)
                     return
                 }
             } catch {
-                Logger.error("Failed to poll transaction status (attempt \(attempt)): \(error)", category: .iap)
+                ZSLogger.error("Failed to poll transaction status (attempt \(attempt)): \(error)", category: .iap)
                 if attempt == maxAttempts {
                     pendingCheckout = false
                     pendingTransactionId = nil
@@ -896,7 +896,7 @@ public final class ZeroSettle: ObservableObject {
         pendingCheckout = false
 
         guard callback.success else {
-            Logger.info("Checkout cancelled for product: \(callback.productId)", category: .iap)
+            ZSLogger.info("Checkout cancelled for product: \(callback.productId)", category: .iap)
             delegate?.zeroSettleCheckoutDidCancel(productId: callback.productId)
             pendingTransactionId = nil
             return
@@ -917,7 +917,7 @@ public final class ZeroSettle: ObservableObject {
                 return
             }
 
-            Logger.info("Checkout \(transaction.status == .processing ? "processing" : "completed"): \(transaction.id) for \(transaction.productId)", category: .iap)
+            ZSLogger.info("Checkout \(transaction.status == .processing ? "processing" : "completed"): \(transaction.id) for \(transaction.productId)", category: .iap)
             delegate?.zeroSettleCheckoutDidComplete(transaction: transaction)
 
             // Fetch fresh entitlements from backend to get proper expiry dates
@@ -928,9 +928,9 @@ public final class ZeroSettle: ObservableObject {
                     // Merge: keep StoreKit entitlements, add/replace web entitlements
                     let storeKitEnts = entitlements.filter { $0.source == .storeKit }
                     updateEntitlements(storeKitEnts + freshEntitlements)
-                    Logger.info("Refreshed entitlements after checkout: \(freshEntitlements.count) web entitlements", category: .iap)
+                    ZSLogger.info("Refreshed entitlements after checkout: \(freshEntitlements.count) web entitlements", category: .iap)
                 } catch {
-                    Logger.error("Failed to refresh entitlements after checkout: \(error)", category: .iap)
+                    ZSLogger.error("Failed to refresh entitlements after checkout: \(error)", category: .iap)
                     // Fall back to creating local entitlement with available info
                     let entitlement = Entitlement(
                         id: "web_\(transaction.id)",
@@ -960,7 +960,7 @@ public final class ZeroSettle: ObservableObject {
             }
 
         } catch {
-            Logger.error("Transaction verification failed: \(error)", category: .iap)
+            ZSLogger.error("Transaction verification failed: \(error)", category: .iap)
             delegate?.zeroSettleCheckoutDidFail(
                 productId: callback.productId,
                 error: ZSError.transactionVerificationFailed(error.localizedDescription)
