@@ -7,7 +7,7 @@ import WebKit
 public struct ZSMigrateTipView: View {
     let backgroundColor: Color
     let userId: String
-    
+
     @ObservedObject private var iap = ZeroSettle.shared
     
     @State private var isExpanded = false
@@ -34,9 +34,36 @@ public struct ZSMigrateTipView: View {
         iap.entitlements.contains { $0.source == .storeKit && $0.isActive }
     }
     
-    // MARK: - Hardcoded Configuration
-    
-    private static let productId = "divegeniusmonthly"
+    // MARK: - Configuration
+
+    /// Get the active StoreKit entitlement.
+    private var activeStoreKitEntitlement: Entitlement? {
+        iap.entitlements.first { $0.source == .storeKit && $0.isActive }
+    }
+
+    /// Dynamically get the product ID from the user's active StoreKit subscription.
+    /// Returns the product ID of the first active StoreKit entitlement, or nil if none exists.
+    private var activeStoreKitProductId: String? {
+        activeStoreKitEntitlement?.productId
+    }
+
+    /// Calculate the number of free trial days to offer on web checkout.
+    /// This is the number of days from now until the current StoreKit subscription expires.
+    /// The user won't be charged on Stripe until their Apple subscription ends.
+    private var calculatedFreeTrialDays: Int {
+        guard let entitlement = activeStoreKitEntitlement,
+              let expiresAt = entitlement.expiresAt else {
+            return 0
+        }
+
+        let now = Date()
+        let calendar = Calendar.current
+        let components = calendar.dateComponents([.day], from: now, to: expiresAt)
+        let days = max(0, components.day ?? 0)
+
+        return days
+    }
+
     static let collapsedHeight: CGFloat = 190
     static let applePayExpandedHeight: CGFloat = 690
     static let cardExpandedHeight: CGFloat = 690
@@ -66,6 +93,7 @@ public struct ZSMigrateTipView: View {
     /// - Parameters:
     ///   - backgroundColor: The background color for the view.
     ///   - userId: The user identifier passed to the checkout backend.
+    /// - Note: Free trial days are automatically calculated based on when the user's current StoreKit subscription expires.
     public init(backgroundColor: Color, userId: String) {
         self.backgroundColor = backgroundColor
         self.userId = userId
@@ -311,14 +339,23 @@ public struct ZSMigrateTipView: View {
 
     /// Native inline checkout: create payment intent, expand to show embedded CheckoutWebView.
     private func startWebViewCheckout() {
-        print("🧾 Creating payment intent (productId=\(Self.productId), userId=\(userId))")
+        guard let productId = activeStoreKitProductId else {
+            print("❌ Cannot start checkout: no active StoreKit product ID found")
+            isLoading = false
+            checkoutError = ZSError.notConfigured
+            return
+        }
+
+        let freeTrialDays = calculatedFreeTrialDays
+        print("🧾 Creating payment intent (productId=\(productId), userId=\(userId), freeTrialDays=\(freeTrialDays))")
 
         Task {
             do {
                 let backend = try getBackend()
                 let paymentIntent = try await backend.createPaymentIntent(
-                    productId: Self.productId,
-                    userId: userId
+                    productId: productId,
+                    userId: userId,
+                    freeTrialDays: freeTrialDays
                 )
 
                 await MainActor.run {
@@ -332,7 +369,7 @@ public struct ZSMigrateTipView: View {
                 await MainActor.run {
                     checkoutError = error
                     isLoading = false
-                    print("❌ Payment intent failed (productId=\(Self.productId)): \(error)")
+                    print("❌ Payment intent failed (productId=\(productId)): \(error)")
                 }
             }
         }
@@ -341,18 +378,26 @@ public struct ZSMigrateTipView: View {
     /// In-app browser (safariVC) or external Safari: create session and open in configured browser.
     /// Completion is handled via universal link callback; entitlements update when user returns.
     private func startBrowserCheckout() {
-        print("🧾 Starting browser checkout (productId=\(Self.productId), userId=\(userId), type=\(iap.checkoutType.rawValue))")
+        guard let productId = activeStoreKitProductId else {
+            print("❌ Cannot start checkout: no active StoreKit product ID found")
+            isLoading = false
+            checkoutError = ZSError.notConfigured
+            return
+        }
+
+        let freeTrialDays = calculatedFreeTrialDays
+        print("🧾 Starting browser checkout (productId=\(productId), userId=\(userId), freeTrialDays=\(freeTrialDays), type=\(iap.checkoutType.rawValue))")
 
         Task { @MainActor in
             do {
-                try await iap.purchase(productId: Self.productId, userId: userId)
+                try await iap.purchase(productId: productId, userId: userId)
                 // Browser opened; show cancel state when they return from redirect
                 checkoutSucceeded = true
                 isLoading = false
             } catch {
                 checkoutError = error
                 isLoading = false
-                print("❌ Browser checkout failed (productId=\(Self.productId)): \(error)")
+                print("❌ Browser checkout failed (productId=\(productId)): \(error)")
             }
         }
     }

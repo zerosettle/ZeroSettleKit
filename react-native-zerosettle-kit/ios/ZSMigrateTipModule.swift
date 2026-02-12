@@ -19,17 +19,17 @@ class ZSMigrateTipModule: NSObject {
                 print("❌ [ZSMigrateTipModule] Could not find root view controller")
                 return
             }
-            
+
             // Find the topmost presented view controller
             var topVC = rootVC
             while let presented = topVC.presentedViewController {
                 topVC = presented
             }
-            
+
             // Convert hex to SwiftUI Color
             let uiColor = UIColor(hex: backgroundColorHex) ?? .black
             let swiftUIColor = Color(uiColor)
-            
+
             // Create the SwiftUI view
             let migrateTipView = ZSMigrateTipView(backgroundColor: swiftUIColor, userId: userId)
             

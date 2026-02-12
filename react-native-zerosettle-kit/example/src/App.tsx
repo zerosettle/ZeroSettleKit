@@ -9,6 +9,7 @@ export default function App() {
         <ZSMigrateTipView
           backgroundColorHex="#1E1E1E"
           userId="example_user"
+          freeTrialDays={30}
           style={styles.tipView}
         />
       </ScrollView>

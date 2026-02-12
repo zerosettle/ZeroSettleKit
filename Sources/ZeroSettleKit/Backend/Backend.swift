@@ -160,11 +160,11 @@ internal final class Backend: @unchecked Sendable {
 
     /// Create a Stripe PaymentIntent for native checkout (Apple Pay / Card in WebView).
     /// Returns data needed for the Payment Request API and card entry form.
-    func createPaymentIntent(productId: String, userId: String? = nil) async throws -> PaymentIntentResponse {
+    func createPaymentIntent(productId: String, userId: String? = nil, freeTrialDays: Int) async throws -> PaymentIntentResponse {
         let span = PaymentSheetTrace.current?.begin("POST /iap/payment-intents", metadata: ["productId": productId])
         do {
             let url = apiURL("iap/payment-intents/")
-            let body = CreatePaymentIntentRequest(productId: productId, userId: userId)
+            let body = CreatePaymentIntentRequest(productId: productId, userId: userId, freeTrialDays: freeTrialDays)
             let response = try await httpClient.post(
                 url,
                 body: body,
@@ -423,6 +423,7 @@ internal struct CreateCheckoutSessionRequest: Encodable {
 internal struct CreatePaymentIntentRequest: Encodable {
     let productId: String
     let userId: String?
+    let freeTrialDays: Int
 }
 
 /// Response from the create_payment_intent endpoint.

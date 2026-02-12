@@ -40,6 +40,10 @@ const NativeZSMigrateTipView =
  * migrate tip view for iOS. This view helps users migrate from Apple billing
  * to direct billing with a 15% discount.
  *
+ * Free trial days are automatically calculated based on when the user's current
+ * StoreKit subscription expires, so they won't be charged until their Apple
+ * subscription ends.
+ *
  * @example
  * ```tsx
  * import { ZSMigrateTipView } from 'react-native-zerosettle-kit';

@@ -250,6 +250,7 @@ public struct ZSPaymentSheet<Header: View>: View {
 
     private let product: ZSProduct
     private let userId: String?
+    private let freeTrialDays: Int
     private let dismissible: Bool
     private let prefetchedCheckoutURL: URL?
     private let prefetchedTransactionId: String?
@@ -278,6 +279,7 @@ public struct ZSPaymentSheet<Header: View>: View {
     public init(
         product: ZSProduct,
         userId: String? = nil,
+        freeTrialDays: Int,
         dismissible: Bool = true,
         checkoutURL: URL? = nil,
         transactionId: String? = nil,
@@ -286,6 +288,7 @@ public struct ZSPaymentSheet<Header: View>: View {
     ) {
         self.product = product
         self.userId = userId
+        self.freeTrialDays = freeTrialDays
         self.dismissible = dismissible
         self.prefetchedCheckoutURL = checkoutURL
         self.prefetchedTransactionId = transactionId
@@ -305,6 +308,7 @@ public struct ZSPaymentSheet<Header: View>: View {
     fileprivate init(
         product: ZSProduct,
         userId: String? = nil,
+        freeTrialDays: Int,
         dismissible: Bool = true,
         preloader: CheckoutPreloader,
         checkoutURL: URL,
@@ -314,6 +318,7 @@ public struct ZSPaymentSheet<Header: View>: View {
     ) {
         self.product = product
         self.userId = userId
+        self.freeTrialDays = freeTrialDays
         self.dismissible = dismissible
         self.prefetchedCheckoutURL = checkoutURL
         self.prefetchedTransactionId = transactionId
@@ -336,6 +341,7 @@ extension ZSPaymentSheet where Header == EmptyView {
     public init(
         product: ZSProduct,
         userId: String? = nil,
+        freeTrialDays: Int,
         dismissible: Bool = true,
         checkoutURL: URL? = nil,
         transactionId: String? = nil,
@@ -344,6 +350,7 @@ extension ZSPaymentSheet where Header == EmptyView {
         self.init(
             product: product,
             userId: userId,
+            freeTrialDays: freeTrialDays,
             dismissible: dismissible,
             checkoutURL: checkoutURL,
             transactionId: transactionId,
@@ -357,7 +364,8 @@ extension ZSPaymentSheet where Header == EmptyView {
     /// Returns `nil` immediately for non-webview checkout types (no API call needed).
     public static func preload(
         productId: String,
-        userId: String? = nil
+        userId: String? = nil,
+        freeTrialDays: Int
     ) async -> (checkoutURL: URL, transactionId: String)? {
         // Only webview checkout uses PaymentIntents — safari/safariVC use checkout sessions
         guard ZeroSettle.shared.checkoutType == .webview else { return nil }
@@ -382,7 +390,7 @@ extension ZSPaymentSheet where Header == EmptyView {
 
         do {
             let backend = Backend(baseURL: baseURL, publishableKey: config.publishableKey)
-            let paymentIntent = try await backend.createPaymentIntent(productId: productId, userId: userId)
+            let paymentIntent = try await backend.createPaymentIntent(productId: productId, userId: userId, freeTrialDays: freeTrialDays)
             guard let url = URL(string: paymentIntent.checkoutUrl) else {
                 if let span { trace?.end(span, metadata: ["error": "invalidURL"]) }
                 return nil
@@ -415,10 +423,10 @@ extension ZSPaymentSheet where Header == EmptyView {
     ///         let products = try await iap.fetchProducts()
     ///         await ZSPaymentSheet.warmUp(productId: products[0].id, userId: "user_123")
     ///     }
-    public static func warmUp(productId: String, userId: String? = nil) async {
+    public static func warmUp(productId: String, userId: String? = nil, freeTrialDays: Int) async {
         let trace = PaymentSheetTrace("warmUp")
         PaymentSheetTrace.current = trace
-        _ = await preload(productId: productId, userId: userId)
+        _ = await preload(productId: productId, userId: userId, freeTrialDays: freeTrialDays)
         trace.finish()
     }
 }
@@ -589,7 +597,7 @@ extension ZSPaymentSheet {
 
         do {
             let backend = Backend(baseURL: baseURL, publishableKey: config.publishableKey)
-            let paymentIntent = try await backend.createPaymentIntent(productId: product.id, userId: userId)
+            let paymentIntent = try await backend.createPaymentIntent(productId: product.id, userId: userId, freeTrialDays: freeTrialDays)
             PaymentSheetTrace.logger.debug("⏱  ◀ createPaymentIntent: txnId=\(paymentIntent.transactionId)")
 
             await MainActor.run {
@@ -1014,6 +1022,7 @@ private struct ZSPaymentSheetModifier<Header: View>: ViewModifier {
     @Binding var isPresented: Bool
     let product: ZSProduct
     let userId: String?
+    let freeTrialDays: Int
     let dismissible: Bool
     let header: () -> Header
     let onComplete: (Result<ZSTransaction, Error>) -> Void
@@ -1049,6 +1058,7 @@ private struct ZSPaymentSheetModifier<Header: View>: ViewModifier {
                     ZSPaymentSheet(
                         product: product,
                         userId: userId,
+                        freeTrialDays: freeTrialDays,
                         dismissible: dismissible,
                         preloader: preloader,
                         checkoutURL: url,
@@ -1067,6 +1077,7 @@ private struct ZSPaymentSheetModifier<Header: View>: ViewModifier {
                     ZSPaymentSheet(
                         product: product,
                         userId: userId,
+                        freeTrialDays: freeTrialDays,
                         dismissible: dismissible,
                         header: header
                     ) { result in
@@ -1102,7 +1113,7 @@ private struct ZSPaymentSheetModifier<Header: View>: ViewModifier {
         PaymentSheetTrace.current = trace
 
         guard let result = await ZSPaymentSheet<EmptyView>.preload(
-            productId: product.id, userId: userId
+            productId: product.id, userId: userId, freeTrialDays: freeTrialDays
         ) else {
             guard !Task.isCancelled else { trace.finish(); return }
             trace.event("sheet.presented", metadata: ["preloaded": "false"])
@@ -1136,6 +1147,7 @@ private struct ZSPaymentSheetModifier<Header: View>: ViewModifier {
 private struct ZSPaymentSheetItemModifier<Header: View>: ViewModifier {
     @Binding var item: ZSProduct?
     let userId: String?
+    let freeTrialDays: Int
     let dismissible: Bool
     let header: () -> Header
     let onComplete: (Result<ZSTransaction, Error>) -> Void
@@ -1171,6 +1183,7 @@ private struct ZSPaymentSheetItemModifier<Header: View>: ViewModifier {
                         ZSPaymentSheet(
                             product: product,
                             userId: userId,
+                            freeTrialDays: freeTrialDays,
                             dismissible: dismissible,
                             preloader: preloader,
                             checkoutURL: url,
@@ -1189,6 +1202,7 @@ private struct ZSPaymentSheetItemModifier<Header: View>: ViewModifier {
                         ZSPaymentSheet(
                             product: product,
                             userId: userId,
+                            freeTrialDays: freeTrialDays,
                             dismissible: dismissible,
                             header: header
                         ) { result in
@@ -1225,7 +1239,7 @@ private struct ZSPaymentSheetItemModifier<Header: View>: ViewModifier {
         PaymentSheetTrace.current = trace
 
         guard let result = await ZSPaymentSheet<EmptyView>.preload(
-            productId: product.id, userId: userId
+            productId: product.id, userId: userId, freeTrialDays: freeTrialDays
         ) else {
             guard !Task.isCancelled else { trace.finish(); return }
             trace.event("sheet.presented", metadata: ["preloaded": "false"])
@@ -1256,6 +1270,7 @@ extension View {
         isPresented: Binding<Bool>,
         product: ZSProduct,
         userId: String? = nil,
+        freeTrialDays: Int,
         dismissible: Bool = true,
         onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
     ) -> some View {
@@ -1263,6 +1278,7 @@ extension View {
             isPresented: isPresented,
             product: product,
             userId: userId,
+            freeTrialDays: freeTrialDays,
             dismissible: dismissible,
             header: { EmptyView() },
             onComplete: onComplete
@@ -1274,6 +1290,7 @@ extension View {
         isPresented: Binding<Bool>,
         product: ZSProduct,
         userId: String? = nil,
+        freeTrialDays: Int,
         dismissible: Bool = true,
         @ViewBuilder header: @escaping () -> Header,
         onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
@@ -1282,6 +1299,7 @@ extension View {
             isPresented: isPresented,
             product: product,
             userId: userId,
+            freeTrialDays: freeTrialDays,
             dismissible: dismissible,
             header: header,
             onComplete: onComplete
@@ -1299,12 +1317,14 @@ extension View {
     public func zsPaymentSheet(
         item: Binding<ZSProduct?>,
         userId: String? = nil,
+        freeTrialDays: Int,
         dismissible: Bool = true,
         onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
     ) -> some View {
         modifier(ZSPaymentSheetItemModifier<EmptyView>(
             item: item,
             userId: userId,
+            freeTrialDays: freeTrialDays,
             dismissible: dismissible,
             header: { EmptyView() },
             onComplete: onComplete
@@ -1315,6 +1335,7 @@ extension View {
     public func zsPaymentSheet<Header: View>(
         item: Binding<ZSProduct?>,
         userId: String? = nil,
+        freeTrialDays: Int,
         dismissible: Bool = true,
         @ViewBuilder header: @escaping () -> Header,
         onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
@@ -1322,6 +1343,7 @@ extension View {
         modifier(ZSPaymentSheetItemModifier(
             item: item,
             userId: userId,
+            freeTrialDays: freeTrialDays,
             dismissible: dismissible,
             header: header,
             onComplete: onComplete
@@ -1338,6 +1360,7 @@ extension ZSPaymentSheet where Header == EmptyView {
         from viewController: UIViewController,
         product: ZSProduct,
         userId: String? = nil,
+        freeTrialDays: Int,
         dismissible: Bool = true,
         checkoutURL: URL? = nil,
         transactionId: String? = nil,
@@ -1347,6 +1370,7 @@ extension ZSPaymentSheet where Header == EmptyView {
             from: viewController,
             product: product,
             userId: userId,
+            freeTrialDays: freeTrialDays,
             dismissible: dismissible,
             checkoutURL: checkoutURL,
             transactionId: transactionId,
@@ -1366,6 +1390,7 @@ extension ZSPaymentSheet {
         from viewController: UIViewController,
         product: ZSProduct,
         userId: String? = nil,
+        freeTrialDays: Int,
         dismissible: Bool = true,
         checkoutURL: URL? = nil,
         transactionId: String? = nil,
@@ -1375,6 +1400,7 @@ extension ZSPaymentSheet {
         let bridge = UIKitSheetBridge<H>(
             product: product,
             userId: userId,
+            freeTrialDays: freeTrialDays,
             dismissible: dismissible,
             checkoutURL: checkoutURL,
             transactionId: transactionId,
@@ -1401,6 +1427,7 @@ extension ZSPaymentSheet {
 private struct UIKitSheetBridge<SheetHeader: View>: View {
     let product: ZSProduct
     let userId: String?
+    let freeTrialDays: Int
     let dismissible: Bool
     let checkoutURL: URL?
     let transactionId: String?
@@ -1426,6 +1453,7 @@ private struct UIKitSheetBridge<SheetHeader: View>: View {
                     ZSPaymentSheet(
                         product: product,
                         userId: userId,
+                        freeTrialDays: freeTrialDays,
                         dismissible: dismissible,
                         preloader: preloader,
                         checkoutURL: url,
@@ -1443,6 +1471,7 @@ private struct UIKitSheetBridge<SheetHeader: View>: View {
                     ZSPaymentSheet(
                         product: product,
                         userId: userId,
+                        freeTrialDays: freeTrialDays,
                         dismissible: dismissible,
                         checkoutURL: checkoutURL,
                         transactionId: transactionId,
@@ -1480,7 +1509,7 @@ private struct UIKitSheetBridge<SheetHeader: View>: View {
         }
 
         guard let result = await ZSPaymentSheet<EmptyView>.preload(
-            productId: product.id, userId: userId
+            productId: product.id, userId: userId, freeTrialDays: freeTrialDays
         ) else {
             showSheet = true
             return
@@ -1507,7 +1536,8 @@ struct ZSPaymentSheet_Previews: PreviewProvider {
                 webPrice: Price(amountMicros: 4_990_000, currencyCode: "USD"),
                 appStorePrice: Price(amountMicros: 5_990_000, currencyCode: "USD")
             ),
-            userId: "user_123"
+            userId: "user_123",
+            freeTrialDays: 0
         ) { _ in }
     }
 }

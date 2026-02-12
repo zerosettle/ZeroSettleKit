@@ -28,16 +28,16 @@ public final class ZSMigrateTipViewContainer: UIView {
         // Convert hex to SwiftUI Color
         let uiColor = UIColor(hex: backgroundColorHex as String) ?? .black
         let swiftUIColor = Color(uiColor)
-        
+
         let root = ZSMigrateTipView(backgroundColor: swiftUIColor, userId: userId as String)
         let any = AnyView(root)
-        
+
         let hc = UIHostingController(rootView: any)
         hostingController = hc
-        
+
         hc.view.backgroundColor = .clear
         hc.view.translatesAutoresizingMaskIntoConstraints = false
-        
+
         addSubview(hc.view)
         NSLayoutConstraint.activate([
             hc.view.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -45,16 +45,16 @@ public final class ZSMigrateTipViewContainer: UIView {
             hc.view.topAnchor.constraint(equalTo: topAnchor),
             hc.view.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
-        
+
         attachHostingControllerIfPossible()
     }
     
     private func updateSwiftUIView() {
         guard let hc = hostingController else { return }
-        
+
         let uiColor = UIColor(hex: backgroundColorHex as String) ?? .black
         let swiftUIColor = Color(uiColor)
-        
+
         let root = ZSMigrateTipView(backgroundColor: swiftUIColor, userId: userId as String)
         hc.rootView = AnyView(root)
         hc.view.invalidateIntrinsicContentSize()

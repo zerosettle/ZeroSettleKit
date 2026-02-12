@@ -6,6 +6,10 @@ const { ZSMigrateTipModule } = NativeModules;
  * Present the ZSMigrateTipView as a modal overlay.
  * This is the recommended approach as it ensures Apple Pay works correctly.
  *
+ * Free trial days are automatically calculated based on when the user's current
+ * StoreKit subscription expires, so they won't be charged until their Apple
+ * subscription ends.
+ *
  * @param backgroundColorHex - Background color in hex format (e.g., "#1E1E1E")
  * @param userId - The user identifier passed to the checkout backend.
  *

@@ -337,7 +337,7 @@ public final class ZeroSettle: ObservableObject {
     ///
     /// // 3. (Optional) Warm up payment sheet for instant opens
     /// if let first = catalog.products.first {
-    ///     await ZSPaymentSheet.warmUp(productId: first.id, userId: "user_42")
+    ///     await ZSPaymentSheet.warmUp(productId: first.id, userId: "user_42", freeTrialDays: 30)
     /// }
     ///
     /// // 4. (Optional) Restore entitlements
@@ -385,15 +385,17 @@ public final class ZeroSettle: ObservableObject {
     /// try await ZeroSettle.shared.bootstrap(userId: currentUser.id)
     /// ```
     ///
-    /// - Parameter userId: Your app's user identifier for fetching entitlements and migration data
+    /// - Parameters:
+    ///   - userId: Your app's user identifier for fetching entitlements and migration data
+    ///   - freeTrialDays: The number of free trial days to grant on the web billing subscription
     /// - Returns: A ``ProductCatalog`` containing products and remote configuration
     @discardableResult
-    public func bootstrap(userId: String) async throws -> ProductCatalog {
+    public func bootstrap(userId: String, freeTrialDays: Int) async throws -> ProductCatalog {
         let catalog = try await fetchProducts(userId: userId)
 
         // Warm up is non-fatal — just improves first-open latency
         if let first = catalog.products.first {
-            await ZSPaymentSheet<EmptyView>.warmUp(productId: first.id, userId: userId)
+            await ZSPaymentSheet<EmptyView>.warmUp(productId: first.id, userId: userId, freeTrialDays: freeTrialDays)
         }
 
         try await restoreEntitlements(userId: userId)
