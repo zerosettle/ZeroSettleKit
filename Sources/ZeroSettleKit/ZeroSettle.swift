@@ -335,12 +335,7 @@ public final class ZeroSettle: ObservableObject {
     /// // 2. Fetch products (with optional userId for migration eligibility)
     /// let catalog = try await ZeroSettle.shared.fetchProducts(userId: "user_42")
     ///
-    /// // 3. (Optional) Warm up payment sheet for instant opens
-    /// if let first = catalog.products.first {
-    ///     await ZSPaymentSheet.warmUp(productId: first.id, userId: "user_42", freeTrialDays: 30)
-    /// }
-    ///
-    /// // 4. (Optional) Restore entitlements
+    /// // 3. (Optional) Restore entitlements
     /// let entitlements = try await ZeroSettle.shared.restoreEntitlements(userId: "user_42")
     /// ```
     ///
@@ -374,29 +369,22 @@ public final class ZeroSettle: ObservableObject {
 
     // MARK: - Bootstrap
 
-    /// Convenience that fetches products, warms up the payment sheet, and restores entitlements.
+    /// Convenience that fetches products and restores entitlements.
     ///
-    /// Equivalent to calling ``fetchProducts(userId:)``, ``ZSPaymentSheet/warmUp(productId:userId:)``,
-    /// and ``restoreEntitlements(userId:)`` in sequence. Throws if the product fetch or entitlement
-    /// restore fails (warm-up failures are non-fatal).
+    /// Equivalent to calling ``fetchProducts(userId:)`` and ``restoreEntitlements(userId:)``
+    /// in sequence. Throws if the product fetch or entitlement restore fails.
     ///
+    /// To preload payment sheets, use the `preload` parameter on `.zsPaymentSheet()`:
     /// ```swift
     /// ZeroSettle.shared.configure(.init(publishableKey: "zs_pk_live_..."))
     /// try await ZeroSettle.shared.bootstrap(userId: currentUser.id)
     /// ```
     ///
-    /// - Parameters:
-    ///   - userId: Your app's user identifier for fetching entitlements and migration data
-    ///   - freeTrialDays: The number of free trial days to grant on the web billing subscription
+    /// - Parameter userId: Your app's user identifier for fetching entitlements and migration data
     /// - Returns: A ``ProductCatalog`` containing products and remote configuration
     @discardableResult
-    public func bootstrap(userId: String, freeTrialDays: Int) async throws -> ProductCatalog {
+    public func bootstrap(userId: String) async throws -> ProductCatalog {
         let catalog = try await fetchProducts(userId: userId)
-
-        // Warm up is non-fatal — just improves first-open latency
-        if let first = catalog.products.first {
-            await ZSPaymentSheet<EmptyView>.warmUp(productId: first.id, userId: userId, freeTrialDays: freeTrialDays)
-        }
 
         try await restoreEntitlements(userId: userId)
 

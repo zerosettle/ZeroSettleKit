@@ -238,6 +238,26 @@ private final class CheckoutCache {
     }
 }
 
+// MARK: - Payment Sheet Preload
+
+/// Controls which products are preloaded when the `.zsPaymentSheet()` modifier
+/// enters the view hierarchy.
+///
+/// Preloading creates a PaymentIntent ahead of time so the checkout URL is ready
+/// the moment the user taps "buy". Attach to the modifier on a root-level view
+/// for launch-time preloading.
+///
+/// ```swift
+/// ContentView()
+///     .zsPaymentSheet(isPresented: $show, product: product, userId: uid, preload: .all) { ... }
+/// ```
+public enum PaymentSheetPreload: Sendable {
+    /// Preload all products from `ZeroSettle.shared.products`.
+    case all
+    /// Preload only the specified products.
+    case specified([ZSProduct])
+}
+
 // MARK: - Payment Sheet
 
 /// An embedded payment sheet for ZeroSettle web checkout.
@@ -365,7 +385,7 @@ extension ZSPaymentSheet where Header == EmptyView {
     public static func preload(
         productId: String,
         userId: String? = nil,
-        freeTrialDays: Int
+        freeTrialDays: Int = 0
     ) async -> (checkoutURL: URL, transactionId: String)? {
         // Only webview checkout uses PaymentIntents — safari/safariVC use checkout sessions
         guard ZeroSettle.shared.checkoutType == .webview else { return nil }
@@ -423,7 +443,7 @@ extension ZSPaymentSheet where Header == EmptyView {
     ///         let products = try await iap.fetchProducts()
     ///         await ZSPaymentSheet.warmUp(productId: products[0].id, userId: "user_123")
     ///     }
-    public static func warmUp(productId: String, userId: String? = nil, freeTrialDays: Int) async {
+    public static func warmUp(productId: String, userId: String? = nil, freeTrialDays: Int = 0) async {
         let trace = PaymentSheetTrace("warmUp")
         PaymentSheetTrace.current = trace
         _ = await preload(productId: productId, userId: userId, freeTrialDays: freeTrialDays)
@@ -1024,6 +1044,7 @@ private struct ZSPaymentSheetModifier<Header: View>: ViewModifier {
     let userId: String?
     let freeTrialDays: Int
     let dismissible: Bool
+    let preload: PaymentSheetPreload?
     let header: () -> Header
     let onComplete: (Result<ZSTransaction, Error>) -> Void
 
@@ -1039,6 +1060,11 @@ private struct ZSPaymentSheetModifier<Header: View>: ViewModifier {
                     .frame(width: 1, height: 1)
                     .allowsHitTesting(false)
             )
+            .task {
+                if let preload {
+                    await preloadProducts(preload)
+                }
+            }
             .task(id: isPresented) {
                 if isPresented {
                     await preloadAll()
@@ -1126,12 +1152,47 @@ private struct ZSPaymentSheetModifier<Header: View>: ViewModifier {
         preloadedURL = result.checkoutURL
         preloadedTransactionId = result.transactionId
 
-        await preloader.loadAndWait(url: result.checkoutURL)
+        // Skip WKWebView load if preloadProducts() already rendered it
+        if !preloader.isReady {
+            await preloader.loadAndWait(url: result.checkoutURL)
+        }
 
         guard !Task.isCancelled else { trace.finish(); return }
         trace.event("sheet.presented", metadata: ["preloaded": "true"])
         trace.finish()
         showSheet = true
+    }
+
+    private func preloadProducts(_ preload: PaymentSheetPreload) async {
+        let products: [ZSProduct]
+        switch preload {
+        case .all:
+            products = await ZeroSettle.shared.products
+        case .specified(let list):
+            products = list
+        }
+        guard !products.isEmpty else { return }
+
+        // 1. Preload PaymentIntents for all products concurrently
+        await withTaskGroup(of: Void.self) { group in
+            for product in products {
+                group.addTask {
+                    _ = await ZSPaymentSheet<EmptyView>.preload(
+                        productId: product.id, userId: userId, freeTrialDays: freeTrialDays
+                    )
+                }
+            }
+        }
+
+        // 2. Load the bound product's checkout page into the WKWebView so it's
+        //    fully rendered before the user ever taps. The PreloaderHost keeps
+        //    the WebView in the view hierarchy so it can load and render.
+        guard !Task.isCancelled else { return }
+        if let result = CheckoutCache.shared.get(productId: product.id, userId: userId) {
+            preloadedURL = result.checkoutURL
+            preloadedTransactionId = result.transactionId
+            await preloader.loadAndWait(url: result.checkoutURL)
+        }
     }
 }
 
@@ -1149,6 +1210,7 @@ private struct ZSPaymentSheetItemModifier<Header: View>: ViewModifier {
     let userId: String?
     let freeTrialDays: Int
     let dismissible: Bool
+    let preload: PaymentSheetPreload?
     let header: () -> Header
     let onComplete: (Result<ZSTransaction, Error>) -> Void
 
@@ -1165,6 +1227,11 @@ private struct ZSPaymentSheetItemModifier<Header: View>: ViewModifier {
                     .frame(width: 1, height: 1)
                     .allowsHitTesting(false)
             )
+            .task {
+                if let preload {
+                    await preloadProducts(preload)
+                }
+            }
             .task(id: item?.id) {
                 if let product = item {
                     presentedProduct = product
@@ -1252,12 +1319,46 @@ private struct ZSPaymentSheetItemModifier<Header: View>: ViewModifier {
         preloadedURL = result.checkoutURL
         preloadedTransactionId = result.transactionId
 
-        await preloader.loadAndWait(url: result.checkoutURL)
+        // Skip WKWebView load if preloadProducts() already rendered it
+        if !preloader.isReady {
+            await preloader.loadAndWait(url: result.checkoutURL)
+        }
 
         guard !Task.isCancelled else { trace.finish(); return }
         trace.event("sheet.presented", metadata: ["preloaded": "true"])
         trace.finish()
         showSheet = true
+    }
+
+    private func preloadProducts(_ preload: PaymentSheetPreload) async {
+        let products: [ZSProduct]
+        switch preload {
+        case .all:
+            products = await ZeroSettle.shared.products
+        case .specified(let list):
+            products = list
+        }
+        guard !products.isEmpty else { return }
+
+        // 1. Preload PaymentIntents for all products concurrently
+        await withTaskGroup(of: Void.self) { group in
+            for product in products {
+                group.addTask {
+                    _ = await ZSPaymentSheet<EmptyView>.preload(
+                        productId: product.id, userId: userId, freeTrialDays: freeTrialDays
+                    )
+                }
+            }
+        }
+
+        // 2. Load the first product's checkout page into the WKWebView so
+        //    Stripe JS, DNS, TLS, and assets are warm in WKWebView's cache.
+        guard !Task.isCancelled, let first = products.first else { return }
+        if let result = CheckoutCache.shared.get(productId: first.id, userId: userId) {
+            preloadedURL = result.checkoutURL
+            preloadedTransactionId = result.transactionId
+            await preloader.loadAndWait(url: result.checkoutURL)
+        }
     }
 }
 
@@ -1266,12 +1367,16 @@ extension View {
     ///
     /// The PaymentIntent and WebView are preloaded before the sheet appears,
     /// so the checkout is ready for interaction the moment it slides up.
+    ///
+    /// - Parameter preload: Optional declarative preloading. When set, payment intents are
+    ///   created as soon as the view enters the hierarchy (e.g. at app launch if on the root view).
     public func zsPaymentSheet(
         isPresented: Binding<Bool>,
         product: ZSProduct,
         userId: String? = nil,
-        freeTrialDays: Int,
+        freeTrialDays: Int = 0,
         dismissible: Bool = true,
+        preload: PaymentSheetPreload? = nil,
         onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
     ) -> some View {
         modifier(ZSPaymentSheetModifier<EmptyView>(
@@ -1280,18 +1385,23 @@ extension View {
             userId: userId,
             freeTrialDays: freeTrialDays,
             dismissible: dismissible,
+            preload: preload,
             header: { EmptyView() },
             onComplete: onComplete
         ))
     }
 
     /// Presents a ZeroSettle payment sheet with a custom header when `isPresented` is true.
+    ///
+    /// - Parameter preload: Optional declarative preloading. When set, payment intents are
+    ///   created as soon as the view enters the hierarchy.
     public func zsPaymentSheet<Header: View>(
         isPresented: Binding<Bool>,
         product: ZSProduct,
         userId: String? = nil,
-        freeTrialDays: Int,
+        freeTrialDays: Int = 0,
         dismissible: Bool = true,
+        preload: PaymentSheetPreload? = nil,
         @ViewBuilder header: @escaping () -> Header,
         onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
     ) -> some View {
@@ -1301,6 +1411,7 @@ extension View {
             userId: userId,
             freeTrialDays: freeTrialDays,
             dismissible: dismissible,
+            preload: preload,
             header: header,
             onComplete: onComplete
         ))
@@ -1311,14 +1422,18 @@ extension View {
     /// When `item` is non-nil, the sheet presents for that product.
     /// On dismiss, `item` is automatically set back to `nil`.
     ///
+    /// - Parameter preload: Optional declarative preloading. When set, payment intents are
+    ///   created as soon as the view enters the hierarchy.
+    ///
     ///     .zsPaymentSheet(item: $selectedProduct, userId: "user_123") { result in
     ///         print(result)
     ///     }
     public func zsPaymentSheet(
         item: Binding<ZSProduct?>,
         userId: String? = nil,
-        freeTrialDays: Int,
+        freeTrialDays: Int = 0,
         dismissible: Bool = true,
+        preload: PaymentSheetPreload? = nil,
         onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
     ) -> some View {
         modifier(ZSPaymentSheetItemModifier<EmptyView>(
@@ -1326,17 +1441,22 @@ extension View {
             userId: userId,
             freeTrialDays: freeTrialDays,
             dismissible: dismissible,
+            preload: preload,
             header: { EmptyView() },
             onComplete: onComplete
         ))
     }
 
     /// Presents a ZeroSettle payment sheet with a custom header, driven by an optional product binding.
+    ///
+    /// - Parameter preload: Optional declarative preloading. When set, payment intents are
+    ///   created as soon as the view enters the hierarchy.
     public func zsPaymentSheet<Header: View>(
         item: Binding<ZSProduct?>,
         userId: String? = nil,
-        freeTrialDays: Int,
+        freeTrialDays: Int = 0,
         dismissible: Bool = true,
+        preload: PaymentSheetPreload? = nil,
         @ViewBuilder header: @escaping () -> Header,
         onComplete: @escaping (Result<ZSTransaction, Error>) -> Void
     ) -> some View {
@@ -1345,6 +1465,7 @@ extension View {
             userId: userId,
             freeTrialDays: freeTrialDays,
             dismissible: dismissible,
+            preload: preload,
             header: header,
             onComplete: onComplete
         ))
@@ -1360,7 +1481,7 @@ extension ZSPaymentSheet where Header == EmptyView {
         from viewController: UIViewController,
         product: ZSProduct,
         userId: String? = nil,
-        freeTrialDays: Int,
+        freeTrialDays: Int = 0,
         dismissible: Bool = true,
         checkoutURL: URL? = nil,
         transactionId: String? = nil,
@@ -1390,7 +1511,7 @@ extension ZSPaymentSheet {
         from viewController: UIViewController,
         product: ZSProduct,
         userId: String? = nil,
-        freeTrialDays: Int,
+        freeTrialDays: Int = 0,
         dismissible: Bool = true,
         checkoutURL: URL? = nil,
         transactionId: String? = nil,
