@@ -418,12 +418,14 @@ internal struct CreateCheckoutSessionRequest: Encodable {
     let userId: String?
     let externalUserId: String?
     let rcAppUserId: String?
+    let platform: String = "ios"
 }
 
 internal struct CreatePaymentIntentRequest: Encodable {
     let productId: String
     let userId: String?
     let freeTrialDays: Int
+    let platform: String = "ios"
 }
 
 /// Response from the create_payment_intent endpoint.

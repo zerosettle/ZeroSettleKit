@@ -14,6 +14,88 @@ import WebKit
 @_implementationOnly import ZeroSettleCore
 #endif
 
+// MARK: - Shared JS & Helpers
+
+/// Defines `window.__zsMeasure()` — drills past full-viewport wrappers
+/// to find the bottom of the actual content elements.
+private let setupMeasureJS = """
+(function() {
+    if (window.__zsMeasure) return;
+    window.__zsMeasure = function() {
+        var el = document.getElementById('checkout-content');
+        if (el) {
+            var rect = el.getBoundingClientRect();
+            console.log('[ZS] measure #checkout-content: top=' + rect.top + ' h=' + rect.height);
+            return rect.top + rect.height;
+        }
+        var viewH = window.innerHeight;
+        var nodes = document.body.children;
+        // Drill past single-visible-child wrappers that fill the viewport
+        while (true) {
+            var visible = [];
+            for (var i = 0; i < nodes.length; i++) {
+                if (nodes[i].offsetHeight > 0) visible.push(nodes[i]);
+            }
+            if (visible.length === 1 && visible[0].offsetHeight >= viewH * 0.9) {
+                nodes = visible[0].children;
+            } else {
+                break;
+            }
+        }
+        var maxBottom = 0;
+        for (var i = 0; i < nodes.length; i++) {
+            if (nodes[i].offsetHeight > 0) {
+                var r = nodes[i].getBoundingClientRect();
+                if (r.bottom > maxBottom) maxBottom = r.bottom;
+            }
+        }
+        return maxBottom > 0 ? maxBottom : 400;
+    };
+})();
+"""
+
+/// One-shot measurement. Evaluate `setupMeasureJS` first.
+private let measureContentJS = "window.__zsMeasure()"
+
+/// Installs height tracking that continuously reports content height to native.
+/// Uses ResizeObserver on `#checkout-content` + polling fallback for CSS transitions.
+/// Fires immediately on install. Evaluate `setupMeasureJS` first.
+private let heightObserverJS = """
+(function() {
+    if (window.__zsHeightObserver) return;
+    var lastHeight = 0;
+    function measureAndReport() {
+        var height = window.__zsMeasure();
+        if (height > 0 && Math.abs(height - lastHeight) > 1) {
+            console.log('[ZS] contentHeight: ' + height + ' (was ' + lastHeight + ')');
+            lastHeight = height;
+            window.webkit.messageHandlers.checkoutComplete.postMessage({
+                action: 'contentHeight',
+                height: height
+            });
+        }
+    }
+    var target = document.getElementById('checkout-content') || document.body;
+    console.log('[ZS] observer target: ' + (target.id || 'body'));
+    var ro = new ResizeObserver(function() { measureAndReport(); });
+    ro.observe(target);
+    // Poll as fallback — ResizeObserver can miss CSS grid transitions in WKWebView
+    setInterval(measureAndReport, 200);
+    window.__zsHeightObserver = ro;
+    measureAndReport();
+})();
+"""
+
+/// Parses a JS evaluation result into a CGFloat (handles both CGFloat and NSNumber).
+private func parseJSHeight(_ result: Any?) -> CGFloat? {
+    if let height = result as? CGFloat, height > 0 {
+        return height
+    } else if let number = result as? NSNumber, number.doubleValue > 0 {
+        return CGFloat(number.doubleValue)
+    }
+    return nil
+}
+
 // MARK: - Message Router
 
 /// Proxy WKScriptMessageHandler that forwards messages to a mutable closure.
@@ -38,7 +120,6 @@ private final class CheckoutPreloader: ObservableObject {
     @Published var webView: WKWebView?
     @Published private(set) var isReady = false
     private(set) var measuredContentHeight: CGFloat = 0
-    private(set) var startedExpanded = false
     let messageRouter = MessageRouter()
     private var continuation: CheckedContinuation<Void, Never>?
 
@@ -73,6 +154,15 @@ private final class CheckoutPreloader: ObservableObject {
             })();
             """, injectionTime: .atDocumentStart, forMainFrameOnly: true)
         config.userContentController.addUserScript(consoleScript)
+
+        // Install height observer at document end — runs automatically when page loads.
+        // This is more reliable than evaluateJavaScript after page load.
+        let heightScript = WKUserScript(
+            source: setupMeasureJS + "\n" + heightObserverJS,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true
+        )
+        config.userContentController.addUserScript(heightScript)
 
         let wv = WKWebView(frame: CGRect(x: 0, y: 0, width: 393, height: 600), configuration: config)
         wv.scrollView.bounces = false
@@ -109,7 +199,6 @@ private final class CheckoutPreloader: ObservableObject {
 
                 if action == "expandSheet" {
                     trace?.event("JS: expandSheet (preload phase)")
-                    self.startedExpanded = true
                     return
                 }
 
@@ -121,31 +210,11 @@ private final class CheckoutPreloader: ObservableObject {
                 if let loadSpan { trace?.end(loadSpan) }
                 let readySpan = trace?.begin("webView.measureContent")
 
-                let measureJS = """
-                (function() {
-                    var el = document.getElementById('checkout-content');
-                    if (el) {
-                        var rect = el.getBoundingClientRect();
-                        return rect.top + rect.height;
-                    }
-                    var children = document.body.children;
-                    var maxBottom = 0;
-                    for (var i = 0; i < children.length; i++) {
-                        if (children[i].offsetHeight > 0) {
-                            var r = children[i].getBoundingClientRect();
-                            if (r.bottom > maxBottom) maxBottom = r.bottom;
-                        }
-                    }
-                    return maxBottom;
-                })()
-                """
-                self.webView?.evaluateJavaScript(measureJS) { [weak self] result, _ in
+                self.webView?.evaluateJavaScript(setupMeasureJS + "\n" + measureContentJS) { [weak self] result, _ in
                     guard let self = self else { return }
                     DispatchQueue.main.async {
-                        if let height = result as? CGFloat, height > 0 {
+                        if let height = parseJSHeight(result) {
                             self.measuredContentHeight = height
-                        } else if let number = result as? NSNumber, number.doubleValue > 0 {
-                            self.measuredContentHeight = CGFloat(number.doubleValue)
                         }
                         if let readySpan { trace?.end(readySpan, metadata: ["height": "\(self.measuredContentHeight)"]) }
                         if let outerSpan { trace?.end(outerSpan) }
@@ -163,7 +232,6 @@ private final class CheckoutPreloader: ObservableObject {
         webView = nil
         isReady = false
         measuredContentHeight = 0
-        startedExpanded = false
         continuation?.resume()
         continuation = nil
     }
@@ -291,8 +359,6 @@ public struct ZSPaymentSheet<Header: View>: View {
     @State private var webContentHeight: CGFloat
     @State private var compactHeight: CGFloat
     @State private var headerHeight: CGFloat = 0
-    @State private var selectedDetent: PresentationDetent
-    @State private var isExpanded = false
 
     // MARK: - Public Initialization (without preloading)
 
@@ -320,7 +386,6 @@ public struct ZSPaymentSheet<Header: View>: View {
         self._isLoading = State(initialValue: true)
         self._webContentHeight = State(initialValue: 0)
         self._compactHeight = State(initialValue: 480)
-        self._selectedDetent = State(initialValue: .height(480))
     }
 
     // MARK: - Internal Initialization (with preloaded WebView)
@@ -351,8 +416,6 @@ public struct ZSPaymentSheet<Header: View>: View {
         self._webContentHeight = State(initialValue: preloader.measuredContentHeight)
         let startHeight = min(max(preloader.measuredContentHeight, 200), 700)
         self._compactHeight = State(initialValue: startHeight)
-        self._isExpanded = State(initialValue: preloader.startedExpanded)
-        self._selectedDetent = State(initialValue: preloader.startedExpanded ? .large : .height(startHeight))
     }
 }
 
@@ -519,7 +582,7 @@ extension ZSPaymentSheet {
         }
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .ignoresSafeArea(edges: .bottom)
-        .presentationDetents(isExpanded ? [.height(compactHeight), .large] : [.height(compactHeight)], selection: $selectedDetent)
+        .presentationDetents([.height(compactHeight)])
         .presentationDragIndicator(.hidden)
         .presentationBackground(.clear)
         .interactiveDismissDisabled(!dismissible)
@@ -564,9 +627,6 @@ extension ZSPaymentSheet {
 
         withAnimation(.easeInOut(duration: 0.3)) {
             compactHeight = newHeight
-            if !isExpanded {
-                selectedDetent = .height(newHeight)
-            }
         }
     }
 
@@ -643,22 +703,6 @@ extension ZSPaymentSheet {
             webContentHeight = height
             recalculateHeight()
 
-        case .expandSheet:
-            PaymentSheetTrace.logger.debug("⏱  ● JS → expandSheet (user interacting with card form)")
-            withAnimation(.easeInOut(duration: 0.3)) {
-                isExpanded = true
-                selectedDetent = .large
-            }
-
-        case .collapseSheet:
-            PaymentSheetTrace.logger.debug("⏱  ● JS → collapseSheet")
-            withAnimation(.easeInOut(duration: 0.3)) {
-                selectedDetent = .height(compactHeight)
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                isExpanded = false
-            }
-
         case .complete(let txnId):
             PaymentSheetTrace.logger.info("⏱  ● JS → complete (txnId=\(txnId))")
             Task {
@@ -724,8 +768,6 @@ private struct HeaderHeightKey: PreferenceKey {
 private enum WebViewAction {
     case ready
     case contentHeight(CGFloat)
-    case expandSheet
-    case collapseSheet
     case complete(transactionId: String)
     case cancelled
     case error(String)
@@ -751,6 +793,10 @@ private struct PaymentWebView: UIViewRepresentable {
                 guard let coordinator = coordinator else { return }
                 coordinator.userContentController(WKUserContentController(), didReceive: message)
             }
+
+            // Height observer was installed as a WKUserScript at document end,
+            // so it's already running and polling every 200ms. It will route
+            // contentHeight messages through the messageRouter → coordinator.
 
             return preloaded
         }
@@ -782,6 +828,14 @@ private struct PaymentWebView: UIViewRepresentable {
             """, injectionTime: .atDocumentStart, forMainFrameOnly: true)
         configuration.userContentController.addUserScript(consoleScript)
 
+        // Install height observer at document end — runs automatically when page loads.
+        let heightScript = WKUserScript(
+            source: setupMeasureJS + "\n" + heightObserverJS,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true
+        )
+        configuration.userContentController.addUserScript(heightScript)
+
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         webView.scrollView.bounces = false
@@ -798,7 +852,15 @@ private struct PaymentWebView: UIViewRepresentable {
         return webView
     }
 
-    func updateUIView(_ uiView: WKWebView, context: Context) {}
+    func updateUIView(_ uiView: WKWebView, context: Context) {
+        // For preloaded WebViews, JS timers may have been suspended while the
+        // view was off-screen. Re-kick the observer now that the view is visible.
+        // The idempotency guards in the JS make this safe to call multiple times.
+        if preloadedWebView != nil && !context.coordinator.hasReinstalledObserver {
+            context.coordinator.hasReinstalledObserver = true
+            uiView.evaluateJavaScript(setupMeasureJS + "\n" + heightObserverJS, completionHandler: nil)
+        }
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(isLoading: $isLoading, onAction: onAction)
@@ -809,6 +871,7 @@ private struct PaymentWebView: UIViewRepresentable {
         let onAction: (WebViewAction) -> Void
         weak var webView: WKWebView?
         private var hasCompleted = false
+        var hasReinstalledObserver = false
 
         private let callbackHosts = [
             "api.zerosettle.io",
@@ -842,41 +905,19 @@ private struct PaymentWebView: UIViewRepresentable {
             switch action {
             case "ready":
                 onAction(.ready)
-                let measureJS = """
-                (function() {
-                    var el = document.getElementById('checkout-content');
-                    if (el) {
-                        var rect = el.getBoundingClientRect();
-                        return rect.top + rect.height;
-                    }
-                    var children = document.body.children;
-                    var maxBottom = 0;
-                    for (var i = 0; i < children.length; i++) {
-                        if (children[i].offsetHeight > 0) {
-                            var r = children[i].getBoundingClientRect();
-                            if (r.bottom > maxBottom) maxBottom = r.bottom;
-                        }
-                    }
-                    return maxBottom;
-                })()
-                """
-                webView?.evaluateJavaScript(measureJS) { [weak self] result, _ in
-                    guard let self = self else { return }
-                    if let height = result as? CGFloat, height > 0 {
-                        self.onAction(.contentHeight(height))
-                    } else if let number = result as? NSNumber, number.doubleValue > 0 {
-                        self.onAction(.contentHeight(CGFloat(number.doubleValue)))
-                    }
-                    DispatchQueue.main.async {
-                        self.isLoading = false
-                    }
+                // Height observer was installed as a WKUserScript at document end,
+                // so it's already running by the time "ready" fires.
+                DispatchQueue.main.async {
+                    self.isLoading = false
                 }
 
-            case "expandSheet":
-                onAction(.expandSheet)
+            case "contentHeight":
+                if let height = parseJSHeight(body["height"]) {
+                    onAction(.contentHeight(height))
+                }
 
-            case "collapseSheet":
-                onAction(.collapseSheet)
+            case "expandSheet", "collapseSheet":
+                break // Height handled by ResizeObserver → contentHeight
 
             case "complete":
                 guard !hasCompleted else { return }
@@ -1218,6 +1259,7 @@ private struct ZSPaymentSheetItemModifier<Header: View>: ViewModifier {
     @State private var showSheet = false
     @State private var preloadedURL: URL?
     @State private var preloadedTransactionId: String?
+    @State private var preloaderProductId: String?
     @State private var presentedProduct: ZSProduct?
 
     func body(content: Content) -> some View {
@@ -1241,9 +1283,9 @@ private struct ZSPaymentSheetItemModifier<Header: View>: ViewModifier {
             .sheet(isPresented: $showSheet, onDismiss: {
                 PaymentSheetTrace.logger.debug("⏱  ● sheet.dismissed (item:)")
                 item = nil
-                // Keep preloadedURL/transactionId — they're cached and reusable.
-                // Only reset the WebView (it was consumed by the sheet).
+                // Reset WebView and product tracking — the WebView was consumed by the sheet.
                 preloader.reset()
+                preloaderProductId = nil
             }) {
                 if let product = presentedProduct {
                     if let url = preloadedURL {
@@ -1262,6 +1304,7 @@ private struct ZSPaymentSheetItemModifier<Header: View>: ViewModifier {
                                 CheckoutCache.shared.invalidate(productId: product.id, userId: userId)
                                 preloadedURL = nil
                                 preloadedTransactionId = nil
+                                preloaderProductId = nil
                             }
                             onComplete(result)
                         }
@@ -1319,9 +1362,11 @@ private struct ZSPaymentSheetItemModifier<Header: View>: ViewModifier {
         preloadedURL = result.checkoutURL
         preloadedTransactionId = result.transactionId
 
-        // Skip WKWebView load if preloadProducts() already rendered it
-        if !preloader.isReady {
+        // Only skip WebView load if preloader already has THIS product's page loaded
+        if preloaderProductId != product.id || !preloader.isReady {
+            preloader.reset()
             await preloader.loadAndWait(url: result.checkoutURL)
+            preloaderProductId = product.id
         }
 
         guard !Task.isCancelled else { trace.finish(); return }
@@ -1353,11 +1398,12 @@ private struct ZSPaymentSheetItemModifier<Header: View>: ViewModifier {
 
         // 2. Load the first product's checkout page into the WKWebView so
         //    Stripe JS, DNS, TLS, and assets are warm in WKWebView's cache.
+        //    Don't set preloadedURL/transactionId here — the user hasn't selected
+        //    a product yet. preloadAll() will set them for the correct product.
         guard !Task.isCancelled, let first = products.first else { return }
         if let result = CheckoutCache.shared.get(productId: first.id, userId: userId) {
-            preloadedURL = result.checkoutURL
-            preloadedTransactionId = result.transactionId
             await preloader.loadAndWait(url: result.checkoutURL)
+            preloaderProductId = first.id
         }
     }
 }
