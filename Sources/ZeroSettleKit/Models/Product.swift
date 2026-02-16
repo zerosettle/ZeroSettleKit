@@ -25,8 +25,8 @@ public struct ZSProduct: Identifiable, Sendable {
     /// The type of product (subscription, consumable, etc.)
     public let type: ZSProductType
 
-    /// The web checkout price (may differ from App Store price)
-    public let webPrice: Price
+    /// The web checkout price (may differ from App Store price). `nil` when web checkout is not configured.
+    public let webPrice: Price?
 
     /// App Store price from the backend (for display purposes)
     public let appStorePrice: Price?
@@ -47,8 +47,8 @@ public struct ZSProduct: Identifiable, Sendable {
     public var storeKitPrice: Price? {
         if let skProduct = _storeKitProduct {
             let micros = Int((skProduct.price as NSDecimalNumber).doubleValue * 1_000_000)
-            // Use web price currency as fallback since priceFormatStyle.currencyCode can crash
-            return Price(amountMicros: micros, currencyCode: webPrice.currencyCode)
+            let currency = webPrice?.currencyCode ?? appStorePrice?.currencyCode ?? "USD"
+            return Price(amountMicros: micros, currencyCode: currency)
         }
         return appStorePrice
     }
@@ -57,7 +57,7 @@ public struct ZSProduct: Identifiable, Sendable {
     /// Returns `nil` if the StoreKit price isn't available or web is more expensive.
     /// Example: StoreKit = $9.99, web = $6.99 → `savingsPercent` = 30
     public var savingsPercent: Int? {
-        guard let skPrice = storeKitPrice, skPrice.amountMicros > 0 else { return nil }
+        guard let webPrice, let skPrice = storeKitPrice, skPrice.amountMicros > 0 else { return nil }
         let savings = Double(skPrice.amountMicros - webPrice.amountMicros) / Double(skPrice.amountMicros)
         let percent = Int((savings * 100).rounded())
         return percent > 0 ? percent : nil
@@ -68,7 +68,7 @@ public struct ZSProduct: Identifiable, Sendable {
         displayName: String,
         productDescription: String,
         type: ZSProductType,
-        webPrice: Price,
+        webPrice: Price? = nil,
         appStorePrice: Price? = nil,
         syncedToASC: Bool = false,
         promotion: Promotion? = nil
@@ -105,7 +105,7 @@ extension ZSProduct: Codable {
         displayName = try container.decode(String.self, forKey: .displayName)
         productDescription = try container.decode(String.self, forKey: .productDescription)
         type = try container.decode(ZSProductType.self, forKey: .type)
-        webPrice = try container.decode(Price.self, forKey: .webPrice)
+        webPrice = try container.decodeIfPresent(Price.self, forKey: .webPrice)
         appStorePrice = try container.decodeIfPresent(Price.self, forKey: .appStorePrice)
         syncedToASC = try container.decodeIfPresent(Bool.self, forKey: .syncedToASC) ?? false
         promotion = try container.decodeIfPresent(Promotion.self, forKey: .promotion)
@@ -118,7 +118,7 @@ extension ZSProduct: Codable {
         try container.encode(displayName, forKey: .displayName)
         try container.encode(productDescription, forKey: .productDescription)
         try container.encode(type, forKey: .type)
-        try container.encode(webPrice, forKey: .webPrice)
+        try container.encodeIfPresent(webPrice, forKey: .webPrice)
         try container.encodeIfPresent(appStorePrice, forKey: .appStorePrice)
         try container.encode(syncedToASC, forKey: .syncedToASC)
         try container.encodeIfPresent(promotion, forKey: .promotion)

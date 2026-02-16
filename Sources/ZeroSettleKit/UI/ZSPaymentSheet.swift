@@ -25,7 +25,6 @@ private let setupMeasureJS = """
         var el = document.getElementById('checkout-content');
         if (el) {
             var rect = el.getBoundingClientRect();
-            console.log('[ZS] measure #checkout-content: top=' + rect.top + ' h=' + rect.height);
             return rect.top + rect.height;
         }
         var viewH = window.innerHeight;
@@ -67,7 +66,6 @@ private let heightObserverJS = """
     function measureAndReport() {
         var height = window.__zsMeasure();
         if (height > 0 && Math.abs(height - lastHeight) > 1) {
-            console.log('[ZS] contentHeight: ' + height + ' (was ' + lastHeight + ')');
             lastHeight = height;
             window.webkit.messageHandlers.checkoutComplete.postMessage({
                 action: 'contentHeight',
@@ -76,7 +74,6 @@ private let heightObserverJS = """
         }
     }
     var target = document.getElementById('checkout-content') || document.body;
-    console.log('[ZS] observer target: ' + (target.id || 'body'));
     var ro = new ResizeObserver(function() { measureAndReport(); });
     ro.observe(target);
     // Poll as fallback — ResizeObserver can miss CSS grid transitions in WKWebView
@@ -132,28 +129,6 @@ private final class CheckoutPreloader: ObservableObject {
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
         config.userContentController.add(messageRouter, name: "checkoutComplete")
-        config.userContentController.add(messageRouter, name: "consoleLog")
-
-        let consoleScript = WKUserScript(source: """
-            (function() {
-                function forward(level) {
-                    var orig = console[level];
-                    console[level] = function() {
-                        var args = Array.prototype.slice.call(arguments).map(function(a) {
-                            try { return typeof a === 'object' ? JSON.stringify(a) : String(a); }
-                            catch(e) { return String(a); }
-                        });
-                        window.webkit.messageHandlers.consoleLog.postMessage({
-                            level: level,
-                            message: args.join(' ')
-                        });
-                        orig.apply(console, arguments);
-                    };
-                }
-                forward('log'); forward('warn'); forward('error');
-            })();
-            """, injectionTime: .atDocumentStart, forMainFrameOnly: true)
-        config.userContentController.addUserScript(consoleScript)
 
         // Install height observer at document end — runs automatically when page loads.
         // This is more reliable than evaluateJavaScript after page load.
@@ -175,7 +150,6 @@ private final class CheckoutPreloader: ObservableObject {
         self.webView = wv
 
         let loadSpan = trace?.begin("webView.loadURL")
-        PaymentSheetTrace.logger.info("⏱  ▶ webView.loadURL: \(url.absoluteString)")
         let request = URLRequest(url: url)
         wv.load(request)
 
@@ -184,14 +158,6 @@ private final class CheckoutPreloader: ObservableObject {
 
             messageRouter.onMessage = { [weak self] message in
                 guard let self = self else { return }
-
-                if message.name == "consoleLog",
-                   let body = message.body as? [String: Any],
-                   let level = body["level"] as? String,
-                   let msg = body["message"] as? String {
-                    PaymentSheetTrace.logger.debug("⏱  [WebView \(level)] \(msg)")
-                    return
-                }
 
                 guard message.name == "checkoutComplete",
                       let body = message.body as? [String: Any],
@@ -228,7 +194,6 @@ private final class CheckoutPreloader: ObservableObject {
     }
 
     func reset() {
-        PaymentSheetTrace.logger.debug("⏱  ● preloader.reset()")
         webView = nil
         isReady = false
         measuredContentHeight = 0
@@ -665,7 +630,6 @@ extension ZSPaymentSheet {
     // MARK: - Actions
 
     private func createPaymentIntent() async {
-        PaymentSheetTrace.logger.debug("⏱  ▶ createPaymentIntent (direct, no preloader)")
         guard let config = ZeroSettle.shared.currentConfig,
               let baseURL = ZeroSettle.shared.effectiveBaseURL else {
             PaymentSheetTrace.logger.error("⏱  ◀ createPaymentIntent: SDK not configured")
@@ -678,8 +642,6 @@ extension ZSPaymentSheet {
         do {
             let backend = Backend(baseURL: baseURL, publishableKey: config.publishableKey)
             let paymentIntent = try await backend.createPaymentIntent(productId: product.id, userId: userId, freeTrialDays: freeTrialDays)
-            PaymentSheetTrace.logger.debug("⏱  ◀ createPaymentIntent: txnId=\(paymentIntent.transactionId)")
-
             await MainActor.run {
                 self.transactionId = paymentIntent.transactionId
                 self.checkoutURL = URL(string: paymentIntent.checkoutUrl)
@@ -695,11 +657,9 @@ extension ZSPaymentSheet {
     private func handleWebViewAction(_ action: WebViewAction) {
         switch action {
         case .ready:
-            PaymentSheetTrace.logger.debug("⏱  ● JS → ready (in-sheet)")
             break
 
         case .contentHeight(let height):
-            PaymentSheetTrace.logger.debug("⏱  ● JS → contentHeight: \(height)")
             webContentHeight = height
             recalculateHeight()
 
@@ -710,7 +670,6 @@ extension ZSPaymentSheet {
             }
 
         case .cancelled:
-            PaymentSheetTrace.logger.debug("⏱  ● JS → cancelled")
             dismiss()
             onComplete(.failure(PaymentSheetError.cancelled))
 
@@ -889,14 +848,6 @@ private struct PaymentWebView: UIViewRepresentable {
         // MARK: - JS Message Handler
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-            if message.name == "consoleLog",
-               let body = message.body as? [String: Any],
-               let level = body["level"] as? String,
-               let msg = body["message"] as? String {
-                PaymentSheetTrace.logger.debug("⏱  [WebView \(level)] \(msg)")
-                return
-            }
-
             guard message.name == "checkoutComplete",
                   let body = message.body as? [String: Any] else { return }
 
@@ -952,7 +903,6 @@ private struct PaymentWebView: UIViewRepresentable {
         // MARK: - Navigation Delegate
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            PaymentSheetTrace.logger.debug("⏱  ● webView.didFinish: \(webView.url?.absoluteString ?? "?")")
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -964,9 +914,7 @@ private struct PaymentWebView: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
             if let url = navigationAction.request.url {
-                PaymentSheetTrace.logger.debug("⏱  ● webView.navigate: \(url.absoluteString)")
                 if isCallbackURL(url) {
-                    PaymentSheetTrace.logger.info("⏱  ● webView.callbackURL intercepted: \(url.absoluteString)")
                     handleCallbackURL(url)
                     decisionHandler(.cancel)
                     return
@@ -1115,7 +1063,7 @@ private struct ZSPaymentSheetModifier<Header: View>: ViewModifier {
                 }
             }
             .sheet(isPresented: $showSheet, onDismiss: {
-                PaymentSheetTrace.logger.debug("⏱  ● sheet.dismissed (isPresented:)")
+
                 isPresented = false
                 // Keep preloadedURL/transactionId — they're cached and reusable.
                 // Only reset the WebView (it was consumed by the sheet).
@@ -1281,7 +1229,7 @@ private struct ZSPaymentSheetItemModifier<Header: View>: ViewModifier {
                 }
             }
             .sheet(isPresented: $showSheet, onDismiss: {
-                PaymentSheetTrace.logger.debug("⏱  ● sheet.dismissed (item:)")
+
                 item = nil
                 // Reset WebView and product tracking — the WebView was consumed by the sheet.
                 preloader.reset()

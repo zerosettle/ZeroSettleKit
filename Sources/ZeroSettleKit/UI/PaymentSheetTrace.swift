@@ -83,7 +83,7 @@ internal final class PaymentSheetTrace: @unchecked Sendable {
         self.root = node
         self.nodes[node.id] = node
         self.spanStack = [node.id]
-        Self.logger.debug("⏱ [\(label)] trace started")
+        // Trace started — spans are recorded silently until finish().
     }
 
     // MARK: - Recording
@@ -105,8 +105,6 @@ internal final class PaymentSheetTrace: @unchecked Sendable {
 
         spanStack.append(node.id)
 
-        let meta = Self.formatMeta(metadata)
-        Self.logger.debug("⏱  ▶ \(label)\(meta)")
         return node.id
     }
 
@@ -123,9 +121,6 @@ internal final class PaymentSheetTrace: @unchecked Sendable {
         if let idx = spanStack.lastIndex(of: id) {
             spanStack.remove(at: idx)
         }
-
-        let meta = Self.formatMeta(metadata)
-        Self.logger.debug("⏱  ◀ \(node.label): \(node.formattedDuration)\(meta)")
     }
 
     /// Record a point-in-time event within the current span.
@@ -136,9 +131,6 @@ internal final class PaymentSheetTrace: @unchecked Sendable {
             parent.events.append(evt)
         }
         lock.unlock()
-
-        let meta = Self.formatMeta(metadata)
-        Self.logger.debug("⏱  ● \(label)\(meta)")
     }
 
     /// Complete the trace and print the flamegraph.
@@ -148,7 +140,7 @@ internal final class PaymentSheetTrace: @unchecked Sendable {
         lock.unlock()
 
         let output = buildFlamegraph()
-        Self.logger.info("\n\(output)")
+        Self.logger.debug("\n\(output)")
         Self.current = nil
     }
 
