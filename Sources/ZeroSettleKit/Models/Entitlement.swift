@@ -12,6 +12,17 @@ import Foundation
 /// Represents an active entitlement from either a StoreKit or web checkout purchase.
 /// Used when the developer is not using RevenueCat for entitlement management.
 public struct Entitlement: Identifiable, Sendable, Codable, Equatable {
+
+    // MARK: - Nested Types
+
+    /// The origin of a purchase/entitlement.
+    public enum Source: String, Sendable, Codable {
+        case storeKit = "store_kit"
+        case webCheckout = "web_checkout"
+    }
+
+    // MARK: - Properties
+
     /// Entitlement identifier
     public let id: String
 
@@ -19,7 +30,7 @@ public struct Entitlement: Identifiable, Sendable, Codable, Equatable {
     public let productId: String
 
     /// Where the purchase originated
-    public let source: EntitlementSource
+    public let source: Source
 
     /// Whether this entitlement is currently active
     public let isActive: Bool
@@ -33,7 +44,7 @@ public struct Entitlement: Identifiable, Sendable, Codable, Equatable {
     public init(
         id: String,
         productId: String,
-        source: EntitlementSource,
+        source: Source,
         isActive: Bool,
         expiresAt: Date? = nil,
         purchasedAt: Date
@@ -50,17 +61,9 @@ public struct Entitlement: Identifiable, Sendable, Codable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
         productId = try container.decode(String.self, forKey: .productId)
-        source = try container.decodeIfPresent(EntitlementSource.self, forKey: .source) ?? .webCheckout
+        source = try container.decodeIfPresent(Source.self, forKey: .source) ?? .webCheckout
         isActive = try container.decode(Bool.self, forKey: .isActive)
         expiresAt = try container.decodeIfPresent(Date.self, forKey: .expiresAt)
         purchasedAt = try container.decode(Date.self, forKey: .purchasedAt)
     }
-}
-
-// MARK: - Entitlement Source
-
-/// The origin of a purchase/entitlement.
-public enum EntitlementSource: String, Sendable, Codable {
-    case storeKit = "store_kit"
-    case webCheckout = "web_checkout"
 }

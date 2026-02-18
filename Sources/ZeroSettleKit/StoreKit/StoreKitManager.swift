@@ -63,6 +63,7 @@ protocol StoreKitUpdateDelegate: AnyObject {
 /// Also provides access to current entitlements derived from StoreKit transactions.
 internal final class StoreKitManager: @unchecked Sendable {
     private let backend: Backend
+    private let syncQueue = StoreKitSyncQueue()
     private var updateListenerTask: Task<Void, Never>?
     private var userId: String?
 
@@ -82,6 +83,17 @@ internal final class StoreKitManager: @unchecked Sendable {
 
         updateListenerTask = Task(priority: .utility) { [weak self] in
             await self?.listenForUpdates()
+        }
+
+        // Retry any pending syncs from previous sessions
+        Task(priority: .utility) { [weak self] in
+            guard let self else { return }
+            await self.syncQueue.retryAll { [weak self] jws, userId in
+                try await self?.backend.syncStoreKitTransaction(
+                    jwsRepresentation: jws,
+                    userId: userId
+                ) ?? { throw URLError(.cancelled) }()
+            }
         }
 
         ZSLogger.info("StoreKit transaction listener started", category: .iap)
@@ -195,20 +207,23 @@ internal final class StoreKitManager: @unchecked Sendable {
     private func handleVerifiedTransaction(_ transaction: SKTransaction, jwsRepresentation: String) async {
         ZSLogger.info("StoreKit transaction received: \(transaction.productID) (id: \(transaction.id))", category: .iap)
 
-        // Finish the transaction
-        await transaction.finish()
-
-        // Forward JWS to ZeroSettle backend for server-side verification
+        // If no userId is set, finish immediately and return (preserves pre-retry-queue behavior)
         guard let userId = userId else {
-            ZSLogger.debug("No userId set, skipping StoreKit sync", category: .iap)
+            ZSLogger.debug("No userId set, finishing transaction without sync", category: .iap)
+            await transaction.finish()
             return
         }
 
+        // Forward JWS to ZeroSettle backend for server-side verification
         do {
             try await backend.syncStoreKitTransaction(
                 jwsRepresentation: jwsRepresentation,
                 userId: userId
             )
+
+            // Sync succeeded — dequeue any previous retry entry, then finish
+            await syncQueue.dequeue(transaction.id)
+            await transaction.finish()
 
             ZSLogger.info("StoreKit transaction synced: \(transaction.productID)", category: .iap)
             await MainActor.run {
@@ -218,7 +233,17 @@ internal final class StoreKitManager: @unchecked Sendable {
                 )
             }
         } catch {
+            // Sync failed — enqueue for retry, do NOT finish (StoreKit will redeliver)
             ZSLogger.error("Failed to sync StoreKit transaction: \(error)", category: .iap)
+
+            await syncQueue.enqueue(StoreKitSyncQueue.PendingSync(
+                jwsRepresentation: jwsRepresentation,
+                userId: userId,
+                transactionId: transaction.id,
+                attemptCount: 0,
+                lastAttemptAt: Date()
+            ))
+
             await MainActor.run {
                 delegate?.storeKitSyncFailed(error: error)
             }

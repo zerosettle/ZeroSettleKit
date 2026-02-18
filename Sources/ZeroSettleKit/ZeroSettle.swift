@@ -796,6 +796,52 @@ public final class ZeroSettle: ObservableObject {
         return allEntitlements
     }
 
+    // MARK: - Cancel Flow
+
+    /// Present the cancel flow questionnaire for a subscription cancellation.
+    ///
+    /// Fetches the cancel flow configuration from the backend, then presents a
+    /// native SwiftUI sheet with the questionnaire. If the flow is disabled or
+    /// has no questions, returns `.cancelled` immediately.
+    ///
+    /// The response (answers, outcome, funnel data) is automatically submitted
+    /// to the backend when the user completes or dismisses the flow.
+    ///
+    /// - Parameters:
+    ///   - productId: The product the user wants to cancel
+    ///   - userId: Your app's user identifier
+    /// - Returns: The cancel flow outcome (`.cancelled`, `.retained`, or `.dismissed`)
+    public func presentCancelFlow(productId: String, userId: String) async -> CancelFlow.Result {
+        guard let backend else {
+            ZSLogger.error("presentCancelFlow called but SDK not configured", category: .iap)
+            return .cancelled
+        }
+
+        let config: CancelFlow.Config
+        do {
+            config = try await backend.fetchCancelFlow()
+        } catch {
+            ZSLogger.error("Failed to fetch cancel flow config: \(error)", category: .iap)
+            return .cancelled
+        }
+
+        guard config.enabled, !config.questions.isEmpty else {
+            ZSLogger.info("Cancel flow disabled or no questions, returning .cancelled", category: .iap)
+            return .cancelled
+        }
+
+        let presenter = CancelFlowPresenter()
+        let result = await presenter.present(
+            config: config,
+            productId: productId,
+            userId: userId,
+            backend: backend
+        )
+
+        ZSLogger.info("Cancel flow completed with result: \(result)", category: .iap)
+        return result
+    }
+
     // MARK: - Error Helpers
 
     /// Parsed error body from an HTTP response for checkout failure classification.

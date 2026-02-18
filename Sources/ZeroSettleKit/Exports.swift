@@ -26,7 +26,7 @@ import Foundation
 //
 // From Models/Product.swift:
 //   - ZSProduct (includes savingsPercent, storeKitPrice, storeKitAvailable)
-//   - ZSProductType
+//   - ZSProduct.ProductType
 //   - Price
 //
 // From Models/ProductCatalog.swift:
@@ -34,15 +34,15 @@ import Foundation
 //
 // From Models/Transaction.swift:
 //   - ZSTransaction
-//   - TransactionStatus
+//   - ZSTransaction.Status
 //
 // From Models/Entitlement.swift:
 //   - Entitlement
-//   - EntitlementSource
+//   - Entitlement.Source
 //
 // From Models/Promotion.swift:
 //   - Promotion
-//   - PromotionType
+//   - Promotion.Kind
 //
 // From Models/ProductCatalog.swift:
 //   - ProductCatalog
@@ -62,6 +62,18 @@ import Foundation
 //
 // From UI/ZSManageSubscription.swift:
 //   - View.zsManageSubscription(isPresented:userId:)
+//
+// From Models/CancelFlow.swift:
+//   - CancelFlow (namespace enum)
+//   - CancelFlow.Config
+//   - CancelFlow.Question
+//   - CancelFlow.QuestionType
+//   - CancelFlow.Option
+//   - CancelFlow.Offer
+//   - CancelFlow.Result
+//
+// From UI/CancelFlowSheet.swift:
+//   - View.zsCancelFlow(isPresented:productId:userId:onResult:)
 //
 // From StoreKit/StoreKitManager.swift:
 //   - StoreKitPurchaseError

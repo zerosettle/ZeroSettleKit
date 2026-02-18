@@ -312,6 +312,31 @@ internal final class Backend: @unchecked Sendable {
         try await httpClient.executeVoid(request)
     }
 
+    // MARK: - Cancel Flow
+
+    /// Fetch the cancel flow configuration for this app.
+    func fetchCancelFlow() async throws -> CancelFlow.Config {
+        let url = apiURL("iap/cancel-flow/")
+        return try await httpClient.get(
+            url,
+            headers: authHeaders,
+            responseType: CancelFlow.Config.self
+        )
+    }
+
+    /// Submit a cancel flow response (fire-and-forget from the caller's perspective).
+    func submitCancelFlowResponse(_ payload: CancelFlow.ResponsePayload) async throws {
+        let url = apiURL("iap/cancel-flow/respond/")
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authHeaders.forEach { request.setValue($1, forHTTPHeaderField: $0) }
+        request.httpBody = try encoder.encode(payload)
+
+        try await httpClient.executeVoid(request)
+    }
+
     // MARK: - Error Wrapping
 
     /// Convert any error thrown by the HTTP layer into a typed ``ZSError/apiError(_:)``.

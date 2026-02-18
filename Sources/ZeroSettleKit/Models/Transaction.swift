@@ -11,6 +11,20 @@ import Foundation
 
 /// Represents a completed or pending purchase transaction.
 public struct ZSTransaction: Identifiable, Sendable, Codable, Equatable {
+
+    // MARK: - Nested Types
+
+    /// The status of a transaction.
+    public enum Status: String, Sendable, Codable {
+        case completed = "completed"
+        case pending = "pending"
+        case processing = "processing"
+        case failed = "failed"
+        case refunded = "refunded"
+    }
+
+    // MARK: - Properties
+
     /// ZeroSettle transaction ID
     public let id: String
 
@@ -18,10 +32,10 @@ public struct ZSTransaction: Identifiable, Sendable, Codable, Equatable {
     public let productId: String
 
     /// Current status of the transaction
-    public let status: TransactionStatus
+    public let status: Status
 
     /// Where the purchase originated
-    public let source: EntitlementSource
+    public let source: Entitlement.Source
 
     /// When the purchase was made
     public let purchasedAt: Date
@@ -32,8 +46,8 @@ public struct ZSTransaction: Identifiable, Sendable, Codable, Equatable {
     public init(
         id: String,
         productId: String,
-        status: TransactionStatus,
-        source: EntitlementSource,
+        status: Status,
+        source: Entitlement.Source,
         purchasedAt: Date,
         expiresAt: Date? = nil
     ) {
@@ -44,15 +58,4 @@ public struct ZSTransaction: Identifiable, Sendable, Codable, Equatable {
         self.purchasedAt = purchasedAt
         self.expiresAt = expiresAt
     }
-}
-
-// MARK: - Transaction Status
-
-/// The status of a transaction.
-public enum TransactionStatus: String, Sendable, Codable {
-    case completed = "completed"
-    case pending = "pending"
-    case processing = "processing"
-    case failed = "failed"
-    case refunded = "refunded"
 }

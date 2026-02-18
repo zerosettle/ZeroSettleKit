@@ -13,6 +13,19 @@ import StoreKit
 /// A product available for web checkout via ZeroSettle.
 /// The `id` matches the StoreKit product identifier configured on the ZeroSettle dashboard.
 public struct ZSProduct: Identifiable, Sendable {
+
+    // MARK: - Nested Types
+
+    /// The type of in-app purchase product.
+    public enum ProductType: String, Sendable, Codable {
+        case autoRenewableSubscription = "auto_renewable_subscription"
+        case nonRenewingSubscription = "non_renewing_subscription"
+        case consumable = "consumable"
+        case nonConsumable = "non_consumable"
+    }
+
+    // MARK: - Properties
+
     /// StoreKit product identifier (e.g., "com.app.premium_monthly")
     public let id: String
 
@@ -23,7 +36,7 @@ public struct ZSProduct: Identifiable, Sendable {
     public let productDescription: String
 
     /// The type of product (subscription, consumable, etc.)
-    public let type: ZSProductType
+    public let type: ProductType
 
     /// The web checkout price (may differ from App Store price). `nil` when web checkout is not configured.
     public let webPrice: Price?
@@ -67,7 +80,7 @@ public struct ZSProduct: Identifiable, Sendable {
         id: String,
         displayName: String,
         productDescription: String,
-        type: ZSProductType,
+        type: ProductType,
         webPrice: Price? = nil,
         appStorePrice: Price? = nil,
         syncedToASC: Bool = false,
@@ -104,7 +117,7 @@ extension ZSProduct: Codable {
         id = try container.decode(String.self, forKey: .id)
         displayName = try container.decode(String.self, forKey: .displayName)
         productDescription = try container.decode(String.self, forKey: .productDescription)
-        type = try container.decode(ZSProductType.self, forKey: .type)
+        type = try container.decode(ProductType.self, forKey: .type)
         webPrice = try container.decodeIfPresent(Price.self, forKey: .webPrice)
         appStorePrice = try container.decodeIfPresent(Price.self, forKey: .appStorePrice)
         syncedToASC = try container.decodeIfPresent(Bool.self, forKey: .syncedToASC) ?? false
@@ -139,16 +152,6 @@ extension ZSProduct: Equatable {
         lhs.syncedToASC == rhs.syncedToASC &&
         lhs.promotion == rhs.promotion
     }
-}
-
-// MARK: - Product Type
-
-/// The type of in-app purchase product.
-public enum ZSProductType: String, Sendable, Codable {
-    case autoRenewableSubscription = "auto_renewable_subscription"
-    case nonRenewingSubscription = "non_renewing_subscription"
-    case consumable = "consumable"
-    case nonConsumable = "non_consumable"
 }
 
 // MARK: - Price
