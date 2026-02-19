@@ -209,8 +209,8 @@ public final class ZSMigrationManager: ObservableObject {
             return MigrationPrompt(
                 productId: activeStoreKitProductId,
                 discountPercent: 15,
-                title: "[Sandbox] Switch & Save",
-                message: "[Sandbox] Switch to direct billing and get 15% off forever. Same features, fewer platform fees."
+                title: "Switch & Save",
+                message: "Switch to direct billing and get 15% off forever. Same features, fewer platform fees."
             )
         }
 
