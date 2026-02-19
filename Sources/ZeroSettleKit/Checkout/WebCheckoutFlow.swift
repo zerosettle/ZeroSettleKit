@@ -88,13 +88,20 @@ internal final class WebCheckoutFlow: NSObject {
     /// - Returns: Parsed callback data, or `nil` if the URL is not a ZeroSettle checkout callback
     @MainActor
     func handleCallback(url: URL) -> CheckoutCallback? {
-        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let host = components.host,
-              Self.callbackHosts.contains(host),
-              let path = components.path.removingPercentEncoding,
-              path.hasPrefix(Self.callbackPathPrefix) else {
-            let host = URLComponents(url: url, resolvingAgainstBaseURL: false)?.host ?? "nil"
-            ZSLogger.debug("Universal link not handled by ZeroSettle: host=\(host), url=\(url). Expected hosts: \(Self.callbackHosts.joined(separator: ", ")) with path prefix \(Self.callbackPathPrefix)", category: .iap)
+        ZSLogger.info("[handleCallback] incoming URL: \(url.absoluteString)", category: .iap)
+
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let parsedScheme = components?.scheme ?? "nil"
+        let parsedHost = components?.host ?? "nil"
+        let parsedPath = components?.path ?? "nil"
+        ZSLogger.debug("[handleCallback] parsed — scheme=\(parsedScheme), host=\(parsedHost), path=\(parsedPath)", category: .iap)
+
+        let hostMatched = components?.host.map { Self.callbackHosts.contains($0) } ?? false
+        let pathMatched = components?.path.removingPercentEncoding?.hasPrefix(Self.callbackPathPrefix) ?? false
+        ZSLogger.debug("[handleCallback] hostMatched=\(hostMatched) (expected: \(Self.callbackHosts)), pathMatched=\(pathMatched) (expected prefix: \(Self.callbackPathPrefix))", category: .iap)
+
+        guard let components, hostMatched, pathMatched else {
+            ZSLogger.debug("Universal link not handled by ZeroSettle: host=\(parsedHost), url=\(url). Expected hosts: \(Self.callbackHosts.joined(separator: ", ")) with path prefix \(Self.callbackPathPrefix)", category: .iap)
             return nil
         }
 
@@ -102,6 +109,7 @@ internal final class WebCheckoutFlow: NSObject {
         let params = Dictionary(uniqueKeysWithValues: queryItems.compactMap { item in
             item.value.map { (item.name, $0) }
         })
+        ZSLogger.debug("[handleCallback] query params: \(params)", category: .iap)
 
         guard let transactionId = params["transaction_id"],
               let productId = params["product_id"],
@@ -143,17 +151,26 @@ internal final class WebCheckoutFlow: NSObject {
     /// Suspends until the user returns to the app (foreground notification).
     @MainActor
     private func openInSafari(_ url: URL) async {
+        ZSLogger.info("[openInSafari] opening URL: \(url.absoluteString)", category: .iap)
+
         await withCheckedContinuation { continuation in
             UIApplication.shared.open(url, options: [:]) { _ in
                 continuation.resume()
             }
         }
 
+        let appState = UIApplication.shared.applicationState
+        ZSLogger.debug("[openInSafari] app state after open: \(appState == .active ? "active" : appState == .background ? "background" : "inactive")", category: .iap)
+
         // External Safari backgrounds the app. Suspend until the user returns
         // so the caller can check whether the universal link callback fired.
         // Skip if the app didn't actually background (e.g., iPad split view).
-        guard UIApplication.shared.applicationState != .active else { return }
+        guard appState != .active else {
+            ZSLogger.debug("[openInSafari] app stayed active, not waiting for foreground", category: .iap)
+            return
+        }
 
+        ZSLogger.debug("[openInSafari] waiting for willEnterForegroundNotification...", category: .iap)
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             var token: NSObjectProtocol?
             token = NotificationCenter.default.addObserver(
@@ -162,6 +179,7 @@ internal final class WebCheckoutFlow: NSObject {
                 queue: .main
             ) { _ in
                 if let token { NotificationCenter.default.removeObserver(token) }
+                ZSLogger.info("[openInSafari] app returned to foreground", category: .iap)
                 continuation.resume()
             }
         }
@@ -174,6 +192,8 @@ internal final class WebCheckoutFlow: NSObject {
     /// and auto-dismiss the sheet once the Stripe webhook confirms payment success.
     @MainActor
     private func openInSafariVC(_ url: URL, transactionId: String? = nil) async {
+        ZSLogger.info("[openInSafariVC] opening URL: \(url.absoluteString)", category: .iap)
+
         guard let windowScene = UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene })
             .first(where: { $0.activationState == .foregroundActive }),
@@ -189,6 +209,7 @@ internal final class WebCheckoutFlow: NSObject {
         while let presented = topController.presentedViewController {
             topController = presented
         }
+        ZSLogger.debug("[openInSafariVC] presenting from: \(type(of: topController))", category: .iap)
 
         let safari = SFSafariViewController(url: url)
         safari.delegate = self
@@ -214,19 +235,22 @@ internal final class WebCheckoutFlow: NSObject {
         // once the Stripe webhook confirms the payment succeeded.
         let pollTask: Task<Void, Never>?
         if let transactionId {
+            ZSLogger.debug("[openInSafariVC] starting transaction poll for \(transactionId)", category: .iap)
             pollTask = Task { [weak self] in
                 // Give the user time to start the payment flow before polling
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
-                for _ in 1...20 {
+                for attempt in 1...20 {
                     guard !Task.isCancelled else { return }
-                    if let txn = try? await self?.backend.getTransaction(transactionId: transactionId),
-                       txn.status == .completed || txn.status == .processing {
+                    let txn = try? await self?.backend.getTransaction(transactionId: transactionId)
+                    ZSLogger.debug("[openInSafariVC] poll #\(attempt)/20 for \(transactionId): status=\(txn?.status.rawValue ?? "nil")", category: .iap)
+                    if let txn, txn.status == .completed || txn.status == .processing {
                         ZSLogger.info("Transaction \(transactionId) confirmed via polling, dismissing SFSafariViewController", category: .iap)
                         self?.dismissInlineCheckout()
                         return
                     }
                     try? await Task.sleep(nanoseconds: 2_000_000_000)
                 }
+                ZSLogger.error("[openInSafariVC] polling exhausted 20 attempts for \(transactionId) without confirmation", category: .iap)
             }
         } else {
             pollTask = nil

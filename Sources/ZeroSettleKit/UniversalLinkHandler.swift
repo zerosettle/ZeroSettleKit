@@ -19,13 +19,19 @@ public struct ZeroSettleHandlerModifier: ViewModifier {
     public func body(content: Content) -> some View {
         content
             .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
-                guard let url = activity.webpageURL else { return }
+                guard let url = activity.webpageURL else {
+                    ZSLogger.debug("[UniversalLinkHandler] onContinueUserActivity fired but webpageURL is nil", category: .iap)
+                    return
+                }
+                ZSLogger.info("[UniversalLinkHandler] onContinueUserActivity fired with URL: \(url.absoluteString)", category: .iap)
                 ZeroSettle.shared.handleUniversalLink(url)
             }
             .onOpenURL { url in
+                ZSLogger.info("[UniversalLinkHandler] onOpenURL fired with URL: \(url.absoluteString)", category: .iap)
                 ZeroSettle.shared.handleUniversalLink(url)
             }
             .onAppear {
+                ZSLogger.debug("[UniversalLinkHandler] handler installed on view appear", category: .iap)
                 ZeroSettle.shared.handlerInstalled = true
             }
     }

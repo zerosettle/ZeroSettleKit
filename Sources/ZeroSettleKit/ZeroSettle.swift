@@ -814,16 +814,19 @@ public final class ZeroSettle: ObservableObject {
     /// - Returns: `true` if the URL was handled by ZeroSettle, `false` otherwise
     @discardableResult
     public func handleUniversalLink(_ url: URL) -> Bool {
-        ZSLogger.info("Handling universal link redirect")
+        ZSLogger.info("[handleUniversalLink] URL: \(url.absoluteString)", category: .iap)
 
         guard let checkoutFlow else {
-            ZSLogger.error("handleUniversalLink called but SDK not configured", category: .iap)
+            ZSLogger.error("[handleUniversalLink] checkoutFlow is nil — SDK not configured", category: .iap)
             return false
         }
 
+        ZSLogger.debug("[handleUniversalLink] checkoutFlow exists, parsing callback...", category: .iap)
         guard let callback = checkoutFlow.handleCallback(url: url) else {
+            ZSLogger.info("[handleUniversalLink] URL did not match checkout callback pattern", category: .iap)
             return false
         }
+        ZSLogger.info("[handleUniversalLink] callback parsed: transaction=\(callback.transactionId), product=\(callback.productId), success=\(callback.success)", category: .iap)
 
         // Dismiss SFSafariViewController if it was used
         checkoutFlow.dismissSafariViewController()
