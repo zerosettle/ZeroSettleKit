@@ -79,6 +79,12 @@ internal final class Backend: @unchecked Sendable {
         // Parse remote config if present
         let remoteConfig: RemoteConfig?
         if let configResponse = response.config {
+            // Log raw migration response for debugging
+            if let migrationRaw = configResponse.migration {
+                ZSLogger.info("[migration] Raw response from server: shouldShow=\(migrationRaw.shouldShow), productId=\(migrationRaw.productId as Any), discountPercent=\(migrationRaw.discountPercent as Any), title=\(migrationRaw.title as Any), message=\(migrationRaw.message as Any)", category: .iap)
+            } else {
+                ZSLogger.info("[migration] Server returned nil migration config", category: .iap)
+            }
             let checkoutType: CheckoutType
             if let parsed = CheckoutType(rawValue: configResponse.checkout.sheetType) {
                 checkoutType = parsed
