@@ -173,6 +173,28 @@ internal final class StoreKitManager: @unchecked Sendable {
         }
     }
 
+    // MARK: - Transaction Sync
+
+    /// Sync all current StoreKit entitlements to the backend.
+    /// Ensures the backend has Identity and Entitlement records for the user's
+    /// active subscriptions before any migration eligibility checks.
+    /// Idempotent — the backend deduplicates on storekit_transaction_id.
+    func syncCurrentTransactions(userId: String) async {
+        for await result in SKTransaction.currentEntitlements {
+            guard case .verified(let transaction) = result else { continue }
+            let jws = result.jwsRepresentation
+            do {
+                try await backend.syncStoreKitTransaction(
+                    jwsRepresentation: jws,
+                    userId: userId
+                )
+                ZSLogger.info("Synced current transaction \(transaction.id) for \(transaction.productID)", category: .iap)
+            } catch {
+                ZSLogger.error("Failed to sync current transaction \(transaction.id): \(error)", category: .iap)
+            }
+        }
+    }
+
     // MARK: - Current Entitlements
 
     /// Get the current entitlements from StoreKit's verified transactions.

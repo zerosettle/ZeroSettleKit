@@ -235,6 +235,14 @@ public final class ZeroSettle: ObservableObject {
     /// Populated after `fetchProducts()`. Defaults to `.row` if detection fails.
     @Published public private(set) var detectedJurisdiction: Jurisdiction?
 
+    /// Whether ``bootstrap(userId:)`` has completed.
+    @Published public private(set) var isBootstrapped: Bool = false
+
+    /// Migration manager for the StoreKit → web checkout migration flow.
+    /// Access via ``getOrCreateMigrationManager(userId:)`` to guarantee a single shared instance.
+    /// Starts in `.loading` and transitions after bootstrap completes.
+    @Published public private(set) var migrationManager: ZSMigrationManager?
+
     // MARK: - Async Observation
 
     /// An `AsyncStream` that emits the current entitlements whenever they change.
@@ -299,6 +307,11 @@ public final class ZeroSettle: ObservableObject {
 
     /// Internal accessor for the current configuration.
     internal var currentConfig: Configuration? { config }
+
+    /// Whether the SDK is running in sandbox mode (test publishable key).
+    internal var isSandbox: Bool {
+        config?.publishableKey.hasPrefix("zs_pk_test_") ?? false
+    }
 
     /// The effective base URL, accounting for any debug override.
     internal var effectiveBaseURL: URL? {
@@ -424,11 +437,46 @@ public final class ZeroSettle: ObservableObject {
     /// - Returns: A ``ProductCatalog`` containing products and remote configuration
     @discardableResult
     public func bootstrap(userId: String) async throws -> ProductCatalog {
+        // 1. Sync StoreKit transactions to the backend so the Identity and
+        //    Entitlement records exist before we check migration eligibility.
+        if let storeKitManager {
+            storeKitManager.setUserId(userId)
+            await storeKitManager.syncCurrentTransactions(userId: userId)
+        }
+
+        // 2. Fetch products — the backend can now check migration eligibility
+        //    because the Identity was created by the sync above.
         let catalog = try await fetchProducts(userId: userId)
 
+        // 3. Restore entitlements (local StoreKit + web checkout).
         try await restoreEntitlements(userId: userId)
 
+        isBootstrapped = true
+
+        // 4. Ensure migration manager exists. If the view already created one
+        //    (via getOrCreateMigrationManager), reuse it — Combine will re-evaluate
+        //    now that isBootstrapped is true. Otherwise create one with full data.
+        _ = getOrCreateMigrationManager(userId: userId)
+
         return catalog
+    }
+
+    // MARK: - Migration Manager
+
+    /// Returns the shared migration manager, creating one if it doesn't exist yet.
+    ///
+    /// Both ``ZSMigrateTipView`` and ``bootstrap(userId:)`` call this to guarantee
+    /// a single shared instance. The manager starts in `.loading` and transitions
+    /// to `.eligible` or `.ineligible` once bootstrap completes (via Combine).
+    ///
+    /// - Parameter userId: Your app's user identifier
+    /// - Returns: The shared ``ZSMigrationManager``
+    @discardableResult
+    public func getOrCreateMigrationManager(userId: String) -> ZSMigrationManager {
+        if let existing = migrationManager { return existing }
+        let manager = ZSMigrationManager(userId: userId)
+        migrationManager = manager
+        return manager
     }
 
     // MARK: - Products

@@ -120,20 +120,28 @@ internal final class Backend: @unchecked Sendable {
             )
 
             let migration: MigrationPrompt?
-            if let migrationResponse = configResponse.migration,
-               migrationResponse.shouldShow,
-               let productId = migrationResponse.productId,
-               let discountPercent = migrationResponse.discountPercent,
-               let title = migrationResponse.title,
-               let message = migrationResponse.message {
-                migration = MigrationPrompt(
-                    productId: productId,
-                    discountPercent: discountPercent,
-                    title: title,
-                    message: message
-                )
+            if let migrationResponse = configResponse.migration {
+                ZSLogger.info("Migration response received: shouldShow=\(migrationResponse.shouldShow), productId=\(migrationResponse.productId ?? "nil"), discountPercent=\(migrationResponse.discountPercent.map(String.init) ?? "nil"), title=\(migrationResponse.title ?? "nil"), message=\(migrationResponse.message ?? "nil")", category: .iap)
+
+                if migrationResponse.shouldShow,
+                   let productId = migrationResponse.productId,
+                   let discountPercent = migrationResponse.discountPercent,
+                   let title = migrationResponse.title,
+                   let message = migrationResponse.message {
+                    migration = MigrationPrompt(
+                        productId: productId,
+                        discountPercent: discountPercent,
+                        title: title,
+                        message: message
+                    )
+                    ZSLogger.info("Migration prompt created: productId=\(productId), discountPercent=\(discountPercent), title=\(title)", category: .iap)
+                } else {
+                    migration = nil
+                    ZSLogger.info("Migration prompt nil: shouldShow=\(migrationResponse.shouldShow), missing fields: productId=\(migrationResponse.productId == nil), discountPercent=\(migrationResponse.discountPercent == nil), title=\(migrationResponse.title == nil), message=\(migrationResponse.message == nil)", category: .iap)
+                }
             } else {
                 migration = nil
+                ZSLogger.info("No migration object in config response", category: .iap)
             }
 
             remoteConfig = RemoteConfig(checkout: checkoutConfig, migration: migration)

@@ -3,93 +3,45 @@ import UIKit
 import StoreKit
 import WebKit
 
+#if canImport(ZeroSettleCore)
+internal import ZeroSettleCore
+#endif
+
 // MARK: - Expandable Web Billing Tip View
 public struct ZSMigrateTipView: View {
     let backgroundColor: Color
     let userId: String
 
-    @ObservedObject private var iap = ZeroSettle.shared
-    
+    @StateObject private var manager: ZSMigrationManager
+
+    // MARK: - UI-only State
+
     @State private var isExpanded = false
-    @State private var isLoading = false
     @State private var webViewLoaded = false
-    @State private var contentHeight: CGFloat = 220 // Default collapsed height
-    @State private var checkoutSucceeded = false
-    @State private var isDismissed = false
+    @State private var contentHeight: CGFloat = 220
     @State private var showCongratulations = false
     @State private var confettiTrigger = 0
     @State private var checkoutURL: URL?
-    @State private var checkoutError: Error?
-    @State private var entitlementsLoaded = false
-    
-    /// Whether the user already has an active web checkout entitlement.
-    /// If true, the migrate tip should not be shown.
-    private var hasWebEntitlement: Bool {
-        iap.entitlements.contains { $0.source == .webCheckout && $0.isActive }
-    }
-    
-    /// Whether the user has an active StoreKit subscription (paying through Apple).
-    /// Only these users are candidates for migration to web billing.
-    private var hasStoreKitSubscription: Bool {
-        iap.entitlements.contains { $0.source == .storeKit && $0.isActive }
-    }
-    
-    // MARK: - Configuration
-
-    /// Get the active StoreKit entitlement.
-    private var activeStoreKitEntitlement: Entitlement? {
-        iap.entitlements.first { $0.source == .storeKit && $0.isActive }
-    }
-
-    /// Dynamically get the product ID from the user's active StoreKit subscription.
-    /// Returns the product ID of the first active StoreKit entitlement, or nil if none exists.
-    private var activeStoreKitProductId: String? {
-        activeStoreKitEntitlement?.productId
-    }
-
-    /// Calculate the number of free trial days to offer on web checkout.
-    /// This is the number of days from now until the current StoreKit subscription expires.
-    /// The user won't be charged on Stripe until their Apple subscription ends.
-    private var calculatedFreeTrialDays: Int {
-        guard let entitlement = activeStoreKitEntitlement,
-              let expiresAt = entitlement.expiresAt else {
-            return 0
-        }
-
-        let now = Date()
-        let calendar = Calendar.current
-        let components = calendar.dateComponents([.day], from: now, to: expiresAt)
-        let days = max(0, components.day ?? 0)
-
-        return days
-    }
 
     static let collapsedHeight: CGFloat = 190
     static let applePayExpandedHeight: CGFloat = 690
     static let cardExpandedHeight: CGFloat = 690
-    
-    // MARK: - Persistence
-    
-    private static let dismissedKey = "com.zerosettle.migrateTipDismissed"
-    
-    /// Whether the migrate tip has been permanently dismissed (persisted across app launches).
-    private static var isPermanentlyDismissed: Bool {
-        get { UserDefaults.standard.bool(forKey: dismissedKey) }
-        set { UserDefaults.standard.set(newValue, forKey: dismissedKey) }
-    }
-    
+
+    // MARK: - Persistence (deprecated, forwarded to manager)
+
     /// Resets the migrate tip dismissed state, allowing it to be shown again.
     /// Use this for debugging purposes.
+    @available(*, deprecated, message: "Use ZSMigrationManager.resetDismissedState() instead")
     public static func resetMigrateTipState() {
-        isPermanentlyDismissed = false
+        ZSMigrationManager.resetDismissedState()
     }
-    
-    /// Marks the migrate tip as permanently dismissed.
-    private static func markAsPermanentlyDismissed() {
-        isPermanentlyDismissed = true
-    }
-    
+
     /// Creates a new migrate tip view.
+    ///
+    /// Uses the shared ``ZSMigrationManager`` from ``ZeroSettle/shared/migrationManager``
+    /// (created during ``ZeroSettle/bootstrap(userId:)``). Falls back to creating a local
+    /// instance if bootstrap hasn't run yet.
+    ///
     /// - Parameters:
     ///   - backgroundColor: The background color for the view.
     ///   - userId: The user identifier passed to the checkout backend.
@@ -97,121 +49,79 @@ public struct ZSMigrateTipView: View {
     public init(backgroundColor: Color, userId: String) {
         self.backgroundColor = backgroundColor
         self.userId = userId
+        // Always use the shared singleton manager. getOrCreateMigrationManager guarantees
+        // a single instance — whether bootstrap ran first or the view was created first.
+        _manager = StateObject(wrappedValue: ZeroSettle.shared.getOrCreateMigrationManager(userId: userId))
     }
-    
+
+    // MARK: - Convenience
+
+    private var discountPercent: Int {
+        manager.offerData?.prompt.discountPercent ?? 15
+    }
+
+    // MARK: - Body
+
     public var body: some View {
         Group {
-        if !entitlementsLoaded {
-            Color.clear.frame(height: 0)
-        } else if hasWebEntitlement && !checkoutSucceeded && !showCongratulations {
-            let _ = print("[ZSMigrateTipView Business Logic] Hidden: user already has active web checkout entitlement.")
-            EmptyView()
-        } else if !hasStoreKitSubscription {
-            let _ = print("[ZSMigrateTipView Business Logic] Hidden: user has no active StoreKit subscription — not a migration candidate.")
-            EmptyView()
-        } else if Self.isPermanentlyDismissed {
-            let _ = print("[ZSMigrateTipView Business Logic] Hidden: tip was permanently dismissed by user.")
-            EmptyView()
-        } else if isDismissed {
-            let _ = print("[ZSMigrateTipView Business Logic] Hidden: tip was dismissed this session.")
-            EmptyView()
-        } else {
-            let _ = print("[ZSMigrateTipView Business Logic] Showing: user has active StoreKit subscription, no web entitlement, not dismissed.")
-            VStack(spacing: 0) {
-            // Tip header (always visible)
-            HStack(alignment: .center, spacing: 12) {
-                // Icon (vertically centered)
+            let _ = ZSLogger.info("[ZSMigrateTipView] body evaluated — manager.state=.\(manager.state), offerData=\(manager.offerData != nil ? "present" : "nil"), showCongratulations=\(showCongratulations), isExpanded=\(isExpanded), checkoutURL=\(checkoutURL?.absoluteString ?? "nil")", category: .iap)
+            switch manager.state {
+            case .loading:
+                let _ = ZSLogger.info("[ZSMigrateTipView] Rendering: .loading — waiting for bootstrap", category: .iap)
+                Color.clear.frame(height: 0)
+
+            case .ineligible:
+                let _ = ZSLogger.info("[ZSMigrateTipView] Rendering: .ineligible — showing empty placeholder", category: .iap)
+                Color.clear.frame(height: 0)
+
+            case .dismissed:
+                let _ = ZSLogger.info("[ZSMigrateTipView] Rendering: .dismissed — showing nothing", category: .iap)
+                EmptyView()
+
+            case .eligible, .presented:
+                let _ = ZSLogger.info("[ZSMigrateTipView] Rendering: .\(manager.state) — showing offer card", category: .iap)
+                offerCardView
+
+            case .accepted:
                 if showCongratulations {
-                    Text("🎉")
-                        .font(.system(size: 44))
-                } else if checkoutSucceeded {
-                    ZStack {
-                        Circle()
-                            .fill(.white)
-                            .frame(width: 44, height: 44)
-                            .overlay(
-                                Circle()
-                                    .stroke(.green, lineWidth: 3)
-                            )
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 24, weight: .bold))
-                            .foregroundColor(.green)
-                    }
+                    let _ = ZSLogger.info("[ZSMigrateTipView] Rendering: .accepted + showCongratulations — showing congratulations card", category: .iap)
+                    congratulationsCardView
                 } else {
-                    Text("🎁")
-                        .font(.system(size: 44))
+                    let _ = ZSLogger.info("[ZSMigrateTipView] Rendering: .accepted — showing 'Cancel Apple Billing' card", category: .iap)
+                    acceptedCardView
                 }
-                
-                // Title + body text on the right
-                VStack(alignment: .leading, spacing: 2) {
-                    // Title row with close button
-                    HStack(alignment: .top, spacing: 8) {
-                        Text(showCongratulations ? "Congratulations!" : (checkoutSucceeded ? "Thanks for switching!" : "Thanks for being with us!"))
-                            .font(.system(size: 20, weight: .bold))
-                            .foregroundColor(.white)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.5)
-                        
-                        Spacer()
-                        
-                        // Close button (hidden during checkout success and congratulations states)
-                        if !showCongratulations && !checkoutSucceeded {
-                            Button(action: {
-                                withAnimation(.easeInOut(duration: 0.3)) {
-                                    isDismissed = true
-                                    Self.markAsPermanentlyDismissed()
-                                }
-                            }) {
-                                Image(systemName: "xmark.circle.fill")
-                                    .font(.system(size: 24))
-                                    .foregroundColor(.white.opacity(0.7))
-                            }
-                            .offset(y: -4)
-                        }
-                    }
-                    
-                    // Body text (full width)
-                    Text(showCongratulations
-                         ? "You are now saving 15% forever."
-                         : (checkoutSucceeded
-                            ? "The last step is to cancel your Apple billing! Your card won't be charged until the end of your last Apple billing cycle. Pro features will continue uninterrupted."
-                            : "Switch to direct billing and get 15% off forever. Same features, fewer platform fees, and we pass the savings onto you."))
-                        .font(.system(size: 16))
-                        .foregroundColor(.white.opacity(0.85))
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+
+            case .completed:
+                let _ = ZSLogger.info("[ZSMigrateTipView] Rendering: .completed — showing congratulations card", category: .iap)
+                congratulationsCardView
             }
-            .padding(16)
-            .confettiCannon(trigger: $confettiTrigger, num: 50, openingAngle: Angle(degrees: 0), closingAngle: Angle(degrees: 360), radius: 200)
-            
-            // Show "Cancel Apple Billing" button after success (but not during congratulations)
-            if checkoutSucceeded && !showCongratulations {
-                Button(action: {
-                    Task {
-                        await openSubscriptionManagement()
-                    }
-                }) {
-                    Text("Cancel Apple Billing")
-                        .font(.system(size: 17, weight: .bold))
-                        .foregroundColor(backgroundColor)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .background(Color.white)
-                        .clipShape(Capsule())
-                }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 16)
-            } else if !isExpanded && !showCongratulations {
-                Button(action: {
-                    startCheckout()
-                }) {
+        }
+    }
+
+    // MARK: - Sub-views
+
+    /// The initial offer card with header + CTA / webview.
+    private var offerCardView: some View {
+        VStack(spacing: 0) {
+            // Tip header
+            headerView(
+                icon: { Text("🎁").font(.system(size: 44)) },
+                title: "Thanks for being with us!",
+                message: manager.offerData?.prompt.message
+                    ?? "Switch to direct billing and get \(discountPercent)% off forever. Same features, fewer platform fees, and we pass the savings onto you.",
+                showCloseButton: true
+            )
+
+            // CTA button (hidden when webview is expanded)
+            if !isExpanded {
+                Button(action: { startCheckout() }) {
                     HStack(spacing: 8) {
-                        if isLoading {
+                        if manager.isLoading {
                             ProgressView()
                                 .progressViewStyle(CircularProgressViewStyle(tint: backgroundColor))
                                 .scaleEffect(0.8)
                         }
-                        Text(isLoading ? "" : "Save 15% Forever")
+                        Text(manager.isLoading ? "" : "Save \(discountPercent)% Forever")
                             .font(.system(size: 17, weight: .bold))
                             .foregroundColor(backgroundColor)
                     }
@@ -220,19 +130,18 @@ public struct ZSMigrateTipView: View {
                     .background(Color.white)
                     .clipShape(Capsule())
                 }
-                .disabled(isLoading)
+                .disabled(manager.isLoading)
                 .padding(.horizontal, 16)
                 .padding(.bottom, 16)
             }
-            
+
             // Inline WebView (only when expanded)
-            if isExpanded && !checkoutSucceeded, let checkoutURLValue = checkoutURL {
+            if isExpanded, let checkoutURLValue = checkoutURL {
                 VStack(spacing: 8) {
                     CheckoutWebView(
                         url: checkoutURLValue,
                         backgroundColor: UIColor(backgroundColor),
                         onLoaded: {
-                            isLoading = false
                             webViewLoaded = true
                         },
                         onPaymentMethodChanged: { paymentMethod in
@@ -249,21 +158,20 @@ public struct ZSMigrateTipView: View {
                                 contentHeight = newHeight
                             }
                         },
-                        onCheckoutSuccess: { successURL in
+                        onCheckoutSuccess: { _ in
                             withAnimation(.easeInOut(duration: 0.25)) {
                                 isExpanded = false
-                                isLoading = false
                                 webViewLoaded = false
                                 contentHeight = Self.collapsedHeight
-                                checkoutSucceeded = true
                                 checkoutURL = nil
                             }
+                            manager.markCheckoutSucceeded()
                         }
                     )
                     .frame(height: contentHeight)
                     .cornerRadius(12)
                     .padding(.horizontal, 12)
-                    
+
                     Text("You won't be billed until the end of your current cycle. Cancel anytime.")
                         .font(.system(size: 12))
                         .foregroundColor(.white.opacity(0.7))
@@ -274,140 +182,169 @@ public struct ZSMigrateTipView: View {
                 .zIndex(-1)
                 .transition(.opacity)
             }
-            }
-            .background(backgroundColor)
-            .cornerRadius(16)
         }
-        }
-        .task {
-            guard !entitlementsLoaded else { return }
-            print("[ZSMigrateTipView Business Logic] Restoring entitlements for userId=\(userId)...")
-            _ = try? await iap.restoreEntitlements(userId: userId)
-            entitlementsLoaded = true
-            print("[ZSMigrateTipView Business Logic] Entitlements loaded. hasStoreKitSubscription=\(hasStoreKitSubscription), hasWebEntitlement=\(hasWebEntitlement), isPermanentlyDismissed=\(Self.isPermanentlyDismissed), entitlements=\(iap.entitlements.map { "[\($0.productId) source=\($0.source) active=\($0.isActive)]" })")
-        }
+        .background(backgroundColor)
+        .cornerRadius(16)
     }
-    
+
+    /// Card shown after checkout succeeds with "Cancel Apple Billing" CTA.
+    private var acceptedCardView: some View {
+        VStack(spacing: 0) {
+            headerView(
+                icon: {
+                    ZStack {
+                        Circle()
+                            .fill(.white)
+                            .frame(width: 44, height: 44)
+                            .overlay(
+                                Circle()
+                                    .stroke(.green, lineWidth: 3)
+                            )
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 24, weight: .bold))
+                            .foregroundColor(.green)
+                    }
+                },
+                title: "Thanks for switching!",
+                message: "The last step is to cancel your Apple billing! Your card won't be charged until the end of your last Apple billing cycle. Pro features will continue uninterrupted.",
+                showCloseButton: false
+            )
+
+            Button(action: {
+                Task {
+                    await openSubscriptionManagement()
+                }
+            }) {
+                Text("Cancel Apple Billing")
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundColor(backgroundColor)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(Color.white)
+                    .clipShape(Capsule())
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 16)
+        }
+        .background(backgroundColor)
+        .cornerRadius(16)
+    }
+
+    /// Card shown after subscription management with confetti.
+    private var congratulationsCardView: some View {
+        VStack(spacing: 0) {
+            headerView(
+                icon: { Text("🎉").font(.system(size: 44)) },
+                title: "Congratulations!",
+                message: "You are now saving \(discountPercent)% forever.",
+                showCloseButton: false
+            )
+        }
+        .background(backgroundColor)
+        .cornerRadius(16)
+    }
+
+    /// Reusable header with icon, title, message, and optional close button.
+    private func headerView<Icon: View>(
+        @ViewBuilder icon: () -> Icon,
+        title: String,
+        message: String,
+        showCloseButton: Bool
+    ) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            icon()
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .top, spacing: 8) {
+                    Text(title)
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
+
+                    Spacer()
+
+                    if showCloseButton {
+                        Button(action: {
+                            withAnimation(.easeInOut(duration: 0.3)) {
+                                manager.dismiss()
+                            }
+                        }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 24))
+                                .foregroundColor(.white.opacity(0.7))
+                        }
+                        .offset(y: -4)
+                    }
+                }
+
+                Text(message)
+                    .font(.system(size: 16))
+                    .foregroundColor(.white.opacity(0.85))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(16)
+        .confettiCannon(trigger: $confettiTrigger, num: 50, openingAngle: Angle(degrees: 0), closingAngle: Angle(degrees: 360), radius: 200)
+    }
+
+    // MARK: - Actions
+
     @MainActor
     private func openSubscriptionManagement() async {
-        print("📱 Opening Apple subscription management...")
-        
-        do {
-            guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene else {
-                print("❌ No window scene available")
-                return
-            }
-            try await AppStore.showManageSubscriptions(in: windowScene)
-            print("✅ Subscription management sheet opened")
-            
-            // Show congratulations state with confetti after sheet dismisses
+        await manager.showAppleSubscriptionManagement()
+
+        // Show congratulations state with confetti
+        withAnimation(.easeInOut(duration: 0.3)) {
+            showCongratulations = true
+        }
+        confettiTrigger += 1
+
+        // Auto-dismiss after 5 seconds
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
             withAnimation(.easeInOut(duration: 0.3)) {
-                showCongratulations = true
+                manager.dismiss()
             }
-            
-            // Trigger confetti
-            confettiTrigger += 1
-            
-            // Auto-dismiss after 5 seconds
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
-                withAnimation(.easeInOut(duration: 0.3)) {
-                    isDismissed = true
-                    Self.markAsPermanentlyDismissed()
-                }
-            }
-        } catch {
-            print("❌ Failed to open subscription management: \(error)")
-            print("   Error details: \(error.localizedDescription)")
         }
     }
 
     private func startCheckout() {
-        checkoutError = nil
-        isLoading = true
-
+        let iap = ZeroSettle.shared
         let checkoutType = iap.checkoutType
 
         switch checkoutType {
         case .webview, .nativePay:
-            // Native inline checkout: create payment intent and show embedded WebView
             startWebViewCheckout()
         case .safari, .safariVC:
-            // In-app browser or external Safari: use purchase flow (creates session, opens browser)
             startBrowserCheckout()
         }
     }
 
-    /// Native inline checkout: create payment intent, expand to show embedded CheckoutWebView.
     private func startWebViewCheckout() {
-        guard let productId = activeStoreKitProductId else {
-            print("❌ Cannot start checkout: no active StoreKit product ID found")
-            isLoading = false
-            checkoutError = ZSError.notConfigured
-            return
-        }
-
-        let freeTrialDays = calculatedFreeTrialDays
-        print("🧾 Creating payment intent (productId=\(productId), userId=\(userId), freeTrialDays=\(freeTrialDays))")
-
         Task {
-            do {
-                let backend = try getBackend()
-                let paymentIntent = try await backend.createPaymentIntent(
-                    productId: productId,
-                    userId: userId,
-                    freeTrialDays: freeTrialDays
-                )
-
-                await MainActor.run {
-                    print("✅ Payment intent created. checkoutUrl=\(paymentIntent.checkoutUrl)")
-                    checkoutURL = URL(string: paymentIntent.checkoutUrl)
-                    withAnimation(.easeInOut(duration: 0.3)) {
-                        isExpanded = true
-                    }
-                }
-            } catch {
-                await MainActor.run {
-                    checkoutError = error
-                    isLoading = false
-                    print("❌ Payment intent failed (productId=\(productId)): \(error)")
+            let url = await manager.startCheckout()
+            if let url {
+                checkoutURL = url
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    isExpanded = true
                 }
             }
         }
     }
 
-    /// In-app browser (safariVC) or external Safari: create session and open in configured browser.
-    /// Completion is handled via universal link callback; entitlements update when user returns.
     private func startBrowserCheckout() {
-        guard let productId = activeStoreKitProductId else {
-            print("❌ Cannot start checkout: no active StoreKit product ID found")
-            isLoading = false
-            checkoutError = ZSError.notConfigured
-            return
-        }
-
-        let freeTrialDays = calculatedFreeTrialDays
-        print("🧾 Starting browser checkout (productId=\(productId), userId=\(userId), freeTrialDays=\(freeTrialDays), type=\(iap.checkoutType.rawValue))")
+        guard let offerData = manager.offerData else { return }
+        manager.present()
 
         Task { @MainActor in
+            let iap = ZeroSettle.shared
             do {
-                try await iap.purchase(productId: productId, userId: userId)
-                // Browser opened; show cancel state when they return from redirect
-                checkoutSucceeded = true
-                isLoading = false
+                try await iap.purchase(productId: offerData.activeStoreKitProductId, userId: userId)
+                manager.markCheckoutSucceeded()
             } catch {
-                checkoutError = error
-                isLoading = false
-                print("❌ Browser checkout failed (productId=\(productId)): \(error)")
+                // Stay in presented state; user can retry
             }
         }
-    }
-
-    private func getBackend() throws -> Backend {
-        guard let config = ZeroSettle.shared.currentConfig,
-              let baseURL = ZeroSettle.shared.effectiveBaseURL else {
-            throw ZSError.notConfigured
-        }
-        return Backend(baseURL: baseURL, publishableKey: config.publishableKey)
     }
 }
 
@@ -418,7 +355,7 @@ struct CheckoutWebView: UIViewRepresentable {
     let onLoaded: () -> Void
     let onPaymentMethodChanged: (String) -> Void
     let onCheckoutSuccess: (URL) -> Void
-    
+
     func makeCoordinator() -> Coordinator {
         Coordinator(
             backgroundColor: backgroundColor,
@@ -427,11 +364,11 @@ struct CheckoutWebView: UIViewRepresentable {
             onCheckoutSuccess: onCheckoutSuccess
         )
     }
-    
+
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.allowsInlineMediaPlayback = true
-        
+
         // Add script message handlers for payment method changes, checkout completion, and debug logs
         configuration.userContentController.add(context.coordinator, name: "paymentMethodChanged")
         configuration.userContentController.add(context.coordinator, name: "checkoutComplete")
@@ -451,7 +388,7 @@ struct CheckoutWebView: UIViewRepresentable {
                 forMainFrameOnly: false
             )
         )
-        
+
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.isOpaque = false
         webView.backgroundColor = backgroundColor
@@ -460,23 +397,23 @@ struct CheckoutWebView: UIViewRepresentable {
         webView.layer.cornerRadius = 12
         webView.clipsToBounds = true
         webView.navigationDelegate = context.coordinator
-        
+
         let request = URLRequest(url: url)
         webView.load(request)
-        
+
         return webView
     }
-    
+
     func updateUIView(_ webView: WKWebView, context: Context) {
         // No updates needed
     }
-    
+
     class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         let backgroundColor: UIColor
         let onLoaded: () -> Void
         let onPaymentMethodChanged: (String) -> Void
         let onCheckoutSuccess: (URL) -> Void
-        
+
         init(
             backgroundColor: UIColor,
             onLoaded: @escaping () -> Void,
@@ -488,7 +425,7 @@ struct CheckoutWebView: UIViewRepresentable {
             self.onPaymentMethodChanged = onPaymentMethodChanged
             self.onCheckoutSuccess = onCheckoutSuccess
         }
-        
+
         // Handle messages from JavaScript
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             if message.name == "debugLog" {
@@ -500,9 +437,9 @@ struct CheckoutWebView: UIViewRepresentable {
             } else if message.name == "checkoutComplete", let body = message.body as? [String: Any] {
                 let action = body["action"] as? String ?? ""
                 let success = body["success"] as? Bool ?? false
-                
+
                 print("🧾 checkoutComplete received: action=\(action), success=\(success)")
-                
+
                 // Handle completion - check for "complete" action or direct success flag
                 if action == "complete" || success {
                     DispatchQueue.main.async {
@@ -513,7 +450,7 @@ struct CheckoutWebView: UIViewRepresentable {
                 }
             }
         }
-        
+
         private func rgbString() -> (r: Int, g: Int, b: Int) {
             var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
             backgroundColor.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
