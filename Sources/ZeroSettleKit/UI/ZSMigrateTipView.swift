@@ -103,7 +103,7 @@ public struct ZSMigrateTipView: View {
         Group {
         if !entitlementsLoaded {
             Color.clear.frame(height: 0)
-        } else if hasWebEntitlement {
+        } else if hasWebEntitlement && !checkoutSucceeded && !showCongratulations {
             let _ = print("[ZSMigrateTipView Business Logic] Hidden: user already has active web checkout entitlement.")
             EmptyView()
         } else if !hasStoreKitSubscription {
