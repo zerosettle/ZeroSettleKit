@@ -121,7 +121,7 @@ public struct ZSMigrateTipView: View {
                                 .progressViewStyle(CircularProgressViewStyle(tint: backgroundColor))
                                 .scaleEffect(0.8)
                         }
-                        Text(manager.isLoading ? "" : "Save \(discountPercent)% Forever")
+                        Text(manager.isLoading ? "" : (manager.offerData?.prompt.ctaText ?? "Save \(discountPercent)% Forever"))
                             .font(.system(size: 17, weight: .bold))
                             .foregroundColor(backgroundColor)
                     }

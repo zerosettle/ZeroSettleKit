@@ -138,7 +138,8 @@ internal final class Backend: @unchecked Sendable {
                         productId: productId,
                         discountPercent: discountPercent,
                         title: title,
-                        message: message
+                        message: message,
+                        ctaText: migrationResponse.ctaText ?? "Save \(discountPercent)% Forever"
                     )
                     ZSLogger.info("Migration prompt created: productId=\(productId), discountPercent=\(discountPercent), title=\(title)", category: .iap)
                 } else {
@@ -527,6 +528,7 @@ private struct MigrationPromptResponse: Decodable {
     let discountPercent: Int?
     let title: String?
     let message: String?
+    let ctaText: String?
 }
 
 private struct EntitlementsResponse: Decodable {

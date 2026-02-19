@@ -125,11 +125,15 @@ public struct MigrationPrompt: Codable, Sendable, Equatable {
     /// The message body to display in the migration prompt
     public let message: String
 
-    public init(productId: String, discountPercent: Int, title: String, message: String) {
+    /// The CTA button text to display in the migration prompt
+    public let ctaText: String
+
+    public init(productId: String, discountPercent: Int, title: String, message: String, ctaText: String) {
         self.productId = productId
         self.discountPercent = discountPercent
         self.title = title
         self.message = message
+        self.ctaText = ctaText
     }
 }
 

@@ -210,7 +210,8 @@ public final class ZSMigrationManager: ObservableObject {
                 productId: activeStoreKitProductId,
                 discountPercent: 15,
                 title: "Switch & Save",
-                message: "Switch to direct billing and get 15% off forever. Same features, fewer platform fees."
+                message: "Switch to direct billing and get 15% off forever. Same features, fewer platform fees.",
+                ctaText: "Save 15% Forever"
             )
         }
 
