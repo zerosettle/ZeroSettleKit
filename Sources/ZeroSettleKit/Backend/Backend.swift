@@ -8,7 +8,7 @@
 import Foundation
 
 #if canImport(ZeroSettleCore)
-@_implementationOnly import ZeroSettleCore
+internal import ZeroSettleCore
 #endif
 
 // MARK: - Backend
@@ -79,14 +79,26 @@ internal final class Backend: @unchecked Sendable {
         // Parse remote config if present
         let remoteConfig: RemoteConfig?
         if let configResponse = response.config {
-            let checkoutType = CheckoutType(rawValue: configResponse.checkout.sheetType) ?? .safari
+            let checkoutType: CheckoutType
+            if let parsed = CheckoutType(rawValue: configResponse.checkout.sheetType) {
+                checkoutType = parsed
+            } else {
+                checkoutType = .webview
+                ZSLogger.info("Unrecognized checkout type '\(configResponse.checkout.sheetType)' from backend, defaulting to webview. You may need to update ZeroSettleKit.", category: .iap)
+            }
 
             // Parse jurisdiction overrides
             var jurisdictions: [Jurisdiction: JurisdictionCheckoutConfig] = [:]
             if let jurDict = configResponse.checkout.jurisdictions {
                 for (key, value) in jurDict {
-                    guard let jurisdiction = Jurisdiction(rawValue: key),
-                          let sheetType = CheckoutType(rawValue: value.sheetType) else { continue }
+                    guard let jurisdiction = Jurisdiction(rawValue: key) else { continue }
+                    let sheetType: CheckoutType
+                    if let parsed = CheckoutType(rawValue: value.sheetType) {
+                        sheetType = parsed
+                    } else {
+                        sheetType = .webview
+                        ZSLogger.info("Unrecognized checkout type '\(value.sheetType)' for jurisdiction \(key), defaulting to webview.", category: .iap)
+                    }
                     jurisdictions[jurisdiction] = JurisdictionCheckoutConfig(
                         sheetType: sheetType,
                         isEnabled: value.isEnabled
@@ -94,10 +106,17 @@ internal final class Backend: @unchecked Sendable {
                 }
             }
 
+            // Log jurisdiction overrides for developer visibility
+            if !jurisdictions.isEmpty {
+                let overrideSummary = jurisdictions.map { "\($0.key.rawValue)=\($0.value.sheetType.rawValue)(enabled:\($0.value.isEnabled))" }.joined(separator: ", ")
+                ZSLogger.info("Jurisdiction overrides: \(overrideSummary)", category: .iap)
+            }
+
             let checkoutConfig = CheckoutConfig(
                 sheetType: checkoutType,
                 isEnabled: configResponse.checkout.isEnabled,
-                jurisdictions: jurisdictions
+                jurisdictions: jurisdictions,
+                appleMerchantId: configResponse.checkout.appleMerchantId
             )
 
             let migration: MigrationPrompt?
@@ -224,15 +243,19 @@ internal final class Backend: @unchecked Sendable {
             switch transaction.status {
             case .completed:
                 return transaction
-            case .processing:
+            case .processing, .pending:
+                // Webhook may still be processing — keep polling
                 if attempt < maxAttempts {
                     try? await Task.sleep(nanoseconds: pollInterval)
                     continue
                 }
-                // Final attempt still processing — treat as completed
-                return transaction
+                // Final attempt: processing is success-like, pending means webhook never arrived
+                if transaction.status == .processing {
+                    return transaction
+                }
+                throw PaymentSheetError.cancelled
             default:
-                // pending/failed — user didn't complete payment
+                // .failed, .refunded — terminal error states
                 throw PaymentSheetError.cancelled
             }
         }
@@ -337,6 +360,63 @@ internal final class Backend: @unchecked Sendable {
         try await httpClient.executeVoid(request)
     }
 
+    // MARK: - Subscription Pause/Resume/Cancel
+
+    /// Pause a subscription for the given product and user.
+    /// - Parameters:
+    ///   - productId: The product to pause
+    ///   - userId: The user who owns the subscription
+    ///   - pauseOptionId: The selected pause option ID from the cancel flow config
+    /// - Returns: A ``PauseSubscriptionResponse`` with the resume date
+    func pauseSubscription(productId: String, userId: String, pauseOptionId: Int) async throws -> PauseSubscriptionResponse {
+        let url = apiURL("iap/subscriptions/pause/")
+        let body = PauseSubscriptionRequest(productId: productId, userId: userId, pauseOptionId: pauseOptionId)
+        do {
+            return try await httpClient.post(
+                url,
+                body: body,
+                headers: authHeaders,
+                responseType: PauseSubscriptionResponse.self
+            )
+        } catch {
+            throw Backend.wrapError(error)
+        }
+    }
+
+    /// Resume a paused subscription.
+    /// - Parameters:
+    ///   - productId: The product to resume
+    ///   - userId: The user who owns the subscription
+    func resumeSubscription(productId: String, userId: String) async throws {
+        let url = apiURL("iap/subscriptions/resume/")
+        let body = ResumeSubscriptionRequest(productId: productId, userId: userId)
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authHeaders.forEach { request.setValue($1, forHTTPHeaderField: $0) }
+        request.httpBody = try encoder.encode(body)
+
+        try await httpClient.executeVoid(request)
+    }
+
+    /// Cancel a subscription immediately.
+    /// - Parameters:
+    ///   - productId: The product to cancel
+    ///   - userId: The user who owns the subscription
+    func cancelSubscription(productId: String, userId: String) async throws {
+        let url = apiURL("iap/subscriptions/cancel/")
+        let body = CancelSubscriptionRequest(productId: productId, userId: userId)
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authHeaders.forEach { request.setValue($1, forHTTPHeaderField: $0) }
+        request.httpBody = try encoder.encode(body)
+
+        try await httpClient.executeVoid(request)
+    }
+
     // MARK: - Error Wrapping
 
     /// Convert any error thrown by the HTTP layer into a typed ``ZSError/apiError(_:)``.
@@ -419,6 +499,7 @@ private struct CheckoutConfigResponse: Decodable {
     let sheetType: String
     let isEnabled: Bool
     let jurisdictions: [String: JurisdictionConfigResponse]?
+    let appleMerchantId: String?
 }
 
 private struct JurisdictionConfigResponse: Decodable {
@@ -454,7 +535,7 @@ internal struct CreatePaymentIntentRequest: Encodable {
 }
 
 /// Response from the create_payment_intent endpoint.
-/// Contains everything needed to render the native checkout WebView.
+/// Contains everything needed to render the native checkout WebView or native Apple Pay sheet.
 internal struct PaymentIntentResponse: Decodable {
     let clientSecret: String
     let transactionId: String
@@ -465,6 +546,12 @@ internal struct PaymentIntentResponse: Decodable {
     let callbackUrl: String
     let publishableKey: String
     let checkoutUrl: String
+    /// BYOS: connected account ID for PaymentIntent confirmation.
+    let stripeAccount: String?
+    /// Whether this is a recurring (subscription) payment.
+    let isSubscription: Bool?
+    /// Billing interval for subscriptions: "week", "month", "year".
+    let subscriptionInterval: String?
 }
 
 private struct SyncStoreKitTransactionRequest: Encodable {
@@ -482,4 +569,24 @@ internal struct CreateCustomerPortalSessionRequest: Encodable {
 
 internal struct CustomerPortalSession: Decodable {
     let portalUrl: URL
+}
+
+internal struct PauseSubscriptionRequest: Encodable {
+    let productId: String
+    let userId: String
+    let pauseOptionId: Int
+}
+
+internal struct PauseSubscriptionResponse: Decodable {
+    let resumesAt: Date?
+}
+
+internal struct ResumeSubscriptionRequest: Encodable {
+    let productId: String
+    let userId: String
+}
+
+internal struct CancelSubscriptionRequest: Encodable {
+    let productId: String
+    let userId: String
 }

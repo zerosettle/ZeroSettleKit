@@ -10,7 +10,7 @@ import SafariServices
 import UIKit
 
 #if canImport(ZeroSettleCore)
-@_implementationOnly import ZeroSettleCore
+internal import ZeroSettleCore
 #endif
 
 // MARK: - Customer Portal Flow

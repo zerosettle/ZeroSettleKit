@@ -9,7 +9,7 @@
 import Foundation
 
 #if canImport(ZeroSettleCore)
-@_implementationOnly import ZeroSettleCore
+internal import ZeroSettleCore
 #endif
 
 // MARK: - StoreKit Sync Queue

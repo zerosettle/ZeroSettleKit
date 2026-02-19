@@ -10,7 +10,7 @@ import SwiftUI
 import UIKit
 
 #if canImport(ZeroSettleCore)
-@_implementationOnly import ZeroSettleCore
+internal import ZeroSettleCore
 #endif
 
 // MARK: - Cancel Flow Presenter
@@ -51,7 +51,8 @@ internal final class CancelFlowPresenter: NSObject, @unchecked Sendable {
             let sheet = CancelFlowSheetView(
                 config: config,
                 productId: productId,
-                userId: userId
+                userId: userId,
+                backend: backend
             ) { [weak self] result, payload in
                 guard let self, !self.hasResumed else { return }
                 self.hasResumed = true
@@ -107,30 +108,38 @@ private struct CancelFlowSheetView: View {
     let config: CancelFlow.Config
     let productId: String
     let userId: String
+    let backend: Backend
     let onComplete: (CancelFlow.Result, CancelFlow.ResponsePayload) -> Void
 
     @State private var currentQuestionIndex = 0
     @State private var answers: [CancelFlow.AnswerPayload] = []
     @State private var selectedOptionId: Int? = nil
     @State private var freeTextInput = ""
-    @State private var showingOffer = false
+    @State private var showingRetention = false
     @State private var offerShown = false
+    @State private var pauseShown = false
     @State private var lastStepSeen = 0
     @State private var earlyOfferTriggered = false
+    @State private var selectedPauseOptionId: Int? = nil
+    @State private var isPauseLoading = false
 
     private var currentQuestion: CancelFlow.Question? {
         guard currentQuestionIndex < config.questions.count else { return nil }
         return config.questions[currentQuestionIndex]
     }
 
+    private var hasRetentionPage: Bool {
+        (config.offer?.enabled == true) || (config.pause?.enabled == true)
+    }
+
     private var totalSteps: Int {
         let questionSteps = config.questions.count
-        let offerStep = (config.offer?.enabled == true) ? 1 : 0
-        return questionSteps + offerStep
+        let retentionStep = hasRetentionPage ? 1 : 0
+        return questionSteps + retentionStep
     }
 
     private var currentStep: Int {
-        if showingOffer {
+        if showingRetention {
             return config.questions.count
         }
         return currentQuestionIndex
@@ -176,8 +185,8 @@ private struct CancelFlowSheetView: View {
             // Content
             ScrollView {
                 VStack(spacing: 0) {
-                    if showingOffer, let offer = config.offer {
-                        offerView(offer: offer)
+                    if showingRetention {
+                        retentionView
                     } else if let question = currentQuestion {
                         questionView(question: question)
                     }
@@ -189,26 +198,8 @@ private struct CancelFlowSheetView: View {
 
             // Bottom buttons
             VStack(spacing: 12) {
-                if showingOffer {
-                    // Accept offer button
-                    Button {
-                        finish(result: .retained, offerAccepted: true)
-                    } label: {
-                        Text(config.offer?.ctaText ?? "Accept Offer")
-                            .font(.body.weight(.semibold))
-                            .foregroundStyle(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 14)
-                            .background(.green, in: RoundedRectangle(cornerRadius: 12))
-                    }
-
-                    Button {
-                        finish(result: .cancelled)
-                    } label: {
-                        Text("No thanks, cancel")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
+                if showingRetention {
+                    retentionButtons
                 } else {
                     // Continue button
                     Button {
@@ -314,15 +305,29 @@ private struct CancelFlowSheetView: View {
             .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
     }
 
-    // MARK: - Offer View
+    // MARK: - Retention View (Offer + Pause)
 
-    private func offerView(offer: CancelFlow.Offer) -> some View {
-        VStack(spacing: 20) {
-            Spacer().frame(height: 20)
+    @ViewBuilder
+    private var retentionView: some View {
+        VStack(spacing: 24) {
+            // Offer section
+            if let offer = config.offer, offer.enabled {
+                offerSection(offer: offer)
+            }
 
+            // Pause section
+            if let pauseConfig = config.pause, pauseConfig.enabled, !pauseConfig.options.isEmpty {
+                pauseSection(pauseConfig: pauseConfig)
+            }
+        }
+    }
+
+    private func offerSection(offer: CancelFlow.Offer) -> some View {
+        VStack(spacing: 16) {
             Image(systemName: "gift.fill")
                 .font(.system(size: 44))
                 .foregroundStyle(.green)
+                .padding(.top, 20)
 
             Text(offer.title)
                 .font(.title2.weight(.bold))
@@ -334,6 +339,116 @@ private struct CancelFlowSheetView: View {
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    private func pauseSection(pauseConfig: CancelFlow.PauseConfig) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Divider between offer and pause if both are shown
+            if config.offer?.enabled == true {
+                Divider()
+                    .padding(.vertical, 4)
+            }
+
+            Image(systemName: "pause.circle.fill")
+                .font(.system(size: 36))
+                .foregroundStyle(.blue)
+                .frame(maxWidth: .infinity)
+
+            Text(pauseConfig.title)
+                .font(.title3.weight(.semibold))
+                .frame(maxWidth: .infinity)
+                .multilineTextAlignment(.center)
+
+            Text(pauseConfig.body)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
+                .multilineTextAlignment(.center)
+
+            // Pause duration options (radio buttons)
+            VStack(spacing: 0) {
+                let sortedOptions = pauseConfig.options.sorted { $0.order < $1.order }
+                ForEach(sortedOptions) { option in
+                    Button {
+                        selectedPauseOptionId = option.id
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: selectedPauseOptionId == option.id ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 22))
+                                .foregroundStyle(selectedPauseOptionId == option.id ? .blue : .secondary)
+
+                            Text(option.label)
+                                .font(.body)
+                                .foregroundStyle(.primary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .padding(.vertical, 12)
+                        .padding(.horizontal, 16)
+                    }
+
+                    if option.id != sortedOptions.last?.id {
+                        Divider()
+                            .padding(.leading, 50)
+                    }
+                }
+            }
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    // MARK: - Retention Buttons
+
+    @ViewBuilder
+    private var retentionButtons: some View {
+        // Accept offer button (if offer is enabled)
+        if let offer = config.offer, offer.enabled {
+            Button {
+                finish(result: .retained, offerAccepted: true)
+            } label: {
+                Text(offer.ctaText)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(.green, in: RoundedRectangle(cornerRadius: 12))
+            }
+        }
+
+        // Pause button (if pause is enabled)
+        if let pauseConfig = config.pause, pauseConfig.enabled, !pauseConfig.options.isEmpty {
+            Button {
+                submitPause()
+            } label: {
+                if isPauseLoading {
+                    ProgressView()
+                        .tint(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(Color.blue.opacity(0.4), in: RoundedRectangle(cornerRadius: 12))
+                } else {
+                    Text(pauseConfig.ctaText)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(
+                            selectedPauseOptionId != nil ? Color.blue : Color.blue.opacity(0.4),
+                            in: RoundedRectangle(cornerRadius: 12)
+                        )
+                }
+            }
+            .disabled(selectedPauseOptionId == nil || isPauseLoading)
+        }
+
+        // Cancel anyway
+        Button {
+            finish(result: .cancelled)
+        } label: {
+            Text("No thanks, cancel")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .disabled(isPauseLoading)
     }
 
     // MARK: - Flow Logic
@@ -360,16 +475,17 @@ private struct CancelFlowSheetView: View {
         }
         answers.append(answer)
 
-        // Check if selected option triggers offer
+        // Check if selected option triggers offer/pause and there's a retention page
         if question.questionType == .singleSelect,
            let optionId = selectedOptionId,
            let option = question.options.first(where: { $0.id == optionId }),
-           option.triggersOffer,
-           config.offer?.enabled == true {
+           (option.triggersOffer || option.triggersPause),
+           hasRetentionPage {
             earlyOfferTriggered = true
-            offerShown = true
-            lastStepSeen = config.questions.count // offer page step
-            showingOffer = true
+            offerShown = config.offer?.enabled == true
+            pauseShown = config.pause?.enabled == true
+            lastStepSeen = config.questions.count
+            showingRetention = true
             return
         }
 
@@ -382,23 +498,65 @@ private struct CancelFlowSheetView: View {
             freeTextInput = ""
         } else {
             // Last question answered, no trigger
-            if config.offer?.enabled == true {
-                offerShown = true
+            if hasRetentionPage {
+                offerShown = config.offer?.enabled == true
+                pauseShown = config.pause?.enabled == true
                 lastStepSeen = config.questions.count
-                showingOffer = true
+                showingRetention = true
             } else {
                 finish(result: .cancelled)
             }
         }
     }
 
-    private func finish(result: CancelFlow.Result, offerAccepted: Bool = false) {
+    private func submitPause() {
+        guard let pauseOptionId = selectedPauseOptionId else { return }
+        isPauseLoading = true
+
+        Task {
+            do {
+                let response = try await backend.pauseSubscription(
+                    productId: productId,
+                    userId: userId,
+                    pauseOptionId: pauseOptionId
+                )
+
+                let selectedOption = config.pause?.options.first { $0.id == pauseOptionId }
+                let durationDays = selectedOption?.durationDays
+
+                await MainActor.run {
+                    isPauseLoading = false
+                    finish(
+                        result: .paused(resumesAt: response.resumesAt),
+                        pauseAccepted: true,
+                        pauseDurationDays: durationDays
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    isPauseLoading = false
+                    // On failure, stay on the retention page so the user can retry or cancel
+                    ZSLogger.error("Failed to pause subscription from cancel flow: \(error)", category: .iap)
+                }
+            }
+        }
+    }
+
+    private func finish(
+        result: CancelFlow.Result,
+        offerAccepted: Bool = false,
+        pauseAccepted: Bool = false,
+        pauseDurationDays: Int? = nil
+    ) {
         let payload = CancelFlow.ResponsePayload(
             userId: userId,
             productId: productId,
             outcome: outcomeString(result),
             offerShown: offerShown,
             offerAccepted: offerAccepted,
+            pauseShown: pauseShown,
+            pauseAccepted: pauseAccepted,
+            pauseDurationDays: pauseDurationDays,
             lastStepSeen: lastStepSeen,
             answers: answers
         )
@@ -409,6 +567,7 @@ private struct CancelFlowSheetView: View {
         switch result {
         case .cancelled: return "cancelled"
         case .retained: return "retained"
+        case .paused: return "paused"
         case .dismissed: return "dismissed"
         }
     }

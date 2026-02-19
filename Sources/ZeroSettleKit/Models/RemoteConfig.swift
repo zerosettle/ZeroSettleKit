@@ -72,6 +72,10 @@ public enum CheckoutType: String, Codable, Sendable {
 
     /// External Safari browser
     case safari = "safari"
+
+    /// Native Apple Pay sheet via STPApplePayContext (requires `NativePay` package trait).
+    /// Falls back to `.webview` when the trait is not enabled or Apple Pay is unavailable.
+    case nativePay = "native_pay"
 }
 
 // MARK: - Checkout Config
@@ -87,10 +91,20 @@ public struct CheckoutConfig: Sendable, Equatable {
     /// Per-jurisdiction overrides (empty if no overrides configured)
     public let jurisdictions: [Jurisdiction: JurisdictionCheckoutConfig]
 
-    public init(sheetType: CheckoutType, isEnabled: Bool, jurisdictions: [Jurisdiction: JurisdictionCheckoutConfig] = [:]) {
+    /// Apple Pay merchant identifier provided by the backend (managed mode default).
+    /// The SDK prefers the local `Configuration.appleMerchantId` over this value.
+    public let appleMerchantId: String?
+
+    public init(
+        sheetType: CheckoutType,
+        isEnabled: Bool,
+        jurisdictions: [Jurisdiction: JurisdictionCheckoutConfig] = [:],
+        appleMerchantId: String? = nil
+    ) {
         self.sheetType = sheetType
         self.isEnabled = isEnabled
         self.jurisdictions = jurisdictions
+        self.appleMerchantId = appleMerchantId
     }
 }
 

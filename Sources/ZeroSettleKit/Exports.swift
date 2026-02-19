@@ -8,7 +8,7 @@
 import Foundation
 
 #if canImport(ZeroSettleCore)
-@_implementationOnly import ZeroSettleCore
+internal import ZeroSettleCore
 #endif
 
 // MARK: - Public Types
@@ -70,7 +70,10 @@ import Foundation
 //   - CancelFlow.QuestionType
 //   - CancelFlow.Option
 //   - CancelFlow.Offer
-//   - CancelFlow.Result
+//   - CancelFlow.PauseConfig
+//   - CancelFlow.PauseOption
+//   - CancelFlow.PauseOption.DurationType
+//   - CancelFlow.Result (includes .paused(resumesAt:))
 //
 // From UI/CancelFlowSheet.swift:
 //   - View.zsCancelFlow(isPresented:productId:userId:onResult:)

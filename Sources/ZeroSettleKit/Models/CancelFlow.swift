@@ -27,6 +27,8 @@ public enum CancelFlow {
         public let questions: [Question]
         /// Optional save offer to show (if `offer.enabled` is true).
         public let offer: Offer?
+        /// Optional pause configuration for the retention page.
+        public let pause: PauseConfig?
     }
 
     /// A single question in the cancel flow questionnaire.
@@ -51,6 +53,7 @@ public enum CancelFlow {
         public let order: Int
         public let label: String
         public let triggersOffer: Bool
+        public let triggersPause: Bool
     }
 
     /// Save offer configuration shown to retain the user.
@@ -63,12 +66,44 @@ public enum CancelFlow {
         public let value: String
     }
 
+    /// Pause configuration for the retention page.
+    public struct PauseConfig: Codable, Sendable {
+        /// Whether pause is enabled for this app.
+        public let enabled: Bool
+        /// Title text for the pause section.
+        public let title: String
+        /// Body text for the pause section.
+        public let body: String
+        /// CTA button text (e.g., "Pause Subscription").
+        public let ctaText: String
+        /// Available pause duration options.
+        public let options: [PauseOption]
+    }
+
+    /// A selectable pause duration option.
+    public struct PauseOption: Codable, Sendable, Identifiable {
+        public let id: Int
+        public let order: Int
+        public let label: String
+        public let durationType: DurationType
+        public let durationDays: Int?
+        public let resumeDate: Date?
+
+        /// How the pause duration is specified.
+        public enum DurationType: String, Codable, Sendable {
+            case days
+            case fixedDate = "fixed_date"
+        }
+    }
+
     /// The outcome of a cancel flow presentation.
-    public enum Result: Sendable {
+    public enum Result: Sendable, Equatable {
         /// The user completed the flow and chose to cancel.
         case cancelled
         /// The user accepted the save offer and was retained.
         case retained
+        /// The user chose to pause their subscription.
+        case paused(resumesAt: Date?)
         /// The user dismissed the sheet without completing the flow.
         case dismissed
     }
@@ -82,6 +117,9 @@ public enum CancelFlow {
         let outcome: String
         let offerShown: Bool
         let offerAccepted: Bool
+        let pauseShown: Bool
+        let pauseAccepted: Bool
+        let pauseDurationDays: Int?
         let lastStepSeen: Int
         let answers: [AnswerPayload]
     }

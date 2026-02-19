@@ -1,4 +1,4 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.1
 import PackageDescription
 
 let package = Package(
@@ -16,6 +16,19 @@ let package = Package(
         ),
     ],
 
+    // MARK: - Traits
+    traits: [
+        .trait(
+            name: "NativePay",
+            description: "Enables native Apple Pay checkout via Stripe STPApplePayContext"
+        ),
+    ],
+
+    // MARK: - Dependencies
+    dependencies: [
+        .package(url: "https://github.com/stripe/stripe-ios.git", from: "24.0.0"),
+    ],
+
     // MARK: - Targets
     targets: [
         // Internal: ZeroSettleCore (logging, HTTP, extensions)
@@ -30,6 +43,11 @@ let package = Package(
             name: "ZeroSettleKit",
             dependencies: [
                 "ZeroSettleCore",
+                .product(
+                    name: "StripeApplePay",
+                    package: "stripe-ios",
+                    condition: .when(traits: ["NativePay"])
+                ),
             ],
             path: "Sources/ZeroSettleKit",
             swiftSettings: [

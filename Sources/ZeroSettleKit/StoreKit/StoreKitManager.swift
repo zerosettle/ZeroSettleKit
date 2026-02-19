@@ -9,7 +9,7 @@ import Foundation
 import StoreKit
 
 #if canImport(ZeroSettleCore)
-@_implementationOnly import ZeroSettleCore
+internal import ZeroSettleCore
 #endif
 
 /// Typealias to disambiguate StoreKit.Transaction from our Transaction model.

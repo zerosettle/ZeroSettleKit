@@ -11,7 +11,7 @@ import StoreKit
 import SwiftUI
 
 #if canImport(ZeroSettleCore)
-@_implementationOnly import ZeroSettleCore
+internal import ZeroSettleCore
 #endif
 
 // MARK: - Supporting Error Types
@@ -193,12 +193,19 @@ public final class ZeroSettle: ObservableObject {
         /// Defaults to `true`.
         public let syncStoreKitTransactions: Bool
 
+        /// Apple Pay merchant identifier for native pay checkout.
+        /// Required when using the `NativePay` package trait.
+        /// If nil, the SDK uses the merchant ID from the backend config (managed mode default).
+        public let appleMerchantId: String?
+
         public init(
             publishableKey: String,
-            syncStoreKitTransactions: Bool = true
+            syncStoreKitTransactions: Bool = true,
+            appleMerchantId: String? = nil
         ) {
             self.publishableKey = publishableKey
             self.syncStoreKitTransactions = syncStoreKitTransactions
+            self.appleMerchantId = appleMerchantId
         }
 
         internal var backendURL: URL {
@@ -251,9 +258,9 @@ public final class ZeroSettle: ObservableObject {
 
     /// The effective checkout type for the detected jurisdiction.
     /// If a jurisdiction override exists, uses that; otherwise falls back to the global default.
-    /// Returns `.safari` if remote config hasn't been fetched yet.
+    /// Returns `.webview` if remote config hasn't been fetched yet.
     public var checkoutType: CheckoutType {
-        guard let config = remoteConfig?.checkout else { return .safari }
+        guard let config = remoteConfig?.checkout else { return .webview }
         let jurisdiction = detectedJurisdiction ?? .row
         if let override = config.jurisdictions[jurisdiction] {
             return override.sheetType
@@ -270,6 +277,17 @@ public final class ZeroSettle: ObservableObject {
             return override.isEnabled
         }
         return config.isEnabled
+    }
+
+    /// Resolve the Apple Pay merchant ID: local override > backend default > nil.
+    private var resolvedMerchantId: String? {
+        if let local = config?.appleMerchantId, !local.isEmpty {
+            return local
+        }
+        if let remote = remoteConfig?.checkout.appleMerchantId, !remote.isEmpty {
+            return remote
+        }
+        return nil
     }
 
     // MARK: - Delegate
@@ -309,6 +327,10 @@ public final class ZeroSettle: ObservableObject {
     private var customerPortalFlow: CustomerPortalFlow?
     private var storeKitManager: StoreKitManager?
 
+    #if NativePay
+    private var nativePayFlow: NativePay.Flow?
+    #endif
+
     /// Whether `.zeroSettleHandler()` has been installed on a view.
     /// Used to warn developers in DEBUG builds if they forget the modifier.
     internal var handlerInstalled: Bool = false
@@ -341,6 +363,10 @@ public final class ZeroSettle: ObservableObject {
     ///
     /// - Parameter config: The IAP configuration with your publishable key
     public func configure(_ config: Configuration) {
+        // Clear cached checkout URLs from the previous environment to prevent
+        // stale sandbox PIs being served after switching to live (or vice versa).
+        CheckoutCache.shared.clearAll()
+
         self.config = config
 
         #if DEBUG
@@ -356,6 +382,10 @@ public final class ZeroSettle: ObservableObject {
         self.checkoutFlow = checkoutFlow
         self.customerPortalFlow = CustomerPortalFlow()
 
+        #if NativePay
+        self.nativePayFlow = NativePay.Flow(backend: backend)
+        #endif
+
         if config.syncStoreKitTransactions {
             let storeKitManager = StoreKitManager(backend: backend)
             storeKitManager.delegate = self
@@ -364,7 +394,17 @@ public final class ZeroSettle: ObservableObject {
         }
 
         isConfigured = true
-        ZSLogger.info("ZeroSettle configured", category: .iap)
+
+        let mode = config.publishableKey.hasPrefix("zs_pk_test_") ? "sandbox" : "live"
+        let syncStatus = config.syncStoreKitTransactions ? "enabled" : "disabled"
+        let merchantStatus = config.appleMerchantId ?? "none (webview fallback)"
+        let nativePayStatus: String
+        #if NativePay
+        nativePayStatus = "compiled in"
+        #else
+        nativePayStatus = "not compiled (add NativePay trait to Package.swift)"
+        #endif
+        ZSLogger.info("ZeroSettle configured: mode=\(mode), storeKitSync=\(syncStatus), appleMerchantId=\(merchantStatus), nativePay=\(nativePayStatus)", category: .iap)
     }
 
     // MARK: - Bootstrap
@@ -490,10 +530,15 @@ public final class ZeroSettle: ObservableObject {
             throw ZSError.userIdRequired(productId: productId)
         }
 
+        // Log the effective checkout routing decision
+        let effectiveJurisdiction = detectedJurisdiction ?? .row
+        let effectiveType = checkoutType
+        ZSLogger.info("Checkout routing: product=\(productId), jurisdiction=\(effectiveJurisdiction.rawValue), checkoutType=\(effectiveType.rawValue), webCheckoutEnabled=\(isWebCheckoutEnabled)", category: .iap)
+
         // Check if web checkout is enabled for the detected jurisdiction
         if !isWebCheckoutEnabled {
-            let jurisdiction = detectedJurisdiction ?? .row
-            throw ZSError.webCheckoutDisabledForJurisdiction(jurisdiction)
+            ZSLogger.error("Web checkout disabled for \(effectiveJurisdiction.rawValue) jurisdiction. The SDK will throw webCheckoutDisabledForJurisdiction. Configure this in your ZeroSettle dashboard under Checkout Configuration.", category: .iap)
+            throw ZSError.webCheckoutDisabledForJurisdiction(effectiveJurisdiction)
         }
 
         // Update StoreKit manager with user ID for future sync operations
@@ -505,6 +550,47 @@ public final class ZeroSettle: ObservableObject {
         pendingCheckout = true
         delegate?.zeroSettleCheckoutDidBegin(productId: productId)
 
+        // Native Pay: use STPApplePayContext when trait is enabled + device supports it
+        #if NativePay
+        if checkoutType == .nativePay, let nativePayFlow {
+            if let merchantId = resolvedMerchantId, nativePayFlow.canMakePayments() {
+                ZSLogger.info("Starting native Apple Pay checkout for \(productId)", category: .iap)
+                do {
+                    let result = try await nativePayFlow.pay(
+                        productId: productId,
+                        userId: userId,
+                        merchantId: merchantId
+                    )
+                    pendingCheckout = false
+                    switch result {
+                    case .success(let transaction):
+                        delegate?.zeroSettleCheckoutDidComplete(transaction: transaction)
+                        await refreshEntitlementsAfterCheckout(transaction: transaction)
+                        return transaction
+                    case .cancelled:
+                        delegate?.zeroSettleCheckoutDidCancel(productId: productId)
+                        throw ZSError.cancelled
+                    }
+                } catch let error as ZSError {
+                    pendingCheckout = false
+                    throw error
+                } catch {
+                    pendingCheckout = false
+                    ZSLogger.error("Native Apple Pay failed for \(productId): \(error)", category: .iap)
+                    delegate?.zeroSettleCheckoutDidFail(productId: productId, error: error)
+                    throw ZSError.checkoutFailed(reason: .other(error.localizedDescription))
+                }
+            } else {
+                // Log the specific reason for fallback
+                if resolvedMerchantId == nil {
+                    ZSLogger.info("Native Pay fallback → webview: no appleMerchantId configured. Pass appleMerchantId in Configuration or configure apple_merchant_id on the backend.", category: .iap)
+                } else if !nativePayFlow.canMakePayments() {
+                    ZSLogger.info("Native Pay fallback → webview: Apple Pay is not available on this device (no cards configured or device doesn't support Apple Pay).", category: .iap)
+                }
+            }
+        }
+        #endif
+
         do {
             let session = try await checkoutFlow.beginCheckout(
                 productId: productId,
@@ -512,6 +598,11 @@ public final class ZeroSettle: ObservableObject {
             )
 
             ZSLogger.info("Checkout browser dismissed for \(productId), transaction: \(session.transactionId ?? "none")", category: .iap)
+
+            // Brief yield to allow any pending universal link callback Task to process.
+            // The foreground notification fires before scene(_:continue:), so
+            // processCheckoutCallback may still be queued when we reach this point.
+            try? await Task.sleep(nanoseconds: 500_000_000)
 
             // If the universal link callback already fired, pendingCheckout is false
             // and processCheckoutCallback already handled delegate/entitlements.
@@ -535,8 +626,14 @@ public final class ZeroSettle: ObservableObject {
 
             do {
                 let transaction = try await backend.verifyTransaction(transactionId: transactionId)
-                pendingCheckout = false
 
+                // If the universal link callback already processed this checkout
+                // (during the polling delay), skip the delegate call to avoid duplicates.
+                guard pendingCheckout else {
+                    ZSLogger.debug("Transaction \(transactionId) verified, but callback already handled it", category: .iap)
+                    return transaction
+                }
+                pendingCheckout = false
 
                 ZSLogger.info("Transaction \(transactionId) verified via polling", category: .iap)
                 delegate?.zeroSettleCheckoutDidComplete(transaction: transaction)
@@ -842,6 +939,111 @@ public final class ZeroSettle: ObservableObject {
         return result
     }
 
+    // MARK: - Headless Cancel Flow API
+
+    /// Fetch the cancel flow configuration without presenting any UI.
+    ///
+    /// Use this for building custom cancel/pause UI while still using ZeroSettle's
+    /// backend configuration. Returns the full config including questions, offer, and pause options.
+    ///
+    /// - Returns: The cancel flow ``CancelFlow/Config``
+    public func fetchCancelFlowConfig() async throws -> CancelFlow.Config {
+        guard let backend else {
+            throw ZSError.notConfigured
+        }
+
+        do {
+            let config = try await backend.fetchCancelFlow()
+            ZSLogger.info("Fetched cancel flow config: enabled=\(config.enabled), questions=\(config.questions.count), pause=\(config.pause?.enabled ?? false)", category: .iap)
+            return config
+        } catch {
+            ZSLogger.error("Failed to fetch cancel flow config: \(error)", category: .iap)
+            throw Backend.wrapError(error)
+        }
+    }
+
+    /// Pause a subscription for the given product.
+    ///
+    /// Sends a pause request to the backend with the selected pause option.
+    /// On success, refreshes entitlements automatically.
+    ///
+    /// - Parameters:
+    ///   - productId: The product identifier to pause
+    ///   - userId: Your app's user identifier
+    ///   - pauseOptionId: The ID of the selected ``CancelFlow/PauseOption``
+    /// - Returns: The date when the subscription will automatically resume, or `nil` if unspecified
+    public func pauseSubscription(productId: String, userId: String, pauseOptionId: Int) async throws -> Date? {
+        guard let backend else {
+            throw ZSError.notConfigured
+        }
+
+        do {
+            let response = try await backend.pauseSubscription(
+                productId: productId,
+                userId: userId,
+                pauseOptionId: pauseOptionId
+            )
+            ZSLogger.info("Subscription paused: product=\(productId), resumesAt=\(response.resumesAt?.description ?? "nil")", category: .iap)
+
+            // Refresh entitlements to reflect the paused state
+            _ = try? await restoreEntitlements(userId: userId)
+
+            return response.resumesAt
+        } catch {
+            ZSLogger.error("Failed to pause subscription: \(error)", category: .iap)
+            throw Backend.wrapError(error)
+        }
+    }
+
+    /// Resume a paused subscription.
+    ///
+    /// Sends a resume request to the backend. On success, refreshes entitlements automatically.
+    ///
+    /// - Parameters:
+    ///   - productId: The product identifier to resume
+    ///   - userId: Your app's user identifier
+    public func resumeSubscription(productId: String, userId: String) async throws {
+        guard let backend else {
+            throw ZSError.notConfigured
+        }
+
+        do {
+            try await backend.resumeSubscription(productId: productId, userId: userId)
+            ZSLogger.info("Subscription resumed: product=\(productId)", category: .iap)
+
+            // Refresh entitlements to reflect the active state
+            _ = try? await restoreEntitlements(userId: userId)
+        } catch {
+            ZSLogger.error("Failed to resume subscription: \(error)", category: .iap)
+            throw Backend.wrapError(error)
+        }
+    }
+
+    /// Cancel a subscription immediately.
+    ///
+    /// Sends a cancellation request to the backend. On success, refreshes entitlements automatically.
+    /// For a cancel flow with UI (questionnaire + retention), use ``presentCancelFlow(productId:userId:)`` instead.
+    ///
+    /// - Parameters:
+    ///   - productId: The product identifier to cancel
+    ///   - userId: Your app's user identifier
+    public func cancelSubscription(productId: String, userId: String) async throws {
+        guard let backend else {
+            throw ZSError.notConfigured
+        }
+
+        do {
+            try await backend.cancelSubscription(productId: productId, userId: userId)
+            ZSLogger.info("Subscription cancelled: product=\(productId)", category: .iap)
+
+            // Refresh entitlements to reflect the cancelled state
+            _ = try? await restoreEntitlements(userId: userId)
+        } catch {
+            ZSLogger.error("Failed to cancel subscription: \(error)", category: .iap)
+            throw Backend.wrapError(error)
+        }
+    }
+
     // MARK: - Error Helpers
 
     /// Parsed error body from an HTTP response for checkout failure classification.
@@ -896,16 +1098,10 @@ public final class ZeroSettle: ObservableObject {
         guard let backend else { return }
 
         do {
-            let transaction = try await backend.getTransaction(transactionId: callback.transactionId)
-
-            guard transaction.status == .completed || transaction.status == .processing else {
-                let error = ZSError.transactionVerificationFailed(
-                    "Transaction status: \(transaction.status.rawValue)"
-                )
-                delegate?.zeroSettleCheckoutDidFail(productId: callback.productId, error: error)
-
-                return
-            }
+            // Use verifyTransaction (with polling) instead of a single getTransaction,
+            // since the Stripe webhook may not have processed yet even though
+            // the redirect URL says success.
+            let transaction = try await backend.verifyTransaction(transactionId: callback.transactionId)
 
             ZSLogger.info("Checkout \(transaction.status == .processing ? "processing" : "completed"): \(transaction.id) for \(transaction.productId)", category: .iap)
             delegate?.zeroSettleCheckoutDidComplete(transaction: transaction)
@@ -944,6 +1140,7 @@ public final class ZeroSettle: ObservableObject {
 
     /// Create and append a local entitlement from a transaction when backend fetch fails.
     private func appendLocalEntitlement(for transaction: ZSTransaction) {
+        ZSLogger.info("Creating local fallback entitlement for \(transaction.productId) (transaction: \(transaction.id)). This entitlement was not fetched from the backend — it will be reconciled on the next restoreEntitlements() call.", category: .iap)
         let entitlement = Entitlement(
             id: "web_\(transaction.id)",
             productId: transaction.productId,

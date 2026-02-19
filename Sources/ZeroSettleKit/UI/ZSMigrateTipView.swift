@@ -328,7 +328,7 @@ public struct ZSMigrateTipView: View {
         let checkoutType = iap.checkoutType
 
         switch checkoutType {
-        case .webview:
+        case .webview, .nativePay:
             // Native inline checkout: create payment intent and show embedded WebView
             startWebViewCheckout()
         case .safari, .safariVC:

@@ -26,7 +26,12 @@ import os
 internal final class PaymentSheetTrace: @unchecked Sendable {
 
     /// The currently active trace. Set before preloading begins.
-    static var current: PaymentSheetTrace?
+    private static let _currentLock = NSLock()
+    private nonisolated(unsafe) static var _current: PaymentSheetTrace?
+    static var current: PaymentSheetTrace? {
+        get { _currentLock.withLock { _current } }
+        set { _currentLock.withLock { _current = newValue } }
+    }
 
     static let logger = Logger(subsystem: "com.zerosettle.iap", category: "PaymentSheet")
 

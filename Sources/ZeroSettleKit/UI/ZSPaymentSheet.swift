@@ -11,7 +11,7 @@ import SwiftUI
 import WebKit
 
 #if canImport(ZeroSettleCore)
-@_implementationOnly import ZeroSettleCore
+internal import ZeroSettleCore
 #endif
 
 // MARK: - Shared JS & Helpers
@@ -113,6 +113,7 @@ private final class MessageRouter: NSObject, WKScriptMessageHandler {
 /// Manages off-screen WKWebView creation and preloading.
 /// Creates the WebView, loads the checkout URL, and waits for the
 /// JavaScript "ready" signal before resolving.
+@MainActor
 private final class CheckoutPreloader: ObservableObject {
     @Published var webView: WKWebView?
     @Published private(set) var isReady = false
@@ -230,7 +231,7 @@ private struct PreloaderHost: UIViewRepresentable {
 
 /// Caches PaymentIntent results (checkout URL + transaction ID) so re-opens
 /// skip the network call entirely. Thread-safe via NSLock.
-private final class CheckoutCache {
+internal final class CheckoutCache: @unchecked Sendable {
     static let shared = CheckoutCache()
 
     private struct Entry {
@@ -245,10 +246,16 @@ private final class CheckoutCache {
 
     private init() {}
 
-    func get(productId: String, userId: String?) -> (checkoutURL: URL, transactionId: String)? {
+    /// Cache key includes the publishable key so entries from one environment
+    /// (sandbox vs live) are never served after an environment switch.
+    private func cacheKey(productId: String, userId: String?, publishableKey: String) -> String {
+        return "\(publishableKey):\(productId):\(userId ?? "")"
+    }
+
+    func get(productId: String, userId: String?, publishableKey: String = "") -> (checkoutURL: URL, transactionId: String)? {
         lock.lock()
         defer { lock.unlock() }
-        let key = "\(productId):\(userId ?? "")"
+        let key = cacheKey(productId: productId, userId: userId, publishableKey: publishableKey)
         guard let entry = entries[key],
               Date().timeIntervalSince(entry.timestamp) < ttl else {
             entries.removeValue(forKey: key)
@@ -257,17 +264,25 @@ private final class CheckoutCache {
         return (entry.checkoutURL, entry.transactionId)
     }
 
-    func set(productId: String, userId: String?, checkoutURL: URL, transactionId: String) {
+    func set(productId: String, userId: String?, publishableKey: String = "", checkoutURL: URL, transactionId: String) {
         lock.lock()
         defer { lock.unlock() }
-        let key = "\(productId):\(userId ?? "")"
+        let key = cacheKey(productId: productId, userId: userId, publishableKey: publishableKey)
         entries[key] = Entry(checkoutURL: checkoutURL, transactionId: transactionId, timestamp: Date())
     }
 
-    func invalidate(productId: String, userId: String?) {
+    func invalidate(productId: String, userId: String?, publishableKey: String = "") {
         lock.lock()
         defer { lock.unlock() }
-        entries.removeValue(forKey: "\(productId):\(userId ?? "")")
+        entries.removeValue(forKey: cacheKey(productId: productId, userId: userId, publishableKey: publishableKey))
+    }
+
+    /// Remove all cached entries. Called on SDK reconfiguration to prevent
+    /// stale entries from a different environment being served.
+    func clearAll() {
+        lock.lock()
+        defer { lock.unlock() }
+        entries.removeAll()
     }
 }
 
@@ -420,15 +435,6 @@ extension ZSPaymentSheet where Header == EmptyView {
         let trace = PaymentSheetTrace.current
         let span = trace?.begin("createPaymentIntent", metadata: ["productId": productId])
 
-        // Check cache first
-        let cacheSpan = trace?.begin("cache.lookup")
-        if let cached = CheckoutCache.shared.get(productId: productId, userId: userId) {
-            if let cacheSpan { trace?.end(cacheSpan, metadata: ["result": "HIT"]) }
-            if let span { trace?.end(span, metadata: ["source": "cache"]) }
-            return cached
-        }
-        if let cacheSpan { trace?.end(cacheSpan, metadata: ["result": "MISS"]) }
-
         guard let config = ZeroSettle.shared.currentConfig,
               let baseURL = ZeroSettle.shared.effectiveBaseURL else {
             trace?.event("createPaymentIntent: SDK not configured")
@@ -436,8 +442,18 @@ extension ZSPaymentSheet where Header == EmptyView {
             return nil
         }
 
+        // Check cache first
+        let pk = config.publishableKey
+        let cacheSpan = trace?.begin("cache.lookup")
+        if let cached = CheckoutCache.shared.get(productId: productId, userId: userId, publishableKey: pk) {
+            if let cacheSpan { trace?.end(cacheSpan, metadata: ["result": "HIT"]) }
+            if let span { trace?.end(span, metadata: ["source": "cache"]) }
+            return cached
+        }
+        if let cacheSpan { trace?.end(cacheSpan, metadata: ["result": "MISS"]) }
+
         do {
-            let backend = Backend(baseURL: baseURL, publishableKey: config.publishableKey)
+            let backend = Backend(baseURL: baseURL, publishableKey: pk)
             let paymentIntent = try await backend.createPaymentIntent(productId: productId, userId: userId, freeTrialDays: freeTrialDays)
             guard let url = URL(string: paymentIntent.checkoutUrl) else {
                 if let span { trace?.end(span, metadata: ["error": "invalidURL"]) }
@@ -446,7 +462,7 @@ extension ZSPaymentSheet where Header == EmptyView {
 
             // Cache for re-use
             CheckoutCache.shared.set(
-                productId: productId, userId: userId,
+                productId: productId, userId: userId, publishableKey: pk,
                 checkoutURL: url, transactionId: paymentIntent.transactionId
             )
             trace?.event("cache.store", metadata: ["txnId": paymentIntent.transactionId])
@@ -692,9 +708,12 @@ extension ZSPaymentSheet {
     }
 
     private func verifyAndComplete(transactionId: String) async {
+        // Dismiss immediately for responsive UX — verification continues in background.
+        // The onComplete closure is captured by the Task and fires when ready.
+        dismiss()
+
         guard let config = ZeroSettle.shared.currentConfig,
               let baseURL = ZeroSettle.shared.effectiveBaseURL else {
-            dismiss()
             onComplete(.failure(PaymentSheetError.notConfigured))
             return
         }
@@ -702,12 +721,10 @@ extension ZSPaymentSheet {
         let backend = Backend(baseURL: baseURL, publishableKey: config.publishableKey)
         do {
             let transaction = try await backend.verifyTransaction(transactionId: transactionId)
-            dismiss()
             onComplete(.success(transaction))
             // Fire delegate for consistency across all checkout types
             await ZeroSettle.shared.delegate?.zeroSettleCheckoutDidComplete(transaction: transaction)
         } catch {
-            dismiss()
             onComplete(.failure(PaymentSheetError.verificationFailed(error.localizedDescription)))
         }
     }
@@ -716,7 +733,7 @@ extension ZSPaymentSheet {
 // MARK: - Header Height Preference Key
 
 private struct HeaderHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
+    nonisolated(unsafe) static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
     }
@@ -1082,7 +1099,7 @@ private struct ZSPaymentSheetModifier<Header: View>: ViewModifier {
                     ) { result in
                         PaymentSheetTrace.logger.info("⏱  ● sheet.result: \(String(describing: result))")
                         if case .success = result {
-                            CheckoutCache.shared.invalidate(productId: product.id, userId: userId)
+                            CheckoutCache.shared.invalidate(productId: product.id, userId: userId, publishableKey: ZeroSettle.shared.currentConfig?.publishableKey ?? "")
                             preloadedURL = nil
                             preloadedTransactionId = nil
                         }
@@ -1098,7 +1115,7 @@ private struct ZSPaymentSheetModifier<Header: View>: ViewModifier {
                     ) { result in
                         PaymentSheetTrace.logger.info("⏱  ● sheet.result: \(String(describing: result))")
                         if case .success = result {
-                            CheckoutCache.shared.invalidate(productId: product.id, userId: userId)
+                            CheckoutCache.shared.invalidate(productId: product.id, userId: userId, publishableKey: ZeroSettle.shared.currentConfig?.publishableKey ?? "")
                         }
                         onComplete(result)
                     }
@@ -1177,7 +1194,8 @@ private struct ZSPaymentSheetModifier<Header: View>: ViewModifier {
         //    fully rendered before the user ever taps. The PreloaderHost keeps
         //    the WebView in the view hierarchy so it can load and render.
         guard !Task.isCancelled else { return }
-        if let result = CheckoutCache.shared.get(productId: product.id, userId: userId) {
+        let pk = ZeroSettle.shared.currentConfig?.publishableKey ?? ""
+        if let result = CheckoutCache.shared.get(productId: product.id, userId: userId, publishableKey: pk) {
             preloadedURL = result.checkoutURL
             preloadedTransactionId = result.transactionId
             await preloader.loadAndWait(url: result.checkoutURL)
@@ -1249,7 +1267,7 @@ private struct ZSPaymentSheetItemModifier<Header: View>: ViewModifier {
                         ) { result in
                             PaymentSheetTrace.logger.info("⏱  ● sheet.result: \(String(describing: result))")
                             if case .success = result {
-                                CheckoutCache.shared.invalidate(productId: product.id, userId: userId)
+                                CheckoutCache.shared.invalidate(productId: product.id, userId: userId, publishableKey: ZeroSettle.shared.currentConfig?.publishableKey ?? "")
                                 preloadedURL = nil
                                 preloadedTransactionId = nil
                                 preloaderProductId = nil
@@ -1266,7 +1284,7 @@ private struct ZSPaymentSheetItemModifier<Header: View>: ViewModifier {
                         ) { result in
                             PaymentSheetTrace.logger.info("⏱  ● sheet.result: \(String(describing: result))")
                             if case .success = result {
-                                CheckoutCache.shared.invalidate(productId: product.id, userId: userId)
+                                CheckoutCache.shared.invalidate(productId: product.id, userId: userId, publishableKey: ZeroSettle.shared.currentConfig?.publishableKey ?? "")
                             }
                             onComplete(result)
                         }
@@ -1349,7 +1367,8 @@ private struct ZSPaymentSheetItemModifier<Header: View>: ViewModifier {
         //    Don't set preloadedURL/transactionId here — the user hasn't selected
         //    a product yet. preloadAll() will set them for the correct product.
         guard !Task.isCancelled, let first = products.first else { return }
-        if let result = CheckoutCache.shared.get(productId: first.id, userId: userId) {
+        let pk = ZeroSettle.shared.currentConfig?.publishableKey ?? ""
+        if let result = CheckoutCache.shared.get(productId: first.id, userId: userId, publishableKey: pk) {
             await preloader.loadAndWait(url: result.checkoutURL)
             preloaderProductId = first.id
         }
@@ -1576,7 +1595,7 @@ private struct UIKitSheetBridge<SheetHeader: View>: View {
                         header: header
                     ) { result in
                         if case .success = result {
-                            CheckoutCache.shared.invalidate(productId: product.id, userId: userId)
+                            CheckoutCache.shared.invalidate(productId: product.id, userId: userId, publishableKey: ZeroSettle.shared.currentConfig?.publishableKey ?? "")
                             preloadedURL = nil
                             preloadedTransactionId = nil
                         }

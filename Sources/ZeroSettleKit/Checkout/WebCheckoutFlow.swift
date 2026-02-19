@@ -10,7 +10,7 @@ import SafariServices
 import UIKit
 
 #if canImport(ZeroSettleCore)
-@_implementationOnly import ZeroSettleCore
+internal import ZeroSettleCore
 #endif
 
 // MARK: - Web Checkout Flow
@@ -68,10 +68,12 @@ internal final class WebCheckoutFlow: NSObject {
 
         case .safariVC:
             ZSLogger.debug("Opening checkout URL in SFSafariViewController", category: .iap)
-            await openInSafariVC(session.checkoutUrl)
+            await openInSafariVC(session.checkoutUrl, transactionId: session.transactionId)
 
-        case .webview:
-            // WebView handled by ZSPaymentSheet, not WebCheckoutFlow
+        case .webview, .nativePay:
+            // WebView handled by ZSPaymentSheet, not WebCheckoutFlow.
+            // nativePay falls through here when the NativePay trait isn't enabled
+            // or Apple Pay is unavailable on the device.
             ZSLogger.debug("WebView checkout - session created but not opening browser", category: .iap)
         }
 
@@ -91,7 +93,8 @@ internal final class WebCheckoutFlow: NSObject {
               Self.callbackHosts.contains(host),
               let path = components.path.removingPercentEncoding,
               path.hasPrefix(Self.callbackPathPrefix) else {
-            ZSLogger.error("Unable to handle callback due to invalid components: \(url)")
+            let host = URLComponents(url: url, resolvingAgainstBaseURL: false)?.host ?? "nil"
+            ZSLogger.debug("Universal link not handled by ZeroSettle: host=\(host), url=\(url). Expected hosts: \(Self.callbackHosts.joined(separator: ", ")) with path prefix \(Self.callbackPathPrefix)", category: .iap)
             return nil
         }
 
@@ -137,6 +140,7 @@ internal final class WebCheckoutFlow: NSObject {
     // MARK: - Private
 
     /// Open a URL in the external Safari browser.
+    /// Suspends until the user returns to the app (foreground notification).
     @MainActor
     private func openInSafari(_ url: URL) async {
         await withCheckedContinuation { continuation in
@@ -144,11 +148,32 @@ internal final class WebCheckoutFlow: NSObject {
                 continuation.resume()
             }
         }
+
+        // External Safari backgrounds the app. Suspend until the user returns
+        // so the caller can check whether the universal link callback fired.
+        // Skip if the app didn't actually background (e.g., iPad split view).
+        guard UIApplication.shared.applicationState != .active else { return }
+
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            var token: NSObjectProtocol?
+            token = NotificationCenter.default.addObserver(
+                forName: UIApplication.willEnterForegroundNotification,
+                object: nil,
+                queue: .main
+            ) { _ in
+                if let token { NotificationCenter.default.removeObserver(token) }
+                continuation.resume()
+            }
+        }
     }
 
     /// Open a URL in an SFSafariViewController presented as a sheet.
+    ///
+    /// SFSafariViewController cannot intercept server-side redirects as universal links,
+    /// so when a `transactionId` is provided we poll the transaction status in the background
+    /// and auto-dismiss the sheet once the Stripe webhook confirms payment success.
     @MainActor
-    private func openInSafariVC(_ url: URL) async {
+    private func openInSafariVC(_ url: URL, transactionId: String? = nil) async {
         guard let windowScene = UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene })
             .first(where: { $0.activationState == .foregroundActive }),
@@ -184,10 +209,35 @@ internal final class WebCheckoutFlow: NSObject {
         self.safariViewController = safari
         self.presentedSafariVC = safari
 
+        // SFSafariViewController can't intercept redirect navigations as universal links.
+        // Poll the transaction status in the background and auto-dismiss the sheet
+        // once the Stripe webhook confirms the payment succeeded.
+        let pollTask: Task<Void, Never>?
+        if let transactionId {
+            pollTask = Task { [weak self] in
+                // Give the user time to start the payment flow before polling
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                for _ in 1...20 {
+                    guard !Task.isCancelled else { return }
+                    if let txn = try? await self?.backend.getTransaction(transactionId: transactionId),
+                       txn.status == .completed || txn.status == .processing {
+                        ZSLogger.info("Transaction \(transactionId) confirmed via polling, dismissing SFSafariViewController", category: .iap)
+                        self?.dismissInlineCheckout()
+                        return
+                    }
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                }
+            }
+        } else {
+            pollTask = nil
+        }
+
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             self.inlineCheckoutContinuation = continuation
             topController.present(safari, animated: true)
         }
+
+        pollTask?.cancel()
     }
 
     /// Dismiss the inline checkout view if it's currently presented.
