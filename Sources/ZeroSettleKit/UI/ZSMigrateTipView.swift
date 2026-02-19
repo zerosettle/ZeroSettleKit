@@ -60,6 +60,17 @@ public struct ZSMigrateTipView: View {
         manager.offerData?.prompt.discountPercent ?? 15
     }
 
+    /// The savings percentage computed from the product catalog's web vs App Store prices.
+    /// Falls back to the backend-provided `discountPercent` if prices aren't available.
+    private var computedSavingsPercent: Int {
+        if let productId = manager.offerData?.prompt.productId,
+           let product = ZeroSettle.shared.products.first(where: { $0.id == productId }),
+           let percent = product.savingsPercent {
+            return percent
+        }
+        return discountPercent
+    }
+
     // MARK: - Body
 
     public var body: some View {
@@ -236,7 +247,7 @@ public struct ZSMigrateTipView: View {
             headerView(
                 icon: { Text("🎉").font(.system(size: 44)) },
                 title: "Congratulations!",
-                message: "You are now saving \(discountPercent)% forever.",
+                message: "You are now saving \(computedSavingsPercent)% forever.",
                 showCloseButton: false
             )
         }
