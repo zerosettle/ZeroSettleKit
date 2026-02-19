@@ -3,8 +3,8 @@ import UIKit
 import SwiftUI
 import ZeroSettleKit
 
-@objc(ZSSaveTheSaleModule)
-class ZSSaveTheSaleModule: NSObject {
+@objc(ZSManageSubscriptionModule)
+class ZSManageSubscriptionModule: NSObject {
 
     @objc
     static func requiresMainQueueSetup() -> Bool {
@@ -12,7 +12,7 @@ class ZSSaveTheSaleModule: NSObject {
     }
 
     @objc
-    func presentSaveTheSaleSheet(_ resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    func presentManageSubscriptionSheet(_ resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
         DispatchQueue.main.async {
             guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
                   let rootVC = windowScene.windows.first?.rootViewController else {
@@ -26,12 +26,14 @@ class ZSSaveTheSaleModule: NSObject {
                 topVC = presented
             }
 
-            ZSSaveTheSaleSheet.present(from: topVC) { result in
+            ZSManageSubscriptionSheet.present(from: topVC) { result in
                 switch result {
                 case .pauseAccount:
                     resolve("pauseAccount")
                 case .stayWithDiscount:
                     resolve("stayWithDiscount")
+                case .cancelSubscription:
+                    resolve("cancelSubscription")
                 case .dismissed:
                     resolve("dismissed")
                 }
@@ -40,7 +42,7 @@ class ZSSaveTheSaleModule: NSObject {
     }
 
     @objc
-    func dismissSaveTheSaleSheet() {
+    func dismissManageSubscriptionSheet() {
         DispatchQueue.main.async {
             guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
                   let rootVC = windowScene.windows.first?.rootViewController else {
