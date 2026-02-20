@@ -11,6 +11,11 @@ internal import ZeroSettleCore
 public struct ZSMigrateTipView: View {
     let backgroundColor: Color
     let userId: String
+    let titleFont: Font?
+    let bodyFont: Font?
+    let ctaFont: Font?
+    let borderColor: Color?
+    let onDismiss: (() -> Void)?
 
     @StateObject private var manager: ZSMigrationManager
 
@@ -45,10 +50,28 @@ public struct ZSMigrateTipView: View {
     /// - Parameters:
     ///   - backgroundColor: The background color for the view.
     ///   - userId: The user identifier passed to the checkout backend.
+    ///   - titleFont: Optional custom font for title text. When `nil`, the default system bold font is used.
+    ///   - bodyFont: Optional custom font for body/message text. When `nil`, the default system font is used.
+    ///   - ctaFont: Optional custom font for CTA button text. When `nil`, the default system bold font is used.
+    ///   - borderColor: Optional border color applied as a rounded rectangle stroke on card views. When `nil`, no border is drawn.
+    ///   - onDismiss: Optional closure invoked when the view is dismissed (close button, auto-dismiss after completion, or state becomes ineligible).
     /// - Note: Free trial days are automatically calculated based on when the user's current StoreKit subscription expires.
-    public init(backgroundColor: Color, userId: String) {
+    public init(
+        backgroundColor: Color,
+        userId: String,
+        titleFont: Font? = nil,
+        bodyFont: Font? = nil,
+        ctaFont: Font? = nil,
+        borderColor: Color? = nil,
+        onDismiss: (() -> Void)? = nil
+    ) {
         self.backgroundColor = backgroundColor
         self.userId = userId
+        self.titleFont = titleFont
+        self.bodyFont = bodyFont
+        self.ctaFont = ctaFont
+        self.borderColor = borderColor
+        self.onDismiss = onDismiss
         // Always use the shared singleton manager. getOrCreateMigrationManager guarantees
         // a single instance — whether bootstrap ran first or the view was created first.
         _manager = StateObject(wrappedValue: ZeroSettle.shared.getOrCreateMigrationManager(userId: userId))
@@ -107,6 +130,11 @@ public struct ZSMigrateTipView: View {
                 congratulationsCardView
             }
         }
+        .onChange(of: manager.state) { _, newState in
+            if newState == .dismissed {
+                onDismiss?()
+            }
+        }
     }
 
     // MARK: - Sub-views
@@ -133,7 +161,7 @@ public struct ZSMigrateTipView: View {
                                 .scaleEffect(0.8)
                         }
                         Text(manager.isLoading ? "" : (manager.offerData?.prompt.ctaText ?? "Save \(discountPercent)% Forever"))
-                            .font(.system(size: 17, weight: .bold))
+                            .font(ctaFont ?? .system(size: 17, weight: .bold))
                             .foregroundColor(backgroundColor)
                     }
                     .frame(maxWidth: .infinity)
@@ -196,6 +224,14 @@ public struct ZSMigrateTipView: View {
         }
         .background(backgroundColor)
         .cornerRadius(16)
+        .overlay(
+            Group {
+                if let borderColor {
+                    RoundedRectangle(cornerRadius: 16)
+                        .stroke(borderColor, lineWidth: 2)
+                }
+            }
+        )
     }
 
     /// Card shown after checkout succeeds with "Cancel Apple Billing" CTA.
@@ -227,7 +263,7 @@ public struct ZSMigrateTipView: View {
                 }
             }) {
                 Text("Cancel Apple Billing")
-                    .font(.system(size: 17, weight: .bold))
+                    .font(ctaFont ?? .system(size: 17, weight: .bold))
                     .foregroundColor(backgroundColor)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 12)
@@ -239,6 +275,14 @@ public struct ZSMigrateTipView: View {
         }
         .background(backgroundColor)
         .cornerRadius(16)
+        .overlay(
+            Group {
+                if let borderColor {
+                    RoundedRectangle(cornerRadius: 16)
+                        .stroke(borderColor, lineWidth: 2)
+                }
+            }
+        )
     }
 
     /// Card shown after subscription management with confetti.
@@ -253,6 +297,14 @@ public struct ZSMigrateTipView: View {
         }
         .background(backgroundColor)
         .cornerRadius(16)
+        .overlay(
+            Group {
+                if let borderColor {
+                    RoundedRectangle(cornerRadius: 16)
+                        .stroke(borderColor, lineWidth: 2)
+                }
+            }
+        )
     }
 
     /// Reusable header with icon, title, message, and optional close button.
@@ -268,7 +320,7 @@ public struct ZSMigrateTipView: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .top, spacing: 8) {
                     Text(title)
-                        .font(.system(size: 20, weight: .bold))
+                        .font(titleFont ?? .system(size: 20, weight: .bold))
                         .foregroundColor(.white)
                         .lineLimit(1)
                         .minimumScaleFactor(0.5)
@@ -290,7 +342,7 @@ public struct ZSMigrateTipView: View {
                 }
 
                 Text(message)
-                    .font(.system(size: 16))
+                    .font(bodyFont ?? .system(size: 16))
                     .foregroundColor(.white.opacity(0.85))
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -305,11 +357,15 @@ public struct ZSMigrateTipView: View {
     private func openSubscriptionManagement() async {
         await manager.showAppleSubscriptionManagement()
 
-        // Show congratulations state with confetti
+        // Show congratulations state with confetti.
+        // The trigger increment must be deferred so the congratulationsCardView
+        // renders first and the confettiCannon observes the 0→1 change.
         withAnimation(.easeInOut(duration: 0.3)) {
             showCongratulations = true
         }
-        confettiTrigger += 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            self.confettiTrigger += 1
+        }
 
         // Auto-dismiss after 5 seconds
         DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {

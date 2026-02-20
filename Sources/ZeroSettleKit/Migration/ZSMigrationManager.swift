@@ -54,6 +54,17 @@ public final class ZSMigrationManager: ObservableObject {
     /// The user identifier for this migration flow.
     public let userId: String
 
+    // MARK: - Demo Mode
+
+    /// Enables demo mode for previewing the migration UI without an active StoreKit subscription.
+    ///
+    /// When `true`, ``evaluateEligibility()`` skips the active StoreKit subscription check and
+    /// the "no active web entitlements" check, synthesizing a demo ``MigrationPrompt`` instead.
+    /// The SDK must still be configured and bootstrapped, and the dismissed check is still respected.
+    ///
+    /// Set this before calling ``ZeroSettle/bootstrap(userId:)`` for best results.
+    public static var demoMode: Bool = false
+
     // MARK: - Persistence
 
     private static let dismissedKey = "com.zerosettle.migrateTipDismissed"
@@ -104,6 +115,12 @@ public final class ZSMigrationManager: ObservableObject {
     /// Re-evaluates eligibility. Only runs when state is `.ineligible` or `.eligible`
     /// (mid-flow states are locked to prevent disruption).
     private func evaluateEligibility() {
+        // Demo mode: force out of dismissed state so re-evaluation can proceed
+        if Self.demoMode && state == .dismissed {
+            ZSLogger.info("[ZSMigrationManager] Demo mode — resetting dismissed state", category: .iap)
+            state = .loading
+        }
+
         let previousState = state
 
         // Don't re-evaluate during active flow
@@ -114,13 +131,37 @@ public final class ZSMigrationManager: ObservableObject {
 
         let iap = ZeroSettle.shared
 
-        ZSLogger.info("[ZSMigrationManager] evaluateEligibility() running — currentState=.\(state), isBootstrapped=\(iap.isBootstrapped), isConfigured=\(iap.isConfigured), isPermanentlyDismissed=\(Self.isPermanentlyDismissed), isSandbox=\(iap.isSandbox)", category: .iap)
+        ZSLogger.info("[ZSMigrationManager] evaluateEligibility() running — currentState=.\(state), isBootstrapped=\(iap.isBootstrapped), isConfigured=\(iap.isConfigured), isPermanentlyDismissed=\(Self.isPermanentlyDismissed), isSandbox=\(iap.isSandbox), demoMode=\(Self.demoMode)", category: .iap)
 
         // Must be bootstrapped — stay in .loading until bootstrap completes
         guard iap.isBootstrapped else {
             state = .loading
             offerData = nil
             ZSLogger.info("[ZSMigrationManager] → .loading — waiting for bootstrap", category: .iap)
+            return
+        }
+
+        // Demo mode: skip dismissal check, entitlement checks, and synthesize a demo offer
+        if Self.demoMode {
+            ZSLogger.info("[ZSMigrationManager] 🎭 Demo mode active — skipping dismissal and entitlement checks", category: .iap)
+
+            let prompt = MigrationPrompt(
+                productId: "wizzGoldWeekly",
+                discountPercent: 15,
+                title: "Switch & Save",
+                message: "Switch to direct billing and get 15% off forever. Same features, fewer platform fees, and we pass the savings onto you.",
+                ctaText: "Save 15% Forever"
+            )
+
+            let data = MigrationOffer.OfferData(
+                prompt: prompt,
+                freeTrialDays: 7,
+                activeStoreKitProductId: "wizzGoldWeekly"
+            )
+
+            state = .eligible
+            offerData = data
+            ZSLogger.info("[ZSMigrationManager] .\(previousState) → .eligible — demo mode (productId=wizzGoldWeekly, discount=15%, freeTrialDays=7)", category: .iap)
             return
         }
 
