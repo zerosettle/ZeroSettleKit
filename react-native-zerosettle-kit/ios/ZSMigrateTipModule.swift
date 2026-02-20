@@ -31,7 +31,7 @@ class ZSMigrateTipModule: NSObject {
             let swiftUIColor = Color(uiColor)
 
             // Create the SwiftUI view
-            let migrateTipView = ZSMigrateTipView(backgroundColor: swiftUIColor, userId: userId)
+            let migrateTipView = ZSMigrateTipView(userId: userId, backgroundColor: swiftUIColor)
             
             // Wrap in a hosting controller
             let hostingController = UIHostingController(rootView: 

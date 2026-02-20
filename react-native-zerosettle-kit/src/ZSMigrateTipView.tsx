@@ -8,15 +8,15 @@ import {
 
 export interface ZSMigrateTipViewProps {
   /**
+   * The user identifier passed to the checkout backend.
+   */
+  userId: string;
+
+  /**
    * Background color for the tip view in hex format (e.g., "#FF5733")
    * @default "#000000"
    */
   backgroundColorHex?: string;
-
-  /**
-   * The user identifier passed to the checkout backend.
-   */
-  userId: string;
 
   /**
    * Style for the container view
@@ -51,8 +51,8 @@ const NativeZSMigrateTipView =
  * function MyComponent() {
  *   return (
  *     <ZSMigrateTipView
- *       backgroundColorHex="#1E1E1E"
  *       userId="my_user_id"
+ *       backgroundColorHex="#1E1E1E"
  *       style={{ marginHorizontal: 16 }}
  *     />
  *   );
@@ -60,8 +60,8 @@ const NativeZSMigrateTipView =
  * ```
  */
 export function ZSMigrateTipView({
-  backgroundColorHex = '#000000',
   userId,
+  backgroundColorHex = '#000000',
   style,
 }: ZSMigrateTipViewProps) {
   if (Platform.OS !== 'ios' || !NativeZSMigrateTipView) {

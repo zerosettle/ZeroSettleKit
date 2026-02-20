@@ -9,8 +9,8 @@ internal import ZeroSettleCore
 
 // MARK: - Expandable Web Billing Tip View
 public struct ZSMigrateTipView: View {
-    let backgroundColor: Color
     let userId: String
+    let backgroundColor: Color
     let titleFont: Font?
     let bodyFont: Font?
     let ctaFont: Font?
@@ -48,8 +48,8 @@ public struct ZSMigrateTipView: View {
     /// instance if bootstrap hasn't run yet.
     ///
     /// - Parameters:
-    ///   - backgroundColor: The background color for the view.
     ///   - userId: The user identifier passed to the checkout backend.
+    ///   - backgroundColor: The background color for the view. Defaults to `.black`.
     ///   - titleFont: Optional custom font for title text. When `nil`, the default system bold font is used.
     ///   - bodyFont: Optional custom font for body/message text. When `nil`, the default system font is used.
     ///   - ctaFont: Optional custom font for CTA button text. When `nil`, the default system bold font is used.
@@ -57,16 +57,16 @@ public struct ZSMigrateTipView: View {
     ///   - onDismiss: Optional closure invoked when the view is dismissed (close button, auto-dismiss after completion, or state becomes ineligible).
     /// - Note: Free trial days are automatically calculated based on when the user's current StoreKit subscription expires.
     public init(
-        backgroundColor: Color,
         userId: String,
+        backgroundColor: Color = .black,
         titleFont: Font? = nil,
         bodyFont: Font? = nil,
         ctaFont: Font? = nil,
         borderColor: Color? = nil,
         onDismiss: (() -> Void)? = nil
     ) {
-        self.backgroundColor = backgroundColor
         self.userId = userId
+        self.backgroundColor = backgroundColor
         self.titleFont = titleFont
         self.bodyFont = bodyFont
         self.ctaFont = ctaFont

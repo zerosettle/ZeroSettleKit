@@ -29,7 +29,7 @@ public final class ZSMigrateTipViewContainer: UIView {
         let uiColor = UIColor(hex: backgroundColorHex as String) ?? .black
         let swiftUIColor = Color(uiColor)
 
-        let root = ZSMigrateTipView(backgroundColor: swiftUIColor, userId: userId as String)
+        let root = ZSMigrateTipView(userId: userId as String, backgroundColor: swiftUIColor)
         let any = AnyView(root)
 
         let hc = UIHostingController(rootView: any)
@@ -55,7 +55,7 @@ public final class ZSMigrateTipViewContainer: UIView {
         let uiColor = UIColor(hex: backgroundColorHex as String) ?? .black
         let swiftUIColor = Color(uiColor)
 
-        let root = ZSMigrateTipView(backgroundColor: swiftUIColor, userId: userId as String)
+        let root = ZSMigrateTipView(userId: userId as String, backgroundColor: swiftUIColor)
         hc.rootView = AnyView(root)
         hc.view.invalidateIntrinsicContentSize()
         setNeedsLayout()
