@@ -17,7 +17,7 @@ public struct MigrationTipView: View {
     let borderColor: Color?
     let onDismiss: (() -> Void)?
 
-    @StateObject private var manager: MigrationManager
+    @StateObject private var manager: ZSMigrationManager
 
     // MARK: - UI-only State
 
@@ -34,7 +34,7 @@ public struct MigrationTipView: View {
 
     /// Creates a new migrate tip view.
     ///
-    /// Uses the shared ``MigrationManager`` from ``ZeroSettle/shared/migrationManager``
+    /// Uses the shared ``ZSMigrationManager`` from ``ZeroSettle/shared/migrationManager``
     /// (created during ``ZeroSettle/bootstrap(userId:)``). Falls back to creating a local
     /// instance if bootstrap hasn't run yet.
     ///

@@ -1,5 +1,5 @@
 //
-//  Product.swift
+//  ZSProduct.swift
 //  ZeroSettleKit
 //
 //  Product models for web checkout offerings.
@@ -8,11 +8,11 @@
 import Foundation
 import StoreKit
 
-// MARK: - Product
+// MARK: - ZSProduct
 
 /// A product available for web checkout via ZeroSettle.
 /// The `id` matches the StoreKit product identifier configured on the ZeroSettle dashboard.
-public struct Product: Identifiable, Sendable {
+public struct ZSProduct: Identifiable, Sendable {
 
     // MARK: - Nested Types
 
@@ -100,7 +100,7 @@ public struct Product: Identifiable, Sendable {
 
 // MARK: - Codable
 
-extension Product: Codable {
+extension ZSProduct: Codable {
     private enum CodingKeys: String, CodingKey {
         case id
         case displayName
@@ -140,8 +140,8 @@ extension Product: Codable {
 
 // MARK: - Equatable
 
-extension Product: Equatable {
-    public static func == (lhs: Product, rhs: Product) -> Bool {
+extension ZSProduct: Equatable {
+    public static func == (lhs: ZSProduct, rhs: ZSProduct) -> Bool {
         // Compare all codable properties (ignoring internal _storeKitProduct)
         lhs.id == rhs.id &&
         lhs.displayName == rhs.displayName &&

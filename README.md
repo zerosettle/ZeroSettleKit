@@ -222,7 +222,7 @@ Web checkout callbacks require universal links. Add an Apple App Site Associatio
 | Type | Description |
 |------|-------------|
 | `ZeroSettle` | Main SDK singleton — configure, fetch, purchase, restore |
-| `Product` | A purchasable item with web and App Store pricing |
+| `ZSProduct` | A purchasable item with web and App Store pricing |
 | `Entitlement` | An active access right with source tracking (`.webCheckout` or `.storeKit`) |
 | `ZSTransaction` | Result of a completed purchase |
 | `ZSPaymentSheet` | SwiftUI payment sheet component |

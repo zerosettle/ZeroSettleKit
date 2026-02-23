@@ -219,7 +219,7 @@ public final class ZeroSettle: ObservableObject {
     @Published public private(set) var isConfigured: Bool = false
 
     /// Cached products from the last `fetchProducts()` call.
-    @Published public private(set) var products: [Product] = []
+    @Published public private(set) var products: [ZSProduct] = []
 
     /// Current entitlements (merged from StoreKit and web checkout sources).
     ///
@@ -247,7 +247,7 @@ public final class ZeroSettle: ObservableObject {
     /// Migration manager for the StoreKit → web checkout migration flow.
     /// Access via ``migrationManager(for:)`` to guarantee a single shared instance.
     /// Starts in `.loading` and transitions after bootstrap completes.
-    @Published public private(set) var migrationManager: MigrationManager?
+    @Published public private(set) var migrationManager: ZSMigrationManager?
 
     // MARK: - Async Observation
 
@@ -332,7 +332,7 @@ public final class ZeroSettle: ObservableObject {
     // MARK: - Private Helpers
 
     /// Throws ``ZeroSettleError/userIdRequired(productId:)`` when a `userId` is needed but absent.
-    private func validateUserIdIfRequired(for product: Product, userId: String?) throws {
+    private func validateUserIdIfRequired(for product: ZSProduct, userId: String?) throws {
         guard userId == nil else { return }
         guard product.type == .autoRenewableSubscription
            || product.type == .nonRenewingSubscription
@@ -488,11 +488,11 @@ public final class ZeroSettle: ObservableObject {
     /// to `.eligible` or `.ineligible` once bootstrap completes (via Combine).
     ///
     /// - Parameter userId: Your app's user identifier
-    /// - Returns: The shared ``MigrationManager``
+    /// - Returns: The shared ``ZSMigrationManager``
     @discardableResult
-    public func migrationManager(for userId: String) -> MigrationManager {
+    public func migrationManager(for userId: String) -> ZSMigrationManager {
         if let existing = migrationManager { return existing }
-        let manager = MigrationManager(userId: userId)
+        let manager = ZSMigrationManager(userId: userId)
         migrationManager = manager
         return manager
     }
@@ -534,7 +534,7 @@ public final class ZeroSettle: ObservableObject {
             if let storeKitManager, !allProductIds.isEmpty {
                 let skProducts = await storeKitManager.fetchProducts(for: allProductIds)
 
-                // 4. Attach StoreKit products to our Product models
+                // 4. Attach StoreKit products to our ZSProduct models
                 // Products that exist in StoreKit get _storeKitProduct populated
                 // Products that don't exist remain web-only
                 for i in products.indices {
@@ -754,7 +754,7 @@ public final class ZeroSettle: ObservableObject {
 
     /// Purchase a product via native StoreKit 2.
     ///
-    /// Use this for products synced to App Store Connect where ``Product/storeKitAvailable`` is `true`.
+    /// Use this for products synced to App Store Connect where ``ZSProduct/storeKitAvailable`` is `true`.
     ///
     /// - Important: `userId` is **required** for subscriptions and non-consumable products.
     ///   Passing `nil` for these product types throws ``ZeroSettleError/userIdRequired(productId:)``.

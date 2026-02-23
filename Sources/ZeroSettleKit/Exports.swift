@@ -21,9 +21,9 @@ import SwiftUI
 // From ZeroSettleDelegate.swift:
 //   - ZeroSettleDelegate
 //
-// From Models/Product.swift:
-//   - Product (includes savingsPercent, storeKitPrice, storeKitAvailable)
-//   - Product.ProductType
+// From Models/ZSProduct.swift:
+//   - ZSProduct (includes savingsPercent, storeKitPrice, storeKitAvailable)
+//   - ZSProduct.ProductType
 //   - Price
 //
 // From Models/ProductCatalog.swift:
@@ -80,7 +80,7 @@ import SwiftUI
 //   - RetentionResult
 //
 // From Migration/ZSMigrationManager.swift:
-//   - MigrationManager
+//   - ZSMigrationManager
 //
 // From UI/ZSMigrateTipView.swift:
 //   - MigrationTipView
@@ -102,8 +102,8 @@ import SwiftUI
 // These aliases provide source compatibility for code written against
 // the pre-1.0 API. They will be removed in a future major version.
 
-@available(*, deprecated, renamed: "Product")
-public typealias ZSProduct = Product
+@available(*, deprecated, renamed: "ZSProduct")
+public typealias Product = ZSProduct
 
 @available(*, deprecated, renamed: "CheckoutTransaction")
 public typealias ZSTransaction = CheckoutTransaction
@@ -114,8 +114,8 @@ public typealias ZSError = ZeroSettleError
 @available(*, deprecated, renamed: "CheckoutSheet")
 public typealias ZSPaymentSheet = CheckoutSheet
 
-@available(*, deprecated, renamed: "MigrationManager")
-public typealias ZSMigrationManager = MigrationManager
+@available(*, deprecated, renamed: "ZSMigrationManager")
+public typealias MigrationManager = ZSMigrationManager
 
 @available(*, deprecated, renamed: "MigrationTipView")
 public typealias ZSMigrateTipView = MigrationTipView
@@ -134,7 +134,7 @@ extension View {
     @available(*, deprecated, renamed: "checkoutSheet(isPresented:product:userId:freeTrialDays:dismissible:preload:onComplete:)")
     public func zsPaymentSheet(
         isPresented: Binding<Bool>,
-        product: Product,
+        product: ZSProduct,
         userId: String? = nil,
         freeTrialDays: Int = 0,
         dismissible: Bool = true,
@@ -199,7 +199,7 @@ extension ZeroSettle {
 
     /// Deprecated: use ``migrationManager(for:)`` instead.
     @available(*, deprecated, renamed: "migrationManager(for:)")
-    public func getOrCreateMigrationManager(userId: String) -> MigrationManager {
+    public func getOrCreateMigrationManager(userId: String) -> ZSMigrationManager {
         migrationManager(for: userId)
     }
 }

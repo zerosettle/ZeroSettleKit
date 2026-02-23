@@ -551,7 +551,7 @@ internal final class Backend: @unchecked Sendable {
 // MARK: - Request/Response Models
 
 private struct ProductsResponse: Decodable {
-    let products: [Product]
+    let products: [ZSProduct]
     let config: ConfigResponse?
 }
 

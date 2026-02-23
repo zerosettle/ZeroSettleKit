@@ -11,13 +11,13 @@ import Foundation
 /// Contains both the product list and any remote configuration returned by the backend in a single response.
 public struct ProductCatalog: Sendable {
     /// Products with web prices, StoreKit prices, and any active promotions.
-    public let products: [Product]
+    public let products: [ZSProduct]
 
     /// Remote configuration (checkout type, migration campaign, etc.).
     /// Non-nil when `userId` was passed to `fetchProducts(userId:)`.
     public let config: RemoteConfig?
 
-    public init(products: [Product], config: RemoteConfig?) {
+    public init(products: [ZSProduct], config: RemoteConfig?) {
         self.products = products
         self.config = config
     }

@@ -303,7 +303,7 @@ public enum PaymentSheetPreload: Sendable {
     /// Preload all products from `ZeroSettle.shared.products`.
     case all
     /// Preload only the specified products.
-    case specified([Product])
+    case specified([ZSProduct])
 }
 
 // MARK: - Payment Sheet
@@ -316,7 +316,7 @@ public struct CheckoutSheet<Header: View>: View {
 
     // MARK: - Configuration
 
-    private let product: Product
+    private let product: ZSProduct
     private let userId: String?
     private let freeTrialDays: Int
     private let dismissible: Bool
@@ -343,7 +343,7 @@ public struct CheckoutSheet<Header: View>: View {
     // MARK: - Public Initialization (without preloading)
 
     public init(
-        product: Product,
+        product: ZSProduct,
         userId: String? = nil,
         freeTrialDays: Int,
         dismissible: Bool = true,
@@ -371,7 +371,7 @@ public struct CheckoutSheet<Header: View>: View {
     // MARK: - Internal Initialization (with preloaded WebView)
 
     fileprivate init(
-        product: Product,
+        product: ZSProduct,
         userId: String? = nil,
         freeTrialDays: Int,
         dismissible: Bool = true,
@@ -402,7 +402,7 @@ public struct CheckoutSheet<Header: View>: View {
 extension CheckoutSheet where Header == EmptyView {
     /// Creates a payment sheet without a native header — shows only payment buttons.
     public init(
-        product: Product,
+        product: ZSProduct,
         userId: String? = nil,
         freeTrialDays: Int,
         dismissible: Bool = true,
@@ -1046,7 +1046,7 @@ internal enum PaymentSheetError: Error, LocalizedError {
 /// The user sees a fully-rendered checkout the moment it slides up.
 private struct CheckoutSheetModifier<Header: View>: ViewModifier {
     @Binding var isPresented: Bool
-    let product: Product
+    let product: ZSProduct
     let userId: String?
     let freeTrialDays: Int
     let dismissible: Bool
@@ -1170,7 +1170,7 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
     }
 
     private func preloadProducts(_ preload: PaymentSheetPreload) async {
-        let products: [Product]
+        let products: [ZSProduct]
         switch preload {
         case .all:
             products = await ZeroSettle.shared.products
@@ -1205,7 +1205,7 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
 
 // MARK: - Item-Based Modifier
 
-/// Presents the payment sheet driven by an optional `Product?` binding.
+/// Presents the payment sheet driven by an optional `ZSProduct?` binding.
 /// When `item` becomes non-nil the sheet presents; on dismiss it's set back to `nil`.
 ///
 /// Unlike `CheckoutSheetModifier`, this modifier owns its own preloader directly
@@ -1213,7 +1213,7 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
 /// the preloader object isn't recreated on each open, and cached PaymentIntent data
 /// is preserved for instant re-opens.
 private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
-    @Binding var item: Product?
+    @Binding var item: ZSProduct?
     let userId: String?
     let freeTrialDays: Int
     let dismissible: Bool
@@ -1226,7 +1226,7 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
     @State private var preloadedURL: URL?
     @State private var preloadedTransactionId: String?
     @State private var preloaderProductId: String?
-    @State private var presentedProduct: Product?
+    @State private var presentedProduct: ZSProduct?
 
     func body(content: Content) -> some View {
         content
@@ -1293,7 +1293,7 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
             }
     }
 
-    private func preloadAll(product: Product) async {
+    private func preloadAll(product: ZSProduct) async {
         let checkoutType = ZeroSettle.shared.checkoutType
 
         // Safari / SafariVC — delegate to purchase() which opens the browser
@@ -1342,7 +1342,7 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
     }
 
     private func preloadProducts(_ preload: PaymentSheetPreload) async {
-        let products: [Product]
+        let products: [ZSProduct]
         switch preload {
         case .all:
             products = await ZeroSettle.shared.products
@@ -1385,7 +1385,7 @@ extension View {
     ///   created as soon as the view enters the hierarchy (e.g. at app launch if on the root view).
     public func checkoutSheet(
         isPresented: Binding<Bool>,
-        product: Product,
+        product: ZSProduct,
         userId: String? = nil,
         freeTrialDays: Int = 0,
         dismissible: Bool = true,
@@ -1410,7 +1410,7 @@ extension View {
     ///   created as soon as the view enters the hierarchy.
     public func checkoutSheet<Header: View>(
         isPresented: Binding<Bool>,
-        product: Product,
+        product: ZSProduct,
         userId: String? = nil,
         freeTrialDays: Int = 0,
         dismissible: Bool = true,
@@ -1442,7 +1442,7 @@ extension View {
     ///         print(result)
     ///     }
     public func checkoutSheet(
-        item: Binding<Product?>,
+        item: Binding<ZSProduct?>,
         userId: String? = nil,
         freeTrialDays: Int = 0,
         dismissible: Bool = true,
@@ -1465,7 +1465,7 @@ extension View {
     /// - Parameter preload: Optional declarative preloading. When set, payment intents are
     ///   created as soon as the view enters the hierarchy.
     public func checkoutSheet<Header: View>(
-        item: Binding<Product?>,
+        item: Binding<ZSProduct?>,
         userId: String? = nil,
         freeTrialDays: Int = 0,
         dismissible: Bool = true,
@@ -1492,7 +1492,7 @@ extension CheckoutSheet where Header == EmptyView {
     @MainActor
     public static func present(
         from viewController: UIViewController,
-        product: Product,
+        product: ZSProduct,
         userId: String? = nil,
         freeTrialDays: Int = 0,
         dismissible: Bool = true,
@@ -1522,7 +1522,7 @@ extension CheckoutSheet {
     @MainActor
     public static func present<H: View>(
         from viewController: UIViewController,
-        product: Product,
+        product: ZSProduct,
         userId: String? = nil,
         freeTrialDays: Int = 0,
         dismissible: Bool = true,
@@ -1559,7 +1559,7 @@ extension CheckoutSheet {
 /// Mirrors the preloading behavior of `CheckoutSheetModifier` so the
 /// user sees a fully-rendered checkout the moment the sheet slides up.
 private struct UIKitSheetBridge<SheetHeader: View>: View {
-    let product: Product
+    let product: ZSProduct
     let userId: String?
     let freeTrialDays: Int
     let dismissible: Bool
@@ -1662,7 +1662,7 @@ private struct UIKitSheetBridge<SheetHeader: View>: View {
 struct CheckoutSheet_Previews: PreviewProvider {
     static var previews: some View {
         CheckoutSheet(
-            product: Product(
+            product: ZSProduct(
                 id: "premium_monthly",
                 displayName: "Premium Monthly",
                 productDescription: "Unlock all features",

@@ -1,5 +1,5 @@
 //
-//  MigrationManager.swift
+//  ZSMigrationManager.swift
 //  ZeroSettleKit
 //
 //  Observable manager for the StoreKit → web checkout migration flow.
@@ -23,7 +23,7 @@ internal import ZeroSettleCore
 /// custom UIs, or let ``MigrationTipView`` use it internally.
 ///
 /// ```swift
-/// @StateObject private var migration = MigrationManager(userId: "user_42")
+/// @StateObject private var migration = ZSMigrationManager(userId: "user_42")
 ///
 /// var body: some View {
 ///     if migration.state == .eligible, let offer = migration.offerData {
@@ -33,7 +33,7 @@ internal import ZeroSettleCore
 /// }
 /// ```
 @MainActor
-public final class MigrationManager: ObservableObject {
+public final class ZSMigrationManager: ObservableObject {
 
     // MARK: - Published State
 
