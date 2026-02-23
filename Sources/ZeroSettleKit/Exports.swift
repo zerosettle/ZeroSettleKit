@@ -102,9 +102,6 @@ import SwiftUI
 // These aliases provide source compatibility for code written against
 // the pre-1.0 API. They will be removed in a future major version.
 
-@available(*, deprecated, renamed: "ZSProduct")
-public typealias Product = ZSProduct
-
 @available(*, deprecated, renamed: "CheckoutTransaction")
 public typealias ZSTransaction = CheckoutTransaction
 
