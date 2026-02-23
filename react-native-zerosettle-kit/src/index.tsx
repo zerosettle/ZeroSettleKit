@@ -9,6 +9,29 @@ export { presentMigrateTip, dismissMigrateTip } from './ZSMigrateTipModule';
 export { presentManageSubscriptionSheet, dismissManageSubscriptionSheet } from './ZSManageSubscriptionModule';
 export type { ZSManageSubscriptionResult } from './ZSManageSubscriptionModule';
 
+// Headless cancel flow primitives
+export {
+  getCancelFlowConfig,
+  acceptSaveOffer,
+  submitCancelFlowResponse,
+  pauseSubscription,
+  resumeSubscription,
+  cancelSubscription,
+  openCustomerPortal,
+} from './ZSCancelFlowModule';
+export type {
+  CancelFlowConfig,
+  CancelFlowQuestion,
+  CancelFlowOption,
+  CancelFlowOffer,
+  CancelFlowPause,
+  CancelFlowPauseOption,
+  SaveOfferResult,
+  CancelFlowOutcome,
+  CancelFlowAnswer,
+  CancelFlowResponse,
+} from './ZSCancelFlowModule';
+
 // Re-export the Fabric component for new architecture users
 export { default as ZerosettleKitView } from './ZerosettleKitViewNativeComponent';
 export * from './ZerosettleKitViewNativeComponent';

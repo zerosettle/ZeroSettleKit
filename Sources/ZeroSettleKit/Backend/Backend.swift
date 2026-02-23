@@ -375,6 +375,22 @@ internal final class Backend: @unchecked Sendable {
         try await httpClient.executeVoid(request)
     }
 
+    /// Accept the save offer for a cancel flow, applying the discount on Stripe.
+    func acceptSaveOffer(productId: String, userId: String) async throws -> AcceptSaveOfferResponse {
+        let url = apiURL("iap/cancel-flow/accept-offer/")
+        let body = AcceptSaveOfferRequest(productId: productId, userId: userId)
+        do {
+            return try await httpClient.post(
+                url,
+                body: body,
+                headers: authHeaders,
+                responseType: AcceptSaveOfferResponse.self
+            )
+        } catch {
+            throw Backend.wrapError(error)
+        }
+    }
+
     // MARK: - Subscription Pause/Resume/Cancel
 
     /// Pause a subscription for the given product and user.
@@ -415,13 +431,14 @@ internal final class Backend: @unchecked Sendable {
         try await httpClient.executeVoid(request)
     }
 
-    /// Cancel a subscription immediately.
+    /// Cancel a subscription.
     /// - Parameters:
     ///   - productId: The product to cancel
     ///   - userId: The user who owns the subscription
-    func cancelSubscription(productId: String, userId: String) async throws {
+    ///   - immediate: If `true`, cancel immediately. If `false`, cancel at period end.
+    func cancelSubscription(productId: String, userId: String, immediate: Bool) async throws {
         let url = apiURL("iap/subscriptions/cancel/")
-        let body = CancelSubscriptionRequest(productId: productId, userId: userId)
+        let body = CancelSubscriptionRequest(productId: productId, userId: userId, immediate: immediate)
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -655,6 +672,18 @@ internal struct ResumeSubscriptionRequest: Encodable {
 internal struct CancelSubscriptionRequest: Encodable {
     let productId: String
     let userId: String
+    let immediate: Bool
+}
+
+internal struct AcceptSaveOfferRequest: Encodable {
+    let productId: String
+    let userId: String
+}
+
+internal struct AcceptSaveOfferResponse: Decodable {
+    let message: String
+    let discountPercent: Int?
+    let durationMonths: Int?
 }
 
 internal struct UpgradeOfferExecuteResponse: Decodable {

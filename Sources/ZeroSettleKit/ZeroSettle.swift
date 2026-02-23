@@ -244,6 +244,11 @@ public final class ZeroSettle: ObservableObject {
     /// Whether ``bootstrap(userId:)`` has completed.
     @Published public private(set) var isBootstrapped: Bool = false
 
+    /// Cached cancel flow configuration from the backend.
+    /// Populated during ``bootstrap(userId:)`` so it's immediately available
+    /// for building custom cancel flow UI without an extra network call.
+    @Published public private(set) var cancelFlowConfig: CancelFlow.Config?
+
     /// Migration manager for the StoreKit → web checkout migration flow.
     /// Access via ``migrationManager(for:)`` to guarantee a single shared instance.
     /// Starts in `.loading` and transitions after bootstrap completes.
@@ -462,9 +467,14 @@ public final class ZeroSettle: ObservableObject {
             await storeKitManager.syncCurrentTransactions(userId: userId)
         }
 
-        // 2. Fetch products — the backend can now check migration eligibility
-        //    because the Identity was created by the sync above.
-        let catalog = try await fetchProducts(userId: userId)
+        // 2. Fetch products + cancel flow config in parallel.
+        //    Products can now check migration eligibility because the Identity
+        //    was created by the sync above.
+        async let catalogTask = fetchProducts(userId: userId)
+        async let cancelFlowTask: Void = loadCancelFlowConfig()
+
+        let catalog = try await catalogTask
+        await cancelFlowTask
 
         // 3. Restore entitlements (local StoreKit + web checkout).
         try await restoreEntitlements(userId: userId)
@@ -970,19 +980,25 @@ public final class ZeroSettle: ObservableObject {
     /// - Parameters:
     ///   - productId: The product the user wants to cancel
     ///   - userId: Your app's user identifier
-    /// - Returns: The cancel flow outcome (`.cancelled`, `.retained`, or `.dismissed`)
+    /// - Returns: The cancel flow outcome (`.cancelled`, `.retained`, `.paused`, or `.dismissed`)
     public func presentCancelFlow(productId: String, userId: String) async -> CancelFlow.Result {
         guard let backend else {
             ZSLogger.error("presentCancelFlow called but SDK not configured", category: .iap)
             return .cancelled
         }
 
+        // Use cached config if available, otherwise fetch
         let config: CancelFlow.Config
-        do {
-            config = try await backend.fetchCancelFlow()
-        } catch {
-            ZSLogger.error("Failed to fetch cancel flow config: \(error)", category: .iap)
-            return .cancelled
+        if let cached = cancelFlowConfig {
+            config = cached
+        } else {
+            do {
+                config = try await backend.fetchCancelFlow()
+                cancelFlowConfig = config
+            } catch {
+                ZSLogger.error("Failed to fetch cancel flow config: \(error)", category: .iap)
+                return .cancelled
+            }
         }
 
         guard config.enabled, !config.questions.isEmpty else {
@@ -1009,6 +1025,9 @@ public final class ZeroSettle: ObservableObject {
     /// Use this for building custom cancel/pause UI while still using ZeroSettle's
     /// backend configuration. Returns the full config including questions, offer, and pause options.
     ///
+    /// After ``bootstrap(userId:)``, the config is also available synchronously via
+    /// the ``cancelFlowConfig`` published property.
+    ///
     /// - Returns: The cancel flow ``CancelFlow/Config``
     public func fetchCancelFlowConfig() async throws -> CancelFlow.Config {
         guard let backend else {
@@ -1017,11 +1036,88 @@ public final class ZeroSettle: ObservableObject {
 
         do {
             let config = try await backend.fetchCancelFlow()
+            cancelFlowConfig = config
             ZSLogger.info("Fetched cancel flow config: enabled=\(config.enabled), questions=\(config.questions.count), pause=\(config.pause?.enabled ?? false)", category: .iap)
             return config
         } catch {
             ZSLogger.error("Failed to fetch cancel flow config: \(error)", category: .iap)
             throw Backend.wrapError(error)
+        }
+    }
+
+    /// Accept the save offer for a subscription, applying the configured discount via Stripe.
+    ///
+    /// Call this when a user accepts the retention offer in your custom cancel flow UI.
+    /// The backend applies the discount coupon from the dashboard config to the user's
+    /// Stripe subscription.
+    ///
+    /// On success, refreshes entitlements automatically.
+    ///
+    /// - Parameters:
+    ///   - productId: The product the user was about to cancel
+    ///   - userId: Your app's user identifier
+    /// - Returns: A ``CancelFlow/SaveOfferResult`` with details of the applied discount
+    public func acceptSaveOffer(productId: String, userId: String) async throws -> CancelFlow.SaveOfferResult {
+        guard let backend else {
+            throw ZeroSettleError.notConfigured
+        }
+
+        do {
+            let response = try await backend.acceptSaveOffer(productId: productId, userId: userId)
+            ZSLogger.info("Save offer accepted: product=\(productId), message=\(response.message)", category: .iap)
+
+            // Refresh entitlements to reflect the updated subscription
+            _ = try? await restoreEntitlements(userId: userId)
+
+            return CancelFlow.SaveOfferResult(
+                message: response.message,
+                discountPercent: response.discountPercent,
+                durationMonths: response.durationMonths
+            )
+        } catch {
+            ZSLogger.error("Failed to accept save offer: \(error)", category: .iap)
+            throw Backend.wrapError(error)
+        }
+    }
+
+    /// Submit a cancel flow response for analytics tracking.
+    ///
+    /// Use this when building custom cancel flow UI to report the user's answers and
+    /// outcome back to ZeroSettle for funnel analytics in the dashboard.
+    ///
+    /// This is fire-and-forget — errors are logged but not thrown.
+    ///
+    /// - Parameter response: The cancel flow response with answers and outcome
+    public func submitCancelFlowResponse(_ response: CancelFlow.Response) async {
+        guard let backend else {
+            ZSLogger.error("submitCancelFlowResponse called but SDK not configured", category: .iap)
+            return
+        }
+
+        let payload = CancelFlow.ResponsePayload(
+            userId: response.userId,
+            productId: response.productId,
+            outcome: response.outcome.rawValue,
+            offerShown: response.offerShown,
+            offerAccepted: response.offerAccepted,
+            pauseShown: response.pauseShown,
+            pauseAccepted: response.pauseAccepted,
+            pauseDurationDays: response.pauseDurationDays,
+            lastStepSeen: 0,
+            answers: response.answers.map {
+                CancelFlow.AnswerPayload(
+                    questionId: $0.questionId,
+                    selectedOptionId: $0.selectedOptionId,
+                    freeText: $0.freeText
+                )
+            }
+        )
+
+        do {
+            try await backend.submitCancelFlowResponse(payload)
+            ZSLogger.debug("Cancel flow response submitted", category: .iap)
+        } catch {
+            ZSLogger.error("Failed to submit cancel flow response: \(error)", category: .iap)
         }
     }
 
@@ -1082,7 +1178,7 @@ public final class ZeroSettle: ObservableObject {
         }
     }
 
-    /// Cancel a subscription immediately.
+    /// Cancel a subscription.
     ///
     /// Sends a cancellation request to the backend. On success, refreshes entitlements automatically.
     /// For a cancel flow with UI (questionnaire + retention), use ``presentCancelFlow(productId:userId:)`` instead.
@@ -1090,14 +1186,15 @@ public final class ZeroSettle: ObservableObject {
     /// - Parameters:
     ///   - productId: The product identifier to cancel
     ///   - userId: Your app's user identifier
-    public func cancelSubscription(productId: String, userId: String) async throws {
+    ///   - immediate: If `true`, cancel immediately. If `false` (default), cancel at the end of the current billing period.
+    public func cancelSubscription(productId: String, userId: String, immediate: Bool = false) async throws {
         guard let backend else {
             throw ZeroSettleError.notConfigured
         }
 
         do {
-            try await backend.cancelSubscription(productId: productId, userId: userId)
-            ZSLogger.info("Subscription cancelled: product=\(productId)", category: .iap)
+            try await backend.cancelSubscription(productId: productId, userId: userId, immediate: immediate)
+            ZSLogger.info("Subscription cancelled: product=\(productId), immediate=\(immediate)", category: .iap)
 
             // Refresh entitlements to reflect the cancelled state
             _ = try? await restoreEntitlements(userId: userId)
@@ -1212,6 +1309,18 @@ public final class ZeroSettle: ObservableObject {
     }
 
     // MARK: - Private
+
+    /// Load and cache the cancel flow configuration. Non-throwing — logs errors and continues.
+    private func loadCancelFlowConfig() async {
+        guard let backend else { return }
+        do {
+            let config = try await backend.fetchCancelFlow()
+            cancelFlowConfig = config
+            ZSLogger.info("Cancel flow config loaded: enabled=\(config.enabled), questions=\(config.questions.count)", category: .iap)
+        } catch {
+            ZSLogger.error("Failed to load cancel flow config during bootstrap: \(error)", category: .iap)
+        }
+    }
 
     /// Detect the user's jurisdiction from the App Store storefront.
     /// Falls back to `.row` (most restrictive) if storefront is unavailable

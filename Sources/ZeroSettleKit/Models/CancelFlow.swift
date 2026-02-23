@@ -162,9 +162,98 @@ public enum CancelFlow {
         case dismissed
     }
 
+    // MARK: - Headless Cancel Flow Types
+
+    /// The outcome of a cancel flow for analytics tracking.
+    public enum Outcome: String, Sendable, Codable {
+        case cancelled
+        case retained
+        case paused
+        case dismissed
+    }
+
+    /// A single answer to a cancel flow question.
+    ///
+    /// For `.singleSelect` questions, set `selectedOptionId`.
+    /// For `.freeText` questions, set `freeText`.
+    public struct Answer: Sendable {
+        /// The question ID this answer corresponds to.
+        public let questionId: Int
+        /// The selected option ID (for single-select questions).
+        public let selectedOptionId: Int?
+        /// The free text response (for free-text questions).
+        public let freeText: String?
+
+        public init(questionId: Int, selectedOptionId: Int? = nil, freeText: String? = nil) {
+            self.questionId = questionId
+            self.selectedOptionId = selectedOptionId
+            self.freeText = freeText
+        }
+    }
+
+    /// Analytics payload submitted after a cancel flow completes.
+    ///
+    /// Use with ``ZeroSettle/submitCancelFlowResponse(_:)`` when building custom cancel flow UI.
+    public struct Response: Sendable {
+        /// The product the user was cancelling.
+        public let productId: String
+        /// Your app's user identifier.
+        public let userId: String
+        /// The final outcome of the cancel flow.
+        public let outcome: Outcome
+        /// The user's answers to questionnaire questions.
+        public let answers: [Answer]
+        /// Whether the save offer was shown to the user.
+        public let offerShown: Bool
+        /// Whether the user accepted the save offer.
+        public let offerAccepted: Bool
+        /// Whether the pause option was shown to the user.
+        public let pauseShown: Bool
+        /// Whether the user accepted the pause option.
+        public let pauseAccepted: Bool
+        /// The selected pause duration in days (if pause was accepted).
+        public let pauseDurationDays: Int?
+
+        public init(
+            productId: String,
+            userId: String,
+            outcome: Outcome,
+            answers: [Answer] = [],
+            offerShown: Bool = false,
+            offerAccepted: Bool = false,
+            pauseShown: Bool = false,
+            pauseAccepted: Bool = false,
+            pauseDurationDays: Int? = nil
+        ) {
+            self.productId = productId
+            self.userId = userId
+            self.outcome = outcome
+            self.answers = answers
+            self.offerShown = offerShown
+            self.offerAccepted = offerAccepted
+            self.pauseShown = pauseShown
+            self.pauseAccepted = pauseAccepted
+            self.pauseDurationDays = pauseDurationDays
+        }
+    }
+
+    /// Result returned after a save offer is successfully applied.
+    ///
+    /// Returned by ``ZeroSettle/acceptSaveOffer(productId:userId:)``.
+    public struct SaveOfferResult: Sendable {
+        /// Human-readable description of the applied offer (e.g., "40% off for 3 months").
+        public let message: String
+        /// Discount percentage, if the offer type is a percentage discount.
+        public let discountPercent: Int?
+        /// Duration of the discount in months, if applicable.
+        public let durationMonths: Int?
+    }
+
     // MARK: - Internal Types
 
     /// Payload submitted to the backend after a cancel flow completes.
+    /// Used by the built-in cancel flow UI. The public ``Response`` type is converted
+    /// to this before submission.
     internal struct ResponsePayload: Encodable {
         let userId: String
         let productId: String
