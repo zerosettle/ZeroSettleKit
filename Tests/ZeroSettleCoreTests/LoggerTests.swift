@@ -8,6 +8,6 @@ import XCTest
 
 final class LoggerTests: XCTestCase {
     func testLoggerCompiles() {
-        Logger.info("Test message", category: .general)
+        ZSLogger.info("Test message", category: .general)
     }
 }

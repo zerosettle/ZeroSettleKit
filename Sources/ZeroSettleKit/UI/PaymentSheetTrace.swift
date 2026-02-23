@@ -2,7 +2,7 @@
 //  PaymentSheetTrace.swift
 //  ZeroSettleKit
 //
-//  Hierarchical performance tracer for ZSPaymentSheet operations.
+//  Hierarchical performance tracer for CheckoutSheet operations.
 //  Records spans and instant events, then prints a flamegraph-style
 //  tree showing where time is spent.
 //
@@ -157,7 +157,7 @@ internal final class PaymentSheetTrace: @unchecked Sendable {
 
         var lines: [String] = []
         lines.append("┌\(divider)")
-        lines.append("│ ZSPaymentSheet Trace — \(totalMs)")
+        lines.append("│ CheckoutSheet Trace — \(totalMs)")
         lines.append("├\(divider)")
 
         renderNode(root, prefix: "│ ", isRoot: true, lines: &lines)

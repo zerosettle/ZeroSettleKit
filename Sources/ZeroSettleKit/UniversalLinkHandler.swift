@@ -15,7 +15,7 @@ internal import ZeroSettleCore
 
 /// A view modifier that automatically handles ZeroSettle IAP universal link callbacks.
 /// Apply this to your root view to enable automatic checkout callback handling.
-public struct ZeroSettleHandlerModifier: ViewModifier {
+internal struct ZeroSettleHandlerModifier: ViewModifier {
     public func body(content: Content) -> some View {
         content
             .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in

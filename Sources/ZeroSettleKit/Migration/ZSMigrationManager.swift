@@ -1,9 +1,9 @@
 //
-//  ZSMigrationManager.swift
+//  MigrationManager.swift
 //  ZeroSettleKit
 //
 //  Observable manager for the StoreKit → web checkout migration flow.
-//  Extracts business logic from ZSMigrateTipView so developers can
+//  Extracts business logic from MigrationTipView so developers can
 //  build custom migration UIs while reusing eligibility, state transitions,
 //  and checkout orchestration.
 //
@@ -20,10 +20,10 @@ internal import ZeroSettleCore
 /// Manages the migration offer lifecycle for a single user.
 ///
 /// Use this as a `@StateObject` to observe migration eligibility and drive
-/// custom UIs, or let ``ZSMigrateTipView`` use it internally.
+/// custom UIs, or let ``MigrationTipView`` use it internally.
 ///
 /// ```swift
-/// @StateObject private var migration = ZSMigrationManager(userId: "user_42")
+/// @StateObject private var migration = MigrationManager(userId: "user_42")
 ///
 /// var body: some View {
 ///     if migration.state == .eligible, let offer = migration.offerData {
@@ -33,7 +33,7 @@ internal import ZeroSettleCore
 /// }
 /// ```
 @MainActor
-public final class ZSMigrationManager: ObservableObject {
+public final class MigrationManager: ObservableObject {
 
     // MARK: - Published State
 
@@ -77,7 +77,7 @@ public final class ZSMigrationManager: ObservableObject {
 
     /// Resets the dismissed state, allowing the migration offer to be shown again.
     public static func resetDismissedState() {
-        ZSLogger.info("[ZSMigrationManager] resetDismissedState() called — clearing persisted dismissal", category: .iap)
+        ZSLogger.info("[MigrationManager] resetDismissedState() called — clearing persisted dismissal", category: .iap)
         isPermanentlyDismissed = false
     }
 
@@ -95,7 +95,7 @@ public final class ZSMigrationManager: ObservableObject {
     /// - Parameter userId: Your app's user identifier
     public init(userId: String) {
         self.userId = userId
-        ZSLogger.info("[ZSMigrationManager] init(userId: \"\(userId)\")", category: .iap)
+        ZSLogger.info("[MigrationManager] init(userId: \"\(userId)\")", category: .iap)
 
         // Evaluate immediately
         evaluateEligibility()
@@ -107,7 +107,7 @@ public final class ZSMigrationManager: ObservableObject {
                 self?.evaluateEligibility()
             }
         }
-        ZSLogger.info("[ZSMigrationManager] Subscribed to ZeroSettle.shared.objectWillChange for re-evaluation", category: .iap)
+        ZSLogger.info("[MigrationManager] Subscribed to ZeroSettle.shared.objectWillChange for re-evaluation", category: .iap)
     }
 
     // MARK: - Eligibility
@@ -117,7 +117,7 @@ public final class ZSMigrationManager: ObservableObject {
     private func evaluateEligibility() {
         // Demo mode: force out of dismissed state so re-evaluation can proceed
         if Self.demoMode && state == .dismissed {
-            ZSLogger.info("[ZSMigrationManager] Demo mode — resetting dismissed state", category: .iap)
+            ZSLogger.info("[MigrationManager] Demo mode — resetting dismissed state", category: .iap)
             state = .loading
         }
 
@@ -125,25 +125,25 @@ public final class ZSMigrationManager: ObservableObject {
 
         // Don't re-evaluate during active flow
         guard state == .loading || state == .ineligible || state == .eligible else {
-            ZSLogger.debug("[ZSMigrationManager] evaluateEligibility() skipped — state is .\(state) (mid-flow locked)", category: .iap)
+            ZSLogger.debug("[MigrationManager] evaluateEligibility() skipped — state is .\(state) (mid-flow locked)", category: .iap)
             return
         }
 
         let iap = ZeroSettle.shared
 
-        ZSLogger.info("[ZSMigrationManager] evaluateEligibility() running — currentState=.\(state), isBootstrapped=\(iap.isBootstrapped), isConfigured=\(iap.isConfigured), isPermanentlyDismissed=\(Self.isPermanentlyDismissed), isSandbox=\(iap.isSandbox), demoMode=\(Self.demoMode)", category: .iap)
+        ZSLogger.info("[MigrationManager] evaluateEligibility() running — currentState=.\(state), isBootstrapped=\(iap.isBootstrapped), isConfigured=\(iap.isConfigured), isPermanentlyDismissed=\(Self.isPermanentlyDismissed), isSandbox=\(iap.isSandbox), demoMode=\(Self.demoMode)", category: .iap)
 
         // Must be bootstrapped — stay in .loading until bootstrap completes
         guard iap.isBootstrapped else {
             state = .loading
             offerData = nil
-            ZSLogger.info("[ZSMigrationManager] → .loading — waiting for bootstrap", category: .iap)
+            ZSLogger.info("[MigrationManager] → .loading — waiting for bootstrap", category: .iap)
             return
         }
 
         // Demo mode: skip dismissal check, entitlement checks, and synthesize a demo offer
         if Self.demoMode {
-            ZSLogger.info("[ZSMigrationManager] 🎭 Demo mode active — skipping dismissal and entitlement checks", category: .iap)
+            ZSLogger.info("[MigrationManager] 🎭 Demo mode active — skipping dismissal and entitlement checks", category: .iap)
 
             let prompt = MigrationPrompt(
                 productId: "wizzGoldWeekly",
@@ -161,7 +161,7 @@ public final class ZSMigrationManager: ObservableObject {
 
             state = .eligible
             offerData = data
-            ZSLogger.info("[ZSMigrationManager] .\(previousState) → .eligible — demo mode (productId=wizzGoldWeekly, discount=15%, freeTrialDays=7)", category: .iap)
+            ZSLogger.info("[MigrationManager] .\(previousState) → .eligible — demo mode (productId=wizzGoldWeekly, discount=15%, freeTrialDays=7)", category: .iap)
             return
         }
 
@@ -170,7 +170,7 @@ public final class ZSMigrationManager: ObservableObject {
             let changed = state != .dismissed
             state = .dismissed
             offerData = nil
-            ZSLogger.info("[ZSMigrationManager] → .dismissed — permanently dismissed via UserDefaults\(changed ? "" : " (already dismissed)")", category: .iap)
+            ZSLogger.info("[MigrationManager] → .dismissed — permanently dismissed via UserDefaults\(changed ? "" : " (already dismissed)")", category: .iap)
             return
         }
 
@@ -178,7 +178,7 @@ public final class ZSMigrationManager: ObservableObject {
         let entitlementSummary = iap.entitlements.map {
             "[\($0.productId) source=\($0.source.rawValue) active=\($0.isActive) expires=\($0.expiresAt?.description ?? "nil")]"
         }.joined(separator: ", ")
-        ZSLogger.info("[ZSMigrationManager] Entitlements (\(iap.entitlements.count)): \(entitlementSummary.isEmpty ? "(none)" : entitlementSummary)", category: .iap)
+        ZSLogger.info("[MigrationManager] Entitlements (\(iap.entitlements.count)): \(entitlementSummary.isEmpty ? "(none)" : entitlementSummary)", category: .iap)
 
         // Must have an active StoreKit subscription
         guard let activeStoreKitEntitlement = iap.entitlements.first(where: {
@@ -186,20 +186,20 @@ public final class ZSMigrationManager: ObservableObject {
         }) else {
             state = .ineligible
             offerData = nil
-            ZSLogger.info("[ZSMigrationManager] → .ineligible — no active StoreKit entitlement found", category: .iap)
+            ZSLogger.info("[MigrationManager] → .ineligible — no active StoreKit entitlement found", category: .iap)
             return
         }
-        ZSLogger.info("[ZSMigrationManager] Active StoreKit entitlement: productId=\(activeStoreKitEntitlement.productId), expiresAt=\(activeStoreKitEntitlement.expiresAt?.description ?? "nil")", category: .iap)
+        ZSLogger.info("[MigrationManager] Active StoreKit entitlement: productId=\(activeStoreKitEntitlement.productId), expiresAt=\(activeStoreKitEntitlement.expiresAt?.description ?? "nil")", category: .iap)
 
         // Must NOT already have an active web entitlement
         let webEntitlements = iap.entitlements.filter { $0.source == .webCheckout }
         let activeWebEntitlements = webEntitlements.filter { $0.isActive }
-        ZSLogger.info("[ZSMigrationManager] Web entitlements: \(webEntitlements.count) total, \(activeWebEntitlements.count) active", category: .iap)
+        ZSLogger.info("[MigrationManager] Web entitlements: \(webEntitlements.count) total, \(activeWebEntitlements.count) active", category: .iap)
 
         guard activeWebEntitlements.isEmpty else {
             state = .ineligible
             offerData = nil
-            ZSLogger.info("[ZSMigrationManager] → .ineligible — user already has active web checkout entitlement: \(activeWebEntitlements.map { $0.productId })", category: .iap)
+            ZSLogger.info("[MigrationManager] → .ineligible — user already has active web checkout entitlement: \(activeWebEntitlements.map { $0.productId })", category: .iap)
             return
         }
 
@@ -207,14 +207,14 @@ public final class ZSMigrationManager: ObservableObject {
         // In sandbox mode: synthesize a prompt so developers can test without a backend campaign.
         // In live mode: requires the backend to return a migration prompt.
         let backendMigration = iap.remoteConfig?.migration
-        ZSLogger.info("[ZSMigrationManager] remoteConfig.migration=\(backendMigration != nil ? "present(productId=\(backendMigration!.productId), discount=\(backendMigration!.discountPercent)%)" : "nil"), isSandbox=\(iap.isSandbox)", category: .iap)
+        ZSLogger.info("[MigrationManager] remoteConfig.migration=\(backendMigration != nil ? "present(productId=\(backendMigration!.productId), discount=\(backendMigration!.discountPercent)%)" : "nil"), isSandbox=\(iap.isSandbox)", category: .iap)
 
         guard let prompt = resolveMigrationPrompt(
             activeStoreKitProductId: activeStoreKitEntitlement.productId
         ) else {
             state = .ineligible
             offerData = nil
-            ZSLogger.info("[ZSMigrationManager] → .ineligible — no migration prompt (backend=nil, isSandbox=\(iap.isSandbox))", category: .iap)
+            ZSLogger.info("[MigrationManager] → .ineligible — no migration prompt (backend=nil, isSandbox=\(iap.isSandbox))", category: .iap)
             return
         }
 
@@ -231,7 +231,7 @@ public final class ZSMigrationManager: ObservableObject {
         offerData = data
 
         let promptSource = iap.remoteConfig?.migration != nil ? "backend" : "sandbox"
-        ZSLogger.info("[ZSMigrationManager] .\(previousState) → .eligible — productId=\(data.activeStoreKitProductId), discount=\(prompt.discountPercent)%, freeTrialDays=\(freeTrialDays), promptSource=\(promptSource), title=\"\(prompt.title)\"", category: .iap)
+        ZSLogger.info("[MigrationManager] .\(previousState) → .eligible — productId=\(data.activeStoreKitProductId), discount=\(prompt.discountPercent)%, freeTrialDays=\(freeTrialDays), promptSource=\(promptSource), title=\"\(prompt.title)\"", category: .iap)
     }
 
     /// Resolves the migration prompt from backend config or synthesizes one in sandbox mode.
@@ -240,13 +240,13 @@ public final class ZSMigrationManager: ObservableObject {
 
         // Use backend-provided prompt if available
         if let backendPrompt = iap.remoteConfig?.migration {
-            ZSLogger.debug("[ZSMigrationManager] Using backend migration prompt: productId=\(backendPrompt.productId), discount=\(backendPrompt.discountPercent)%", category: .iap)
+            ZSLogger.debug("[MigrationManager] Using backend migration prompt: productId=\(backendPrompt.productId), discount=\(backendPrompt.discountPercent)%", category: .iap)
             return backendPrompt
         }
 
         // In sandbox mode, synthesize a prompt so developers can always test the flow
         if iap.isSandbox {
-            ZSLogger.debug("[ZSMigrationManager] Sandbox mode — synthesizing migration prompt for productId=\(activeStoreKitProductId)", category: .iap)
+            ZSLogger.debug("[MigrationManager] Sandbox mode — synthesizing migration prompt for productId=\(activeStoreKitProductId)", category: .iap)
             return MigrationPrompt(
                 productId: activeStoreKitProductId,
                 discountPercent: 15,
@@ -256,19 +256,19 @@ public final class ZSMigrationManager: ObservableObject {
             )
         }
 
-        ZSLogger.debug("[ZSMigrationManager] No migration prompt: backend migration=nil, isSandbox=false", category: .iap)
+        ZSLogger.debug("[MigrationManager] No migration prompt: backend migration=nil, isSandbox=false", category: .iap)
         return nil
     }
 
     /// Computes the number of free trial days from a StoreKit entitlement's expiration date.
     private func computeFreeTrialDays(from entitlement: Entitlement) -> Int {
         guard let expiresAt = entitlement.expiresAt else {
-            ZSLogger.debug("[ZSMigrationManager] No expiresAt on entitlement \(entitlement.productId), freeTrialDays=0", category: .iap)
+            ZSLogger.debug("[MigrationManager] No expiresAt on entitlement \(entitlement.productId), freeTrialDays=0", category: .iap)
             return 0
         }
         let components = Calendar.current.dateComponents([.day], from: Date(), to: expiresAt)
         let days = max(0, components.day ?? 0)
-        ZSLogger.debug("[ZSMigrationManager] Computed freeTrialDays=\(days) (expiresAt=\(expiresAt))", category: .iap)
+        ZSLogger.debug("[MigrationManager] Computed freeTrialDays=\(days) (expiresAt=\(expiresAt))", category: .iap)
         return days
     }
 
@@ -279,11 +279,11 @@ public final class ZSMigrationManager: ObservableObject {
     /// Call this when you show the migration offer UI or begin the checkout flow.
     public func present() {
         guard state == .eligible else {
-            ZSLogger.info("[ZSMigrationManager] present() ignored — state is .\(state), expected .eligible", category: .iap)
+            ZSLogger.info("[MigrationManager] present() ignored — state is .\(state), expected .eligible", category: .iap)
             return
         }
         state = .presented
-        ZSLogger.info("[ZSMigrationManager] .eligible → .presented", category: .iap)
+        ZSLogger.info("[MigrationManager] .eligible → .presented", category: .iap)
     }
 
     /// Create a payment intent and return the checkout URL.
@@ -295,20 +295,20 @@ public final class ZSMigrationManager: ObservableObject {
     @discardableResult
     public func startCheckout() async -> URL? {
         guard let offerData else {
-            ZSLogger.error("[ZSMigrationManager] startCheckout() failed — no offerData available", category: .iap)
-            checkoutError = ZSError.notConfigured
+            ZSLogger.error("[MigrationManager] startCheckout() failed — no offerData available", category: .iap)
+            checkoutError = ZeroSettleError.notConfigured
             return nil
         }
 
         if state == .eligible {
             state = .presented
-            ZSLogger.info("[ZSMigrationManager] .eligible → .presented (via startCheckout)", category: .iap)
+            ZSLogger.info("[MigrationManager] .eligible → .presented (via startCheckout)", category: .iap)
         }
 
         checkoutError = nil
         isLoading = true
 
-        ZSLogger.info("[ZSMigrationManager] Creating payment intent: productId=\(offerData.prompt.productId), userId=\(userId), freeTrialDays=\(offerData.freeTrialDays)", category: .iap)
+        ZSLogger.info("[MigrationManager] Creating payment intent: productId=\(offerData.prompt.productId), userId=\(userId), freeTrialDays=\(offerData.freeTrialDays)", category: .iap)
 
         do {
             let backend = try makeBackend()
@@ -320,12 +320,12 @@ public final class ZSMigrationManager: ObservableObject {
 
             isLoading = false
             let url = URL(string: paymentIntent.checkoutUrl)
-            ZSLogger.info("[ZSMigrationManager] Payment intent created — checkoutUrl=\(paymentIntent.checkoutUrl)", category: .iap)
+            ZSLogger.info("[MigrationManager] Payment intent created — checkoutUrl=\(paymentIntent.checkoutUrl)", category: .iap)
             return url
         } catch {
             checkoutError = error
             isLoading = false
-            ZSLogger.error("[ZSMigrationManager] Payment intent failed: \(error)", category: .iap)
+            ZSLogger.error("[MigrationManager] Payment intent failed: \(error)", category: .iap)
             return nil
         }
     }
@@ -335,20 +335,20 @@ public final class ZSMigrationManager: ObservableObject {
     /// Transitions from `.presented` to `.accepted` and fires migration conversion tracking.
     public func markCheckoutSucceeded() {
         guard state == .presented else {
-            ZSLogger.info("[ZSMigrationManager] markCheckoutSucceeded() ignored — state is .\(state), expected .presented", category: .iap)
+            ZSLogger.info("[MigrationManager] markCheckoutSucceeded() ignored — state is .\(state), expected .presented", category: .iap)
             return
         }
         state = .accepted
-        ZSLogger.info("[ZSMigrationManager] .presented → .accepted — checkout succeeded for userId=\(userId)", category: .iap)
+        ZSLogger.info("[MigrationManager] .presented → .accepted — checkout succeeded for userId=\(userId)", category: .iap)
 
         // Fire-and-forget conversion tracking
         Task {
-            ZSLogger.info("[ZSMigrationManager] Tracking migration conversion for userId=\(userId)", category: .iap)
+            ZSLogger.info("[MigrationManager] Tracking migration conversion for userId=\(userId)", category: .iap)
             do {
                 try await ZeroSettle.shared.trackMigrationConversion(userId: userId)
-                ZSLogger.info("[ZSMigrationManager] Migration conversion tracked successfully", category: .iap)
+                ZSLogger.info("[MigrationManager] Migration conversion tracked successfully", category: .iap)
             } catch {
-                ZSLogger.error("[ZSMigrationManager] Migration conversion tracking failed: \(error)", category: .iap)
+                ZSLogger.error("[MigrationManager] Migration conversion tracking failed: \(error)", category: .iap)
             }
         }
     }
@@ -359,22 +359,22 @@ public final class ZSMigrationManager: ObservableObject {
     /// full migration flow is done.
     public func showAppleSubscriptionManagement() async {
         guard state == .accepted else {
-            ZSLogger.info("[ZSMigrationManager] showAppleSubscriptionManagement() ignored — state is .\(state), expected .accepted", category: .iap)
+            ZSLogger.info("[MigrationManager] showAppleSubscriptionManagement() ignored — state is .\(state), expected .accepted", category: .iap)
             return
         }
 
-        ZSLogger.info("[ZSMigrationManager] Opening Apple subscription management sheet...", category: .iap)
+        ZSLogger.info("[MigrationManager] Opening Apple subscription management sheet...", category: .iap)
 
         do {
             guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene else {
-                ZSLogger.error("[ZSMigrationManager] No UIWindowScene available — cannot open subscription management", category: .iap)
+                ZSLogger.error("[MigrationManager] No UIWindowScene available — cannot open subscription management", category: .iap)
                 return
             }
             try await AppStore.showManageSubscriptions(in: windowScene)
             state = .completed
-            ZSLogger.info("[ZSMigrationManager] .accepted → .completed — subscription management sheet dismissed", category: .iap)
+            ZSLogger.info("[MigrationManager] .accepted → .completed — subscription management sheet dismissed", category: .iap)
         } catch {
-            ZSLogger.error("[ZSMigrationManager] Failed to open subscription management: \(error)", category: .iap)
+            ZSLogger.error("[MigrationManager] Failed to open subscription management: \(error)", category: .iap)
         }
     }
 
@@ -387,7 +387,7 @@ public final class ZSMigrationManager: ObservableObject {
         state = .dismissed
         offerData = nil
         Self.isPermanentlyDismissed = true
-        ZSLogger.info("[ZSMigrationManager] .\(previous) → .dismissed — persisted to UserDefaults", category: .iap)
+        ZSLogger.info("[MigrationManager] .\(previous) → .dismissed — persisted to UserDefaults", category: .iap)
     }
 
     // MARK: - Backend Helper
@@ -395,8 +395,8 @@ public final class ZSMigrationManager: ObservableObject {
     private func makeBackend() throws -> Backend {
         guard let config = ZeroSettle.shared.currentConfig,
               let baseURL = ZeroSettle.shared.effectiveBaseURL else {
-            ZSLogger.error("[ZSMigrationManager] makeBackend() failed — SDK not configured", category: .iap)
-            throw ZSError.notConfigured
+            ZSLogger.error("[MigrationManager] makeBackend() failed — SDK not configured", category: .iap)
+            throw ZeroSettleError.notConfigured
         }
         return Backend(baseURL: baseURL, publishableKey: config.publishableKey)
     }

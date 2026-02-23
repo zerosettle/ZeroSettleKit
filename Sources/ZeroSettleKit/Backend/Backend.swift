@@ -89,8 +89,8 @@ internal final class Backend: @unchecked Sendable {
             if let parsed = CheckoutType(rawValue: configResponse.checkout.sheetType) {
                 checkoutType = parsed
             } else {
-                checkoutType = .webview
-                ZSLogger.info("Unrecognized checkout type '\(configResponse.checkout.sheetType)' from backend, defaulting to webview. You may need to update ZeroSettleKit.", category: .iap)
+                checkoutType = .webView
+                ZSLogger.info("Unrecognized checkout type '\(configResponse.checkout.sheetType)' from backend, defaulting to webView. You may need to update ZeroSettleKit.", category: .iap)
             }
 
             // Parse jurisdiction overrides
@@ -102,8 +102,8 @@ internal final class Backend: @unchecked Sendable {
                     if let parsed = CheckoutType(rawValue: value.sheetType) {
                         sheetType = parsed
                     } else {
-                        sheetType = .webview
-                        ZSLogger.info("Unrecognized checkout type '\(value.sheetType)' for jurisdiction \(key), defaulting to webview.", category: .iap)
+                        sheetType = .webView
+                        ZSLogger.info("Unrecognized checkout type '\(value.sheetType)' for jurisdiction \(key), defaulting to webView.", category: .iap)
                     }
                     jurisdictions[jurisdiction] = JurisdictionCheckoutConfig(
                         sheetType: sheetType,
@@ -216,14 +216,14 @@ internal final class Backend: @unchecked Sendable {
     // MARK: - Transactions
 
     /// Get the status of a transaction by ID.
-    func getTransaction(transactionId: String) async throws -> ZSTransaction {
+    func getTransaction(transactionId: String) async throws -> CheckoutTransaction {
         let span = PaymentSheetTrace.current?.begin("GET /iap/transactions", metadata: ["txnId": transactionId])
         do {
             let url = apiURL("iap/transactions/\(transactionId)/")
             let response = try await httpClient.get(
                 url,
                 headers: authHeaders,
-                responseType: ZSTransaction.self
+                responseType: CheckoutTransaction.self
             )
             if let span { PaymentSheetTrace.current?.end(span, metadata: ["status": response.status.rawValue]) }
             return response
@@ -236,7 +236,7 @@ internal final class Backend: @unchecked Sendable {
     // MARK: - Transaction Verification
 
     /// Poll the backend to verify a transaction has completed.
-    /// Used by both `ZSPaymentSheet` (webview path) and `ZeroSettle.purchase()` (safari paths).
+    /// Used by both `CheckoutSheet` (webview path) and `ZeroSettle.purchase()` (safari paths).
     ///
     /// Waits an initial 1.5s for webhook processing, then polls `getTransaction()`
     /// up to `maxAttempts` times. Returns the transaction on `.completed` or
@@ -246,11 +246,11 @@ internal final class Backend: @unchecked Sendable {
         transactionId: String,
         maxAttempts: Int = 6,
         pollInterval: UInt64 = 2_000_000_000
-    ) async throws -> ZSTransaction {
+    ) async throws -> CheckoutTransaction {
         // Initial delay for webhook processing
         try? await Task.sleep(nanoseconds: 1_500_000_000)
 
-        var lastTransaction: ZSTransaction?
+        var lastTransaction: CheckoutTransaction?
         for attempt in 1...maxAttempts {
             let transaction = try await getTransaction(transactionId: transactionId)
             lastTransaction = transaction
@@ -432,12 +432,62 @@ internal final class Backend: @unchecked Sendable {
         try await httpClient.executeVoid(request)
     }
 
+    // MARK: - Upgrade Offer
+
+    /// Fetch the upgrade offer configuration for a user/product.
+    func fetchUpgradeOffer(userId: String, productId: String? = nil) async throws -> UpgradeOffer.Config {
+        var components = URLComponents(url: apiURL("iap/upgrade-offer/"), resolvingAgainstBaseURL: false)!
+        var queryItems = [URLQueryItem(name: "user_id", value: userId)]
+        if let productId {
+            queryItems.append(URLQueryItem(name: "product_id", value: productId))
+        }
+        components.queryItems = queryItems
+
+        guard let url = components.url else {
+            throw Backend.wrapError(HTTPError.invalidURL("Failed to construct upgrade offer URL"))
+        }
+
+        return try await httpClient.get(
+            url,
+            headers: authHeaders,
+            responseType: UpgradeOffer.Config.self
+        )
+    }
+
+    /// Execute a subscription upgrade (web-to-web or storekit-to-web).
+    func executeUpgradeOffer(_ request: UpgradeOffer.ExecuteRequest) async throws -> UpgradeOfferExecuteResponse {
+        let url = apiURL("iap/upgrade-offer/execute/")
+        do {
+            return try await httpClient.post(
+                url,
+                body: request,
+                headers: authHeaders,
+                responseType: UpgradeOfferExecuteResponse.self
+            )
+        } catch {
+            throw Backend.wrapError(error)
+        }
+    }
+
+    /// Submit a declined/dismissed response for an upgrade offer.
+    func respondUpgradeOffer(_ request: UpgradeOffer.RespondRequest) async throws {
+        let url = apiURL("iap/upgrade-offer/respond/")
+
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authHeaders.forEach { urlRequest.setValue($1, forHTTPHeaderField: $0) }
+        urlRequest.httpBody = try encoder.encode(request)
+
+        try await httpClient.executeVoid(urlRequest)
+    }
+
     // MARK: - Error Wrapping
 
-    /// Convert any error thrown by the HTTP layer into a typed ``ZSError/apiError(_:)``.
-    /// If the error is already a ``ZSError``, it passes through unchanged.
-    static func wrapError(_ error: Error) -> ZSError {
-        if let iapError = error as? ZSError {
+    /// Convert any error thrown by the HTTP layer into a typed ``ZeroSettleError/apiError(_:)``.
+    /// If the error is already a ``ZeroSettleError``, it passes through unchanged.
+    static func wrapError(_ error: Error) -> ZeroSettleError {
+        if let iapError = error as? ZeroSettleError {
             return iapError
         }
 
@@ -501,7 +551,7 @@ internal final class Backend: @unchecked Sendable {
 // MARK: - Request/Response Models
 
 private struct ProductsResponse: Decodable {
-    let products: [ZSProduct]
+    let products: [Product]
     let config: ConfigResponse?
 }
 
@@ -605,4 +655,13 @@ internal struct ResumeSubscriptionRequest: Encodable {
 internal struct CancelSubscriptionRequest: Encodable {
     let productId: String
     let userId: String
+}
+
+internal struct UpgradeOfferExecuteResponse: Decodable {
+    let success: Bool
+    let upgradeType: String?
+    let checkoutUrl: String?
+    let sessionId: String?
+    let transactionId: String?
+    let cancelInstructions: String?
 }

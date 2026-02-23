@@ -65,7 +65,7 @@ public struct JurisdictionCheckoutConfig: Sendable, Equatable {
 /// Configured remotely via the ZeroSettle dashboard.
 public enum CheckoutType: String, Codable, Sendable {
     /// Embedded WKWebView within the app
-    case webview = "webview"
+    case webView = "webview"
 
     /// In-app SFSafariViewController
     case safariVC = "safari_vc"
@@ -74,7 +74,7 @@ public enum CheckoutType: String, Codable, Sendable {
     case safari = "safari"
 
     /// Native Apple Pay sheet via STPApplePayContext (requires `NativePay` package trait).
-    /// Falls back to `.webview` when the trait is not enabled or Apple Pay is unavailable.
+    /// Falls back to `.webView` when the trait is not enabled or Apple Pay is unavailable.
     case nativePay = "native_pay"
 }
 

@@ -7,10 +7,10 @@
 
 import Foundation
 
-// MARK: - ZSTransaction
+// MARK: - CheckoutTransaction
 
 /// Represents a completed or pending purchase transaction.
-public struct ZSTransaction: Identifiable, Sendable, Codable, Equatable {
+public struct CheckoutTransaction: Identifiable, Sendable, Codable, Equatable {
 
     // MARK: - Nested Types
 

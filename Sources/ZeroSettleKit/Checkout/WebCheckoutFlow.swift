@@ -5,7 +5,7 @@
 //  Orchestrates the web checkout flow: session creation, Safari launch, and callback handling.
 //
 
-import Foundation
+@preconcurrency import Foundation
 import SafariServices
 import UIKit
 
@@ -70,8 +70,8 @@ internal final class WebCheckoutFlow: NSObject {
             ZSLogger.debug("Opening checkout URL in SFSafariViewController", category: .iap)
             await openInSafariVC(session.checkoutUrl, transactionId: session.transactionId)
 
-        case .webview, .nativePay:
-            // WebView handled by ZSPaymentSheet, not WebCheckoutFlow.
+        case .webView, .nativePay:
+            // WebView handled by CheckoutSheet, not WebCheckoutFlow.
             // nativePay falls through here when the NativePay trait isn't enabled
             // or Apple Pay is unavailable on the device.
             ZSLogger.debug("WebView checkout - session created but not opening browser", category: .iap)

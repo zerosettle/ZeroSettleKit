@@ -24,7 +24,7 @@ public enum NativePay {
 
     /// Outcome of a native Apple Pay checkout attempt.
     public enum Result: Sendable {
-        case success(ZSTransaction)
+        case success(CheckoutTransaction)
         case cancelled
     }
 

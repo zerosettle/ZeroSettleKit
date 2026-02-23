@@ -8,7 +8,7 @@ internal import ZeroSettleCore
 #endif
 
 // MARK: - Expandable Web Billing Tip View
-public struct ZSMigrateTipView: View {
+public struct MigrationTipView: View {
     let userId: String
     let backgroundColor: Color
     let titleFont: Font?
@@ -17,7 +17,7 @@ public struct ZSMigrateTipView: View {
     let borderColor: Color?
     let onDismiss: (() -> Void)?
 
-    @StateObject private var manager: ZSMigrationManager
+    @StateObject private var manager: MigrationManager
 
     // MARK: - UI-only State
 
@@ -32,18 +32,9 @@ public struct ZSMigrateTipView: View {
     static let applePayExpandedHeight: CGFloat = 690
     static let cardExpandedHeight: CGFloat = 690
 
-    // MARK: - Persistence (deprecated, forwarded to manager)
-
-    /// Resets the migrate tip dismissed state, allowing it to be shown again.
-    /// Use this for debugging purposes.
-    @available(*, deprecated, message: "Use ZSMigrationManager.resetDismissedState() instead")
-    public static func resetMigrateTipState() {
-        ZSMigrationManager.resetDismissedState()
-    }
-
     /// Creates a new migrate tip view.
     ///
-    /// Uses the shared ``ZSMigrationManager`` from ``ZeroSettle/shared/migrationManager``
+    /// Uses the shared ``MigrationManager`` from ``ZeroSettle/shared/migrationManager``
     /// (created during ``ZeroSettle/bootstrap(userId:)``). Falls back to creating a local
     /// instance if bootstrap hasn't run yet.
     ///
@@ -72,9 +63,9 @@ public struct ZSMigrateTipView: View {
         self.ctaFont = ctaFont
         self.borderColor = borderColor
         self.onDismiss = onDismiss
-        // Always use the shared singleton manager. getOrCreateMigrationManager guarantees
+        // Always use the shared singleton manager. migrationManager(for:) guarantees
         // a single instance — whether bootstrap ran first or the view was created first.
-        _manager = StateObject(wrappedValue: ZeroSettle.shared.getOrCreateMigrationManager(userId: userId))
+        _manager = StateObject(wrappedValue: ZeroSettle.shared.migrationManager(for: userId))
     }
 
     // MARK: - Convenience
@@ -98,35 +89,35 @@ public struct ZSMigrateTipView: View {
 
     public var body: some View {
         Group {
-            let _ = ZSLogger.info("[ZSMigrateTipView] body evaluated — manager.state=.\(manager.state), offerData=\(manager.offerData != nil ? "present" : "nil"), showCongratulations=\(showCongratulations), isExpanded=\(isExpanded), checkoutURL=\(checkoutURL?.absoluteString ?? "nil")", category: .iap)
+            let _ = ZSLogger.info("[MigrationTipView] body evaluated — manager.state=.\(manager.state), offerData=\(manager.offerData != nil ? "present" : "nil"), showCongratulations=\(showCongratulations), isExpanded=\(isExpanded), checkoutURL=\(checkoutURL?.absoluteString ?? "nil")", category: .iap)
             switch manager.state {
             case .loading:
-                let _ = ZSLogger.info("[ZSMigrateTipView] Rendering: .loading — waiting for bootstrap", category: .iap)
+                let _ = ZSLogger.info("[MigrationTipView] Rendering: .loading — waiting for bootstrap", category: .iap)
                 Color.clear.frame(height: 0)
 
             case .ineligible:
-                let _ = ZSLogger.info("[ZSMigrateTipView] Rendering: .ineligible — showing empty placeholder", category: .iap)
+                let _ = ZSLogger.info("[MigrationTipView] Rendering: .ineligible — showing empty placeholder", category: .iap)
                 Color.clear.frame(height: 0)
 
             case .dismissed:
-                let _ = ZSLogger.info("[ZSMigrateTipView] Rendering: .dismissed — showing nothing", category: .iap)
+                let _ = ZSLogger.info("[MigrationTipView] Rendering: .dismissed — showing nothing", category: .iap)
                 EmptyView()
 
             case .eligible, .presented:
-                let _ = ZSLogger.info("[ZSMigrateTipView] Rendering: .\(manager.state) — showing offer card", category: .iap)
+                let _ = ZSLogger.info("[MigrationTipView] Rendering: .\(manager.state) — showing offer card", category: .iap)
                 offerCardView
 
             case .accepted:
                 if showCongratulations {
-                    let _ = ZSLogger.info("[ZSMigrateTipView] Rendering: .accepted + showCongratulations — showing congratulations card", category: .iap)
+                    let _ = ZSLogger.info("[MigrationTipView] Rendering: .accepted + showCongratulations — showing congratulations card", category: .iap)
                     congratulationsCardView
                 } else {
-                    let _ = ZSLogger.info("[ZSMigrateTipView] Rendering: .accepted — showing 'Cancel Apple Billing' card", category: .iap)
+                    let _ = ZSLogger.info("[MigrationTipView] Rendering: .accepted — showing 'Cancel Apple Billing' card", category: .iap)
                     acceptedCardView
                 }
 
             case .completed:
-                let _ = ZSLogger.info("[ZSMigrateTipView] Rendering: .completed — showing congratulations card", category: .iap)
+                let _ = ZSLogger.info("[MigrationTipView] Rendering: .completed — showing congratulations card", category: .iap)
                 congratulationsCardView
             }
         }
@@ -380,7 +371,7 @@ public struct ZSMigrateTipView: View {
         let checkoutType = iap.checkoutType
 
         switch checkoutType {
-        case .webview, .nativePay:
+        case .webView, .nativePay:
             startWebViewCheckout()
         case .safari, .safariVC:
             startBrowserCheckout()

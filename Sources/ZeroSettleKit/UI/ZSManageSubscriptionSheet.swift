@@ -1,5 +1,5 @@
 //
-//  ZSManageSubscriptionSheet.swift
+//  RetentionSheet.swift
 //  ZeroSettleKit
 //
 //  A multi-page cancellation retention funnel that walks users through
@@ -12,7 +12,7 @@ import SwiftUI
 // MARK: - Result
 
 /// The user's choice from the manage subscription sheet.
-public enum ZSManageSubscriptionResult {
+public enum RetentionResult {
     case pauseAccount
     case stayWithDiscount
     case cancelSubscription
@@ -24,9 +24,9 @@ public enum ZSManageSubscriptionResult {
 /// A multi-page retention sheet that walks users through confirmation,
 /// a questionnaire, a discount offer, and a pause option before cancellation.
 ///
-/// Present via the `.zsManageSubscriptionSheet(isPresented:onResult:)` modifier
-/// or `ZSManageSubscriptionSheet.present(from:onResult:)` for UIKit.
-public struct ZSManageSubscriptionSheet: View {
+/// Present via the `.retentionSheet(isPresented:onResult:)` modifier
+/// or `RetentionSheet.present(from:onResult:)` for UIKit.
+public struct RetentionSheet: View {
 
     // MARK: - Phase State Machine
 
@@ -52,7 +52,7 @@ public struct ZSManageSubscriptionSheet: View {
     private static let tealLight = Color(red: 0.0, green: 0.72, blue: 0.76).opacity(0.10)
     private static let deepBlue = Color(red: 0.05, green: 0.20, blue: 0.42)
 
-    private let onResult: (ZSManageSubscriptionResult) -> Void
+    private let onResult: (RetentionResult) -> Void
 
     @Environment(\.dismiss) private var dismiss
 
@@ -60,7 +60,7 @@ public struct ZSManageSubscriptionSheet: View {
     @State private var selectedReason: String? = nil
     @State private var confettiTrigger: Int = 0
 
-    public init(onResult: @escaping (ZSManageSubscriptionResult) -> Void) {
+    public init(onResult: @escaping (RetentionResult) -> Void) {
         self.onResult = onResult
     }
 
@@ -580,13 +580,13 @@ public struct ZSManageSubscriptionSheet: View {
 
 // MARK: - SwiftUI View Modifier
 
-private struct ZSManageSubscriptionSheetModifier: ViewModifier {
+private struct RetentionSheetModifier: ViewModifier {
     @Binding var isPresented: Bool
-    let onResult: (ZSManageSubscriptionResult) -> Void
+    let onResult: (RetentionResult) -> Void
 
     func body(content: Content) -> some View {
         content.sheet(isPresented: $isPresented) {
-            ZSManageSubscriptionSheet { result in
+            RetentionSheet { result in
                 isPresented = false
                 onResult(result)
             }
@@ -596,11 +596,11 @@ private struct ZSManageSubscriptionSheetModifier: ViewModifier {
 
 extension View {
     /// Presents the manage subscription retention sheet when `isPresented` is true.
-    public func zsManageSubscriptionSheet(
+    public func retentionSheet(
         isPresented: Binding<Bool>,
-        onResult: @escaping (ZSManageSubscriptionResult) -> Void
+        onResult: @escaping (RetentionResult) -> Void
     ) -> some View {
-        modifier(ZSManageSubscriptionSheetModifier(
+        modifier(RetentionSheetModifier(
             isPresented: isPresented,
             onResult: onResult
         ))
@@ -609,12 +609,12 @@ extension View {
 
 // MARK: - UIKit Presentation
 
-extension ZSManageSubscriptionSheet {
+extension RetentionSheet {
     /// Present the manage subscription sheet from a UIKit view controller.
     @MainActor
     public static func present(
         from viewController: UIViewController,
-        onResult: @escaping (ZSManageSubscriptionResult) -> Void
+        onResult: @escaping (RetentionResult) -> Void
     ) {
         let bridge = UIKitManageSubscriptionBridge(
             onResult: onResult,
@@ -630,10 +630,10 @@ extension ZSManageSubscriptionSheet {
     }
 }
 
-/// Transparent bridge that presents `ZSManageSubscriptionSheet` via SwiftUI's `.sheet()`
+/// Transparent bridge that presents `RetentionSheet` via SwiftUI's `.sheet()`
 /// so `.presentationDetents` works correctly when called from UIKit.
 private struct UIKitManageSubscriptionBridge: View {
-    let onResult: (ZSManageSubscriptionResult) -> Void
+    let onResult: (RetentionResult) -> Void
     let onDismissed: () -> Void
 
     @State private var showSheet = true
@@ -641,7 +641,7 @@ private struct UIKitManageSubscriptionBridge: View {
     var body: some View {
         Color.clear
             .sheet(isPresented: $showSheet, onDismiss: onDismissed) {
-                ZSManageSubscriptionSheet(onResult: onResult)
+                RetentionSheet(onResult: onResult)
             }
     }
 }
@@ -649,9 +649,9 @@ private struct UIKitManageSubscriptionBridge: View {
 // MARK: - Preview
 
 #if DEBUG
-struct ZSManageSubscriptionSheet_Previews: PreviewProvider {
+struct RetentionSheet_Previews: PreviewProvider {
     static var previews: some View {
-        ZSManageSubscriptionSheet { result in
+        RetentionSheet { result in
             print("Result: \(result)")
         }
     }

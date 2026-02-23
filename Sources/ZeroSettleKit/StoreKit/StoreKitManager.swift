@@ -13,19 +13,19 @@ internal import ZeroSettleCore
 #endif
 
 /// Typealias to disambiguate StoreKit.Transaction from our Transaction model.
-public typealias SKTransaction = StoreKit.Transaction
+internal typealias SKTransaction = StoreKit.Transaction
 
 // MARK: - StoreKit Purchase Error
 
 /// Errors that can occur during StoreKit purchases.
 ///
-/// - Note: Prefer catching ``ZSError`` instead, which unifies all SDK errors.
-///   `StoreKitPurchaseError` cases map to `ZSError` as follows:
+/// - Note: Prefer catching ``ZeroSettleError`` instead, which unifies all SDK errors.
+///   `StoreKitPurchaseError` cases map to `ZeroSettleError` as follows:
 ///   - `.productNotFound` → ``ZSError/productNotFound(_:)``
 ///   - `.verificationFailed` → ``ZSError/storeKitVerificationFailed(underlyingError:)``
 ///   - `.userCancelled` → ``ZSError/cancelled``
 ///   - `.pending` → ``ZSError/purchasePending``
-public enum StoreKitPurchaseError: Error, LocalizedError {
+internal enum StoreKitPurchaseError: Error, LocalizedError {
     case productNotFound(String)
     case verificationFailed(Error)
     case userCancelled

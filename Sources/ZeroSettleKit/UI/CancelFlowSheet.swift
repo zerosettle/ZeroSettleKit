@@ -610,7 +610,7 @@ extension View {
     ///   - productId: The product the user wants to cancel
     ///   - userId: Your app's user identifier
     ///   - onResult: Called with the outcome when the flow completes
-    public func zsCancelFlow(
+    public func cancelFlow(
         isPresented: Binding<Bool>,
         productId: String,
         userId: String,

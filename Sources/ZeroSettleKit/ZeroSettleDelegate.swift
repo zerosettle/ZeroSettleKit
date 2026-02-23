@@ -11,13 +11,31 @@ import Foundation
 
 /// Delegate protocol to receive callbacks for ZeroSettle IAP events.
 /// All methods have default empty implementations — only implement what you need.
+///
+/// ## Choosing an observation pattern
+///
+/// - **UIKit apps** — Implement this delegate for event-driven callbacks.
+///   Best when you need to react to individual events (e.g., showing a toast on checkout completion).
+///
+/// - **SwiftUI apps** — Observe ``ZeroSettle/entitlements`` via `@ObservedObject`:
+///   ```swift
+///   @ObservedObject var zs = ZeroSettle.shared
+///   // zs.entitlements is @Published and drives SwiftUI updates automatically.
+///   ```
+///
+/// - **Structured concurrency** — Use ``ZeroSettle/entitlementUpdates`` (`AsyncStream`):
+///   ```swift
+///   for await entitlements in ZeroSettle.shared.entitlementUpdates {
+///       updateUI(with: entitlements)
+///   }
+///   ```
 @MainActor
 public protocol ZeroSettleDelegate: AnyObject {
 
     // MARK: - Checkout Events
     //
     // Note: These callbacks are supplementary — checkout results are also returned
-    // via the `purchase()` async method and the `zsPaymentSheet` completion handler.
+    // via the `purchase()` async method and the `checkoutSheet` completion handler.
 
     /// Called when a web checkout begins (Safari is opening).
     /// - Parameter productId: The product being purchased
@@ -25,7 +43,7 @@ public protocol ZeroSettleDelegate: AnyObject {
 
     /// Called when a web checkout completes successfully.
     /// - Parameter transaction: The completed transaction
-    func zeroSettleCheckoutDidComplete(transaction: ZSTransaction)
+    func zeroSettleCheckoutDidComplete(transaction: CheckoutTransaction)
 
     /// Called when the user cancels the web checkout (returns without purchasing).
     /// - Parameter productId: The product that was being purchased
@@ -34,7 +52,7 @@ public protocol ZeroSettleDelegate: AnyObject {
     /// Called when a web checkout fails.
     /// - Parameters:
     ///   - productId: The product that was being purchased
-    ///   - error: The underlying error (``ZSError`` or ``PaymentSheetError``)
+    ///   - error: The underlying error (``ZeroSettleError`` or ``PaymentSheetError``)
     func zeroSettleCheckoutDidFail(productId: String, error: Error)
 
     // MARK: - Entitlement Events
@@ -58,7 +76,7 @@ public protocol ZeroSettleDelegate: AnyObject {
 
     /// Called when syncing a StoreKit transaction to ZeroSettle fails.
     /// - Parameter error: The underlying error. Concrete type is typically
-    ///   ``ZSError/apiError(_:)`` wrapping the HTTP failure.
+    ///   ``ZeroSettleError/apiError(_:)`` wrapping the HTTP failure.
     func zeroSettleStoreKitSyncFailed(error: Error)
 }
 
@@ -66,7 +84,7 @@ public protocol ZeroSettleDelegate: AnyObject {
 
 public extension ZeroSettleDelegate {
     func zeroSettleCheckoutDidBegin(productId: String) {}
-    func zeroSettleCheckoutDidComplete(transaction: ZSTransaction) {}
+    func zeroSettleCheckoutDidComplete(transaction: CheckoutTransaction) {}
     func zeroSettleCheckoutDidCancel(productId: String) {}
     func zeroSettleCheckoutDidFail(productId: String, error: Error) {}
     func zeroSettleEntitlementsDidUpdate(_ entitlements: [Entitlement]) {}

@@ -56,14 +56,68 @@ public enum CancelFlow {
         public let triggersPause: Bool
     }
 
+    /// The type of retention offer shown to the user.
+    ///
+    /// Unknown server values are preserved via `.other(String)` for forward compatibility.
+    public enum OfferType: Sendable, Equatable, Hashable {
+        case discount
+        case freeTrial
+        case freeExtension
+        case other(String)
+
+        /// The raw string value for serialization.
+        public var rawString: String {
+            switch self {
+            case .discount: return "discount"
+            case .freeTrial: return "free_trial"
+            case .freeExtension: return "free_extension"
+            case .other(let value): return value
+            }
+        }
+
+        init(rawString: String) {
+            switch rawString {
+            case "discount": self = .discount
+            case "free_trial": self = .freeTrial
+            case "free_extension": self = .freeExtension
+            default: self = .other(rawString)
+            }
+        }
+    }
+
     /// Save offer configuration shown to retain the user.
     public struct Offer: Codable, Sendable {
         public let enabled: Bool
         public let title: String
         public let body: String
         public let ctaText: String
-        public let type: String
+        public let type: OfferType
         public let value: String
+
+        private enum CodingKeys: String, CodingKey {
+            case enabled, title, body, ctaText, type, value
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            enabled = try container.decode(Bool.self, forKey: .enabled)
+            title = try container.decode(String.self, forKey: .title)
+            body = try container.decode(String.self, forKey: .body)
+            ctaText = try container.decode(String.self, forKey: .ctaText)
+            let rawType = try container.decode(String.self, forKey: .type)
+            type = OfferType(rawString: rawType)
+            value = try container.decode(String.self, forKey: .value)
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(enabled, forKey: .enabled)
+            try container.encode(title, forKey: .title)
+            try container.encode(body, forKey: .body)
+            try container.encode(ctaText, forKey: .ctaText)
+            try container.encode(type.rawString, forKey: .type)
+            try container.encode(value, forKey: .value)
+        }
     }
 
     /// Pause configuration for the retention page.

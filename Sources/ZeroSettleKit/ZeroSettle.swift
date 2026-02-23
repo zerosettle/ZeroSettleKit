@@ -43,7 +43,7 @@ public struct APIErrorDetail: Error, LocalizedError, Sendable {
 /// Classifies checkout failures into actionable categories.
 ///
 /// Use this to distinguish between card declines, server errors, and network issues
-/// when handling ``ZSError/checkoutFailed(reason:)``.
+/// when handling ``ZeroSettleError/checkoutFailed(reason:)``.
 public enum CheckoutFailure: Sendable {
     /// The requested product was not found on the server.
     case productNotFound
@@ -63,12 +63,12 @@ public enum CheckoutFailure: Sendable {
 
 /// Unified error type for the ZeroSettle IAP SDK.
 ///
-/// All public methods throw `ZSError`. Match on specific cases to handle
+/// All public methods throw `ZeroSettleError`. Match on specific cases to handle
 /// different failure modes:
 /// ```swift
 /// do {
 ///     try await ZeroSettle.shared.purchase(productId: "premium", userId: "user_42")
-/// } catch let error as ZSError {
+/// } catch let error as ZeroSettleError {
 ///     switch error {
 ///     case .notConfigured: // SDK not set up
 ///     case .cancelled: // User cancelled
@@ -78,7 +78,7 @@ public enum CheckoutFailure: Sendable {
 ///     }
 /// }
 /// ```
-public enum ZSError: Error, LocalizedError {
+public enum ZeroSettleError: Error, LocalizedError {
     /// The SDK has not been configured. Call ``ZeroSettle/configure(_:)`` first.
     case notConfigured
 
@@ -219,9 +219,15 @@ public final class ZeroSettle: ObservableObject {
     @Published public private(set) var isConfigured: Bool = false
 
     /// Cached products from the last `fetchProducts()` call.
-    @Published public private(set) var products: [ZSProduct] = []
+    @Published public private(set) var products: [Product] = []
 
     /// Current entitlements (merged from StoreKit and web checkout sources).
+    ///
+    /// **SwiftUI**: Observe via `@ObservedObject` — the property is `@Published` and drives
+    /// view updates automatically.
+    ///
+    /// For UIKit or structured concurrency alternatives, see ``ZeroSettleDelegate`` and
+    /// ``entitlementUpdates``.
     @Published public private(set) var entitlements: [Entitlement] = []
 
     /// Whether a web checkout is currently in progress (user is in Safari).
@@ -239,9 +245,9 @@ public final class ZeroSettle: ObservableObject {
     @Published public private(set) var isBootstrapped: Bool = false
 
     /// Migration manager for the StoreKit → web checkout migration flow.
-    /// Access via ``getOrCreateMigrationManager(userId:)`` to guarantee a single shared instance.
+    /// Access via ``migrationManager(for:)`` to guarantee a single shared instance.
     /// Starts in `.loading` and transitions after bootstrap completes.
-    @Published public private(set) var migrationManager: ZSMigrationManager?
+    @Published public private(set) var migrationManager: MigrationManager?
 
     // MARK: - Async Observation
 
@@ -266,9 +272,9 @@ public final class ZeroSettle: ObservableObject {
 
     /// The effective checkout type for the detected jurisdiction.
     /// If a jurisdiction override exists, uses that; otherwise falls back to the global default.
-    /// Returns `.webview` if remote config hasn't been fetched yet.
+    /// Returns `.webView` if remote config hasn't been fetched yet.
     public var checkoutType: CheckoutType {
-        guard let config = remoteConfig?.checkout else { return .webview }
+        guard let config = remoteConfig?.checkout else { return .webView }
         let jurisdiction = detectedJurisdiction ?? .row
         if let override = config.jurisdictions[jurisdiction] {
             return override.sheetType
@@ -324,6 +330,18 @@ public final class ZeroSettle: ObservableObject {
     }
 
     // MARK: - Private Helpers
+
+    /// Throws ``ZeroSettleError/userIdRequired(productId:)`` when a `userId` is needed but absent.
+    private func validateUserIdIfRequired(for product: Product, userId: String?) throws {
+        guard userId == nil else { return }
+        guard product.type == .autoRenewableSubscription
+           || product.type == .nonRenewingSubscription
+           || product.type == .nonConsumable else { return }
+        #if DEBUG
+        assertionFailure("userId is required for \(product.type.rawValue) products. Pass a userId to purchase() or purchaseViaStoreKit().")
+        #endif
+        throw ZeroSettleError.userIdRequired(productId: product.id)
+    }
 
     /// Update entitlements and notify all observers (delegate + AsyncStream).
     private func updateEntitlements(_ newEntitlements: [Entitlement]) {
@@ -427,7 +445,7 @@ public final class ZeroSettle: ObservableObject {
     /// Equivalent to calling ``fetchProducts(userId:)`` and ``restoreEntitlements(userId:)``
     /// in sequence. Throws if the product fetch or entitlement restore fails.
     ///
-    /// To preload payment sheets, use the `preload` parameter on `.zsPaymentSheet()`:
+    /// To preload payment sheets, use the `preload` parameter on `.checkoutSheet()`:
     /// ```swift
     /// ZeroSettle.shared.configure(.init(publishableKey: "zs_pk_live_..."))
     /// try await ZeroSettle.shared.bootstrap(userId: currentUser.id)
@@ -454,9 +472,9 @@ public final class ZeroSettle: ObservableObject {
         isBootstrapped = true
 
         // 4. Ensure migration manager exists. If the view already created one
-        //    (via getOrCreateMigrationManager), reuse it — Combine will re-evaluate
+        //    (via migrationManager(for:)), reuse it — Combine will re-evaluate
         //    now that isBootstrapped is true. Otherwise create one with full data.
-        _ = getOrCreateMigrationManager(userId: userId)
+        _ = migrationManager(for: userId)
 
         return catalog
     }
@@ -465,16 +483,16 @@ public final class ZeroSettle: ObservableObject {
 
     /// Returns the shared migration manager, creating one if it doesn't exist yet.
     ///
-    /// Both ``ZSMigrateTipView`` and ``bootstrap(userId:)`` call this to guarantee
+    /// Both ``MigrationTipView`` and ``bootstrap(userId:)`` call this to guarantee
     /// a single shared instance. The manager starts in `.loading` and transitions
     /// to `.eligible` or `.ineligible` once bootstrap completes (via Combine).
     ///
     /// - Parameter userId: Your app's user identifier
-    /// - Returns: The shared ``ZSMigrationManager``
+    /// - Returns: The shared ``MigrationManager``
     @discardableResult
-    public func getOrCreateMigrationManager(userId: String) -> ZSMigrationManager {
+    public func migrationManager(for userId: String) -> MigrationManager {
         if let existing = migrationManager { return existing }
-        let manager = ZSMigrationManager(userId: userId)
+        let manager = MigrationManager(userId: userId)
         migrationManager = manager
         return manager
     }
@@ -491,7 +509,7 @@ public final class ZeroSettle: ObservableObject {
     @discardableResult
     public func fetchProducts(userId: String? = nil) async throws -> ProductCatalog {
         guard let backend else {
-            throw ZSError.notConfigured
+            throw ZeroSettleError.notConfigured
         }
 
         do {
@@ -547,18 +565,18 @@ public final class ZeroSettle: ObservableObject {
     /// is dismissed.
     ///
     /// - Important: `userId` is **required** for subscriptions and non-consumable products.
-    ///   Passing `nil` for these product types throws ``ZSError/userIdRequired(productId:)``.
+    ///   Passing `nil` for these product types throws ``ZeroSettleError/userIdRequired(productId:)``.
     ///   Consumable products may omit `userId`.
     ///
     /// - Parameters:
     ///   - productId: The product identifier to purchase
     ///   - userId: Your app's user identifier. Required for subscriptions and non-consumables.
     ///     Must match your RevenueCat app user ID if using RC.
-    /// - Returns: The verified ``ZSTransaction`` on success
+    /// - Returns: The verified ``CheckoutTransaction`` on success
     @discardableResult
-    public func purchase(productId: String, userId: String? = nil) async throws -> ZSTransaction {
+    public func purchase(productId: String, userId: String? = nil) async throws -> CheckoutTransaction {
         guard let checkoutFlow, let backend else {
-            throw ZSError.notConfigured
+            throw ZeroSettleError.notConfigured
         }
 
         // Warn if the universal link handler isn't installed
@@ -569,13 +587,8 @@ public final class ZeroSettle: ObservableObject {
         #endif
 
         // Subscriptions and non-consumables require a userId for entitlement tracking
-        if userId == nil,
-           let product = products.first(where: { $0.id == productId }),
-           product.type == .autoRenewableSubscription || product.type == .nonRenewingSubscription || product.type == .nonConsumable {
-            #if DEBUG
-            assertionFailure("userId is required for \(product.type.rawValue) products. Pass a userId to purchase() or purchaseViaStoreKit().")
-            #endif
-            throw ZSError.userIdRequired(productId: productId)
+        if let product = products.first(where: { $0.id == productId }) {
+            try validateUserIdIfRequired(for: product, userId: userId)
         }
 
         // Log the effective checkout routing decision
@@ -586,7 +599,7 @@ public final class ZeroSettle: ObservableObject {
         // Check if web checkout is enabled for the detected jurisdiction
         if !isWebCheckoutEnabled {
             ZSLogger.error("Web checkout disabled for \(effectiveJurisdiction.rawValue) jurisdiction. The SDK will throw webCheckoutDisabledForJurisdiction. Configure this in your ZeroSettle dashboard under Checkout Configuration.", category: .iap)
-            throw ZSError.webCheckoutDisabledForJurisdiction(effectiveJurisdiction)
+            throw ZeroSettleError.webCheckoutDisabledForJurisdiction(effectiveJurisdiction)
         }
 
         // Update StoreKit manager with user ID for future sync operations
@@ -617,16 +630,16 @@ public final class ZeroSettle: ObservableObject {
                         return transaction
                     case .cancelled:
                         delegate?.zeroSettleCheckoutDidCancel(productId: productId)
-                        throw ZSError.cancelled
+                        throw ZeroSettleError.cancelled
                     }
-                } catch let error as ZSError {
+                } catch let error as ZeroSettleError {
                     pendingCheckout = false
                     throw error
                 } catch {
                     pendingCheckout = false
                     ZSLogger.error("Native Apple Pay failed for \(productId): \(error)", category: .iap)
                     delegate?.zeroSettleCheckoutDidFail(productId: productId, error: error)
-                    throw ZSError.checkoutFailed(reason: .other(error.localizedDescription))
+                    throw ZeroSettleError.checkoutFailed(reason: .other(error.localizedDescription))
                 }
             } else {
                 // Log the specific reason for fallback
@@ -661,7 +674,7 @@ public final class ZeroSettle: ObservableObject {
                     let transaction = try await backend.getTransaction(transactionId: transactionId)
                     return transaction
                 }
-                throw ZSError.cancelled
+                throw ZeroSettleError.cancelled
             }
 
             // Universal link didn't fire — verify via polling
@@ -669,7 +682,7 @@ public final class ZeroSettle: ObservableObject {
                 pendingCheckout = false
 
                 delegate?.zeroSettleCheckoutDidCancel(productId: productId)
-                throw ZSError.cancelled
+                throw ZeroSettleError.cancelled
             }
 
             do {
@@ -693,16 +706,16 @@ public final class ZeroSettle: ObservableObject {
                 switch sheetError {
                 case .cancelled:
                     delegate?.zeroSettleCheckoutDidCancel(productId: productId)
-                    throw ZSError.cancelled
+                    throw ZeroSettleError.cancelled
                 case .verificationFailed(let message):
                     delegate?.zeroSettleCheckoutDidFail(productId: productId, error: sheetError)
-                    throw ZSError.transactionVerificationFailed(message)
+                    throw ZeroSettleError.transactionVerificationFailed(message)
                 default:
                     delegate?.zeroSettleCheckoutDidFail(productId: productId, error: sheetError)
-                    throw ZSError.checkoutFailed(reason: .other(sheetError.localizedDescription ?? "Unknown error"))
+                    throw ZeroSettleError.checkoutFailed(reason: .other(sheetError.localizedDescription ?? "Unknown error"))
                 }
             }
-        } catch let error as ZSError {
+        } catch let error as ZeroSettleError {
             pendingCheckout = false
             throw error
         } catch {
@@ -735,16 +748,16 @@ public final class ZeroSettle: ObservableObject {
             } else {
                 reason = .other(error.localizedDescription)
             }
-            throw ZSError.checkoutFailed(reason: reason)
+            throw ZeroSettleError.checkoutFailed(reason: reason)
         }
     }
 
     /// Purchase a product via native StoreKit 2.
     ///
-    /// Use this for products synced to App Store Connect where ``ZSProduct/storeKitAvailable`` is `true`.
+    /// Use this for products synced to App Store Connect where ``Product/storeKitAvailable`` is `true`.
     ///
     /// - Important: `userId` is **required** for subscriptions and non-consumable products.
-    ///   Passing `nil` for these product types throws ``ZSError/userIdRequired(productId:)``.
+    ///   Passing `nil` for these product types throws ``ZeroSettleError/userIdRequired(productId:)``.
     ///
     /// - Parameters:
     ///   - productId: The product identifier to purchase
@@ -752,24 +765,18 @@ public final class ZeroSettle: ObservableObject {
     /// - Returns: The verified StoreKit transaction
     public func purchaseViaStoreKit(productId: String, userId: String? = nil) async throws -> StoreKit.Transaction {
         guard let storeKitManager else {
-            throw ZSError.notConfigured
+            throw ZeroSettleError.notConfigured
         }
 
         guard let product = products.first(where: { $0.id == productId }) else {
-            throw ZSError.productNotFound(productId)
+            throw ZeroSettleError.productNotFound(productId)
         }
 
         // Subscriptions and non-consumables require a userId for entitlement tracking
-        if userId == nil,
-           product.type == .autoRenewableSubscription || product.type == .nonRenewingSubscription || product.type == .nonConsumable {
-            #if DEBUG
-            assertionFailure("userId is required for \(product.type.rawValue) products. Pass a userId to purchase() or purchaseViaStoreKit().")
-            #endif
-            throw ZSError.userIdRequired(productId: productId)
-        }
+        try validateUserIdIfRequired(for: product, userId: userId)
 
         guard let skProduct = product._storeKitProduct else {
-            throw StoreKitPurchaseError.productNotFound(productId)
+            throw ZeroSettleError.productNotFound(productId)
         }
 
         if let userId {
@@ -787,7 +794,7 @@ public final class ZeroSettle: ObservableObject {
     /// - Parameter userId: Your app's user identifier
     public func trackMigrationConversion(userId: String) async throws {
         guard let backend else {
-            throw ZSError.notConfigured
+            throw ZeroSettleError.notConfigured
         }
 
         do {
@@ -801,14 +808,19 @@ public final class ZeroSettle: ObservableObject {
 
     // MARK: - Customer Portal
 
-    /// Open the Stripe customer portal for subscription management.
+    /// Direct Stripe portal access only.
+    ///
+    /// Opens the Stripe customer portal for subscription management.
     /// Creates a portal session via the backend, presents it in SFSafariViewController,
     /// and automatically refreshes entitlements when the user dismisses.
+    ///
+    /// For smart routing that automatically chooses between Stripe and Apple's native
+    /// management UI, use ``showManageSubscription(userId:)`` instead (recommended).
     ///
     /// - Parameter userId: Your app's user identifier
     public func openCustomerPortal(userId: String) async throws {
         guard let backend, let customerPortalFlow else {
-            throw ZSError.notConfigured
+            throw ZeroSettleError.notConfigured
         }
 
         do {
@@ -825,7 +837,7 @@ public final class ZeroSettle: ObservableObject {
         }
     }
 
-    /// Smart subscription management that routes to the appropriate UI based on entitlement sources.
+    /// Recommended default — smart routing for subscription management.
     ///
     /// - Web checkout entitlements (or no entitlements) → Opens Stripe customer portal
     /// - StoreKit-only entitlements → Opens Apple's native subscription management
@@ -905,7 +917,7 @@ public final class ZeroSettle: ObservableObject {
 
         guard let backend else {
             ZSLogger.error("[restoreEntitlements] SDK not configured, throwing notConfigured", category: .iap)
-            throw ZSError.notConfigured
+            throw ZeroSettleError.notConfigured
         }
 
         // Update StoreKit manager with user ID
@@ -932,7 +944,7 @@ public final class ZeroSettle: ObservableObject {
             ZSLogger.error("[restoreEntitlements] Failed to fetch web entitlements for userId=\"\(userId)\": \(error)", category: .iap)
             // Update with partial (StoreKit-only) entitlements before throwing
             updateEntitlements(allEntitlements)
-            throw ZSError.restoreEntitlementsFailed(
+            throw ZeroSettleError.restoreEntitlementsFailed(
                 partialEntitlements: allEntitlements,
                 underlyingError: error
             )
@@ -1000,7 +1012,7 @@ public final class ZeroSettle: ObservableObject {
     /// - Returns: The cancel flow ``CancelFlow/Config``
     public func fetchCancelFlowConfig() async throws -> CancelFlow.Config {
         guard let backend else {
-            throw ZSError.notConfigured
+            throw ZeroSettleError.notConfigured
         }
 
         do {
@@ -1025,7 +1037,7 @@ public final class ZeroSettle: ObservableObject {
     /// - Returns: The date when the subscription will automatically resume, or `nil` if unspecified
     public func pauseSubscription(productId: String, userId: String, pauseOptionId: Int) async throws -> Date? {
         guard let backend else {
-            throw ZSError.notConfigured
+            throw ZeroSettleError.notConfigured
         }
 
         do {
@@ -1055,7 +1067,7 @@ public final class ZeroSettle: ObservableObject {
     ///   - userId: Your app's user identifier
     public func resumeSubscription(productId: String, userId: String) async throws {
         guard let backend else {
-            throw ZSError.notConfigured
+            throw ZeroSettleError.notConfigured
         }
 
         do {
@@ -1080,7 +1092,7 @@ public final class ZeroSettle: ObservableObject {
     ///   - userId: Your app's user identifier
     public func cancelSubscription(productId: String, userId: String) async throws {
         guard let backend else {
-            throw ZSError.notConfigured
+            throw ZeroSettleError.notConfigured
         }
 
         do {
@@ -1091,6 +1103,91 @@ public final class ZeroSettle: ObservableObject {
             _ = try? await restoreEntitlements(userId: userId)
         } catch {
             ZSLogger.error("Failed to cancel subscription: \(error)", category: .iap)
+            throw Backend.wrapError(error)
+        }
+    }
+
+    // MARK: - Upgrade Offer
+
+    /// Present the upgrade offer sheet for a subscription upgrade.
+    ///
+    /// Fetches the upgrade offer configuration from the backend, then presents a
+    /// native SwiftUI sheet with the savings pitch. If no upgrade is available,
+    /// returns `.dismissed` immediately.
+    ///
+    /// The response (outcome) is automatically submitted to the backend when the
+    /// user completes or dismisses the flow.
+    ///
+    /// - Parameters:
+    ///   - productId: Optional product to check upgrade for (backend may auto-detect)
+    ///   - userId: Your app's user identifier
+    /// - Returns: The upgrade offer outcome (`.upgraded`, `.declined`, or `.dismissed`)
+    public func presentUpgradeOffer(productId: String? = nil, userId: String) async -> UpgradeOffer.Result {
+        guard let backend else {
+            ZSLogger.error("presentUpgradeOffer called but SDK not configured", category: .iap)
+            return .dismissed
+        }
+
+        let config: UpgradeOffer.Config
+        do {
+            config = try await backend.fetchUpgradeOffer(userId: userId, productId: productId)
+        } catch {
+            ZSLogger.error("Failed to fetch upgrade offer config: \(error)", category: .iap)
+            return .dismissed
+        }
+
+        guard config.available,
+              let currentProduct = config.currentProduct,
+              let targetProduct = config.targetProduct else {
+            ZSLogger.info("Upgrade offer not available: \(config.reason?.rawString ?? "unknown")", category: .iap)
+            return .dismissed
+        }
+
+        let presenter = UpgradeOfferPresenter()
+        let result = await presenter.present(
+            config: config,
+            userId: userId,
+            backend: backend
+        )
+
+        // Fire-and-forget: submit response to backend
+        Task {
+            do {
+                try await backend.respondUpgradeOffer(UpgradeOffer.RespondRequest(
+                    userId: userId,
+                    currentProductId: currentProduct.referenceId,
+                    targetProductId: targetProduct.referenceId,
+                    outcome: result.outcomeName
+                ))
+                ZSLogger.debug("Upgrade offer response submitted", category: .iap)
+            } catch {
+                ZSLogger.error("Failed to submit upgrade offer response: \(error)", category: .iap)
+            }
+        }
+
+        ZSLogger.info("Upgrade offer completed with result: \(result.outcomeName)", category: .iap)
+        return result
+    }
+
+    /// Fetch the upgrade offer configuration without presenting any UI.
+    ///
+    /// Use this for checking availability or building custom upgrade offer experiences.
+    ///
+    /// - Parameters:
+    ///   - productId: Optional product to check upgrade for
+    ///   - userId: Your app's user identifier
+    /// - Returns: The upgrade offer ``UpgradeOffer/Config``
+    public func fetchUpgradeOfferConfig(productId: String? = nil, userId: String) async throws -> UpgradeOffer.Config {
+        guard let backend else {
+            throw ZeroSettleError.notConfigured
+        }
+
+        do {
+            let config = try await backend.fetchUpgradeOffer(userId: userId, productId: productId)
+            ZSLogger.info("Fetched upgrade offer config: available=\(config.available), reason=\(config.reason?.rawString ?? "none")", category: .iap)
+            return config
+        } catch {
+            ZSLogger.error("Failed to fetch upgrade offer config: \(error)", category: .iap)
             throw Backend.wrapError(error)
         }
     }
@@ -1163,7 +1260,7 @@ public final class ZeroSettle: ObservableObject {
             ZSLogger.error("Transaction verification failed: \(error)", category: .iap)
             delegate?.zeroSettleCheckoutDidFail(
                 productId: callback.productId,
-                error: ZSError.transactionVerificationFailed(error.localizedDescription)
+                error: ZeroSettleError.transactionVerificationFailed(error.localizedDescription)
             )
         }
     }
@@ -1171,7 +1268,7 @@ public final class ZeroSettle: ObservableObject {
     /// Refresh entitlements after a successful checkout.
     /// Fetches fresh entitlements from the backend and merges with StoreKit entitlements.
     /// Falls back to creating a local entitlement if the backend call fails.
-    private func refreshEntitlementsAfterCheckout(transaction: ZSTransaction) async {
+    private func refreshEntitlementsAfterCheckout(transaction: CheckoutTransaction) async {
         guard let backend else { return }
 
         if let userId = storeKitManager?.currentUserId {
@@ -1190,7 +1287,7 @@ public final class ZeroSettle: ObservableObject {
     }
 
     /// Create and append a local entitlement from a transaction when backend fetch fails.
-    private func appendLocalEntitlement(for transaction: ZSTransaction) {
+    private func appendLocalEntitlement(for transaction: CheckoutTransaction) {
         ZSLogger.info("Creating local fallback entitlement for \(transaction.productId) (transaction: \(transaction.id)). This entitlement was not fetched from the backend — it will be reconciled on the next restoreEntitlements() call.", category: .iap)
         let entitlement = Entitlement(
             id: "web_\(transaction.id)",

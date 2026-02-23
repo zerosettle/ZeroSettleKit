@@ -11,8 +11,8 @@ import Foundation
 /// Namespace for migration offer types.
 ///
 /// The migration flow encourages StoreKit subscribers to switch to web checkout
-/// billing at a discount. Developers can use ``ZSMigrationManager`` with these
-/// types to build fully custom migration UIs, or use the built-in ``ZSMigrateTipView``.
+/// billing at a discount. Developers can use ``MigrationManager`` with these
+/// types to build fully custom migration UIs, or use the built-in ``MigrationTipView``.
 ///
 /// Access types via the namespace: `MigrationOffer.State`, `MigrationOffer.OfferData`, etc.
 public enum MigrationOffer {

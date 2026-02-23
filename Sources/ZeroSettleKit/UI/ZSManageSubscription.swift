@@ -12,7 +12,7 @@ import SwiftUI
 /// Presents subscription management UI when `isPresented` becomes true.
 /// Routes to either Stripe customer portal or Apple's native management
 /// based on the user's entitlement sources.
-private struct ZSManageSubscriptionModifier: ViewModifier {
+private struct ManageSubscriptionModifier: ViewModifier {
     @Binding var isPresented: Bool
     let userId: String
 
@@ -41,17 +41,17 @@ extension View {
     ///     @State private var showManage = false
     ///
     ///     Button("Manage Subscription") { showManage = true }
-    ///         .zsManageSubscription(isPresented: $showManage, userId: "user_123")
+    ///         .manageSubscription(isPresented: $showManage, userId: "user_123")
     ///
     /// - Parameters:
     ///   - isPresented: Binding that triggers presentation when set to `true`.
     ///     Automatically reset to `false` when done.
     ///   - userId: Your app's user identifier
-    public func zsManageSubscription(
+    public func manageSubscription(
         isPresented: Binding<Bool>,
         userId: String
     ) -> some View {
-        modifier(ZSManageSubscriptionModifier(
+        modifier(ManageSubscriptionModifier(
             isPresented: isPresented,
             userId: userId
         ))
