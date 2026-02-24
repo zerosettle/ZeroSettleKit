@@ -9,13 +9,35 @@ internal import ZeroSettleCore
 
 // MARK: - Expandable Web Billing Tip View
 public struct MigrationTipView: View {
+
+    /// Lifecycle events emitted by ``MigrationTipView``.
+    ///
+    /// Use these with the ``onEvent`` callback to track user progression
+    /// through the migration flow without polling ``ZSMigrationManager/state``.
+    public enum Event: Sendable {
+        /// The user tapped the main CTA button to begin checkout.
+        case ctaTapped
+        /// The web checkout completed successfully. The user now has a web
+        /// entitlement but their Apple subscription is still active.
+        case checkoutCompleted
+        /// The user opened Apple's subscription-management sheet to cancel
+        /// their Apple billing.
+        case appleSubscriptionManagementOpened
+        /// The full migration flow is finished — web checkout succeeded **and**
+        /// the Apple subscription-management sheet was shown.
+        case migrationCompleted
+        /// The view was dismissed (close button, auto-dismiss after completion,
+        /// or the user became ineligible).
+        case dismissed
+    }
+
     let userId: String
     let backgroundColor: Color
     let titleFont: Font?
     let bodyFont: Font?
     let ctaFont: Font?
     let borderColor: Color?
-    let onDismiss: (() -> Void)?
+    let onEvent: ((Event) -> Void)?
 
     @StateObject private var manager: ZSMigrationManager
 
@@ -45,7 +67,7 @@ public struct MigrationTipView: View {
     ///   - bodyFont: Optional custom font for body/message text. When `nil`, the default system font is used.
     ///   - ctaFont: Optional custom font for CTA button text. When `nil`, the default system bold font is used.
     ///   - borderColor: Optional border color applied as a rounded rectangle stroke on card views. When `nil`, no border is drawn.
-    ///   - onDismiss: Optional closure invoked when the view is dismissed (close button, auto-dismiss after completion, or state becomes ineligible).
+    ///   - onEvent: Optional closure invoked when a lifecycle ``Event`` occurs (CTA tap, checkout completion, migration completion, dismissal, etc.).
     /// - Note: Free trial days are automatically calculated based on when the user's current StoreKit subscription expires.
     public init(
         userId: String,
@@ -54,7 +76,7 @@ public struct MigrationTipView: View {
         bodyFont: Font? = nil,
         ctaFont: Font? = nil,
         borderColor: Color? = nil,
-        onDismiss: (() -> Void)? = nil
+        onEvent: ((Event) -> Void)? = nil
     ) {
         self.userId = userId
         self.backgroundColor = backgroundColor
@@ -62,10 +84,35 @@ public struct MigrationTipView: View {
         self.bodyFont = bodyFont
         self.ctaFont = ctaFont
         self.borderColor = borderColor
-        self.onDismiss = onDismiss
+        self.onEvent = onEvent
         // Always use the shared singleton manager. migrationManager(for:) guarantees
         // a single instance — whether bootstrap ran first or the view was created first.
         _manager = StateObject(wrappedValue: ZeroSettle.shared.migrationManager(for: userId))
+    }
+
+    /// Backward-compatible convenience that maps the legacy `onDismiss` closure to
+    /// the new ``onEvent`` callback, firing only on ``Event/dismissed``.
+    @available(*, deprecated, renamed: "init(userId:backgroundColor:titleFont:bodyFont:ctaFont:borderColor:onEvent:)")
+    public init(
+        userId: String,
+        backgroundColor: Color = .black,
+        titleFont: Font? = nil,
+        bodyFont: Font? = nil,
+        ctaFont: Font? = nil,
+        borderColor: Color? = nil,
+        onDismiss: @escaping () -> Void
+    ) {
+        self.init(
+            userId: userId,
+            backgroundColor: backgroundColor,
+            titleFont: titleFont,
+            bodyFont: bodyFont,
+            ctaFont: ctaFont,
+            borderColor: borderColor,
+            onEvent: { event in
+                if case .dismissed = event { onDismiss() }
+            }
+        )
     }
 
     // MARK: - Convenience
@@ -123,7 +170,7 @@ public struct MigrationTipView: View {
         }
         .onChange(of: manager.state) { _, newState in
             if newState == .dismissed {
-                onDismiss?()
+                onEvent?(.dismissed)
             }
         }
     }
@@ -196,6 +243,7 @@ public struct MigrationTipView: View {
                                 checkoutURL = nil
                             }
                             manager.markCheckoutSucceeded()
+                            onEvent?(.checkoutCompleted)
                         }
                     )
                     .frame(height: contentHeight)
@@ -347,6 +395,7 @@ public struct MigrationTipView: View {
     @MainActor
     private func openSubscriptionManagement() async {
         await manager.showAppleSubscriptionManagement()
+        onEvent?(.appleSubscriptionManagementOpened)
 
         // Show congratulations state with confetti.
         // The trigger increment must be deferred so the congratulationsCardView
@@ -358,6 +407,8 @@ public struct MigrationTipView: View {
             self.confettiTrigger += 1
         }
 
+        onEvent?(.migrationCompleted)
+
         // Auto-dismiss after 5 seconds
         DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
             withAnimation(.easeInOut(duration: 0.3)) {
@@ -367,6 +418,7 @@ public struct MigrationTipView: View {
     }
 
     private func startCheckout() {
+        onEvent?(.ctaTapped)
         let iap = ZeroSettle.shared
         let checkoutType = iap.checkoutType
 
@@ -399,6 +451,7 @@ public struct MigrationTipView: View {
             do {
                 try await iap.purchase(productId: offerData.activeStoreKitProductId, userId: userId)
                 manager.markCheckoutSucceeded()
+                onEvent?(.checkoutCompleted)
             } catch {
                 // Stay in presented state; user can retry
             }

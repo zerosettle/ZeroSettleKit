@@ -84,6 +84,7 @@ import SwiftUI
 //
 // From UI/ZSMigrateTipView.swift:
 //   - MigrationTipView
+//   - MigrationTipView.Event
 //
 // View Modifiers (on SwiftUI View):
 //   - .checkoutSheet(isPresented:product:userId:freeTrialDays:dismissible:preload:onComplete:)
