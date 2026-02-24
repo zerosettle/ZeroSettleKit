@@ -70,16 +70,23 @@ class ZSMigrateTipModule: NSObject {
                   let rootVC = windowScene.windows.first?.rootViewController else {
                 return
             }
-            
+
             // Find and dismiss the presented view controller
             var topVC = rootVC
             while let presented = topVC.presentedViewController {
                 topVC = presented
             }
-            
+
             if topVC != rootVC {
                 topVC.dismiss(animated: true)
             }
+        }
+    }
+
+    @objc
+    func resetMigrateTipState() {
+        DispatchQueue.main.async {
+            MigrationManager.resetDismissedState()
         }
     }
 }

@@ -155,19 +155,26 @@ private struct CancelFlowSheetView: View {
         }
     }
 
+    private var canGoBack: Bool {
+        if showingRetention { return true }
+        return currentQuestionIndex > 0
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            // Top bar
+            // Top bar: back arrow + progress dots
             HStack {
+                // Back arrow (visible after first step)
                 Button {
-                    finish(result: .dismissed)
+                    goBack()
                 } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(.secondary)
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.primary)
                         .frame(width: 30, height: 30)
-                        .background(.quaternary, in: Circle())
                 }
+                .opacity(canGoBack ? 1 : 0)
+                .disabled(!canGoBack)
 
                 Spacer()
 
@@ -212,7 +219,7 @@ private struct CancelFlowSheetView: View {
                             .padding(.vertical, 14)
                             .background(
                                 canContinue ? Color.green : Color.green.opacity(0.4),
-                                in: RoundedRectangle(cornerRadius: 12)
+                                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
                             )
                     }
                     .disabled(!canContinue)
@@ -268,32 +275,41 @@ private struct CancelFlowSheetView: View {
     }
 
     private func singleSelectView(question: CancelFlow.Question) -> some View {
-        VStack(spacing: 0) {
+        VStack(spacing: 10) {
             ForEach(question.options) { option in
+                let isSelected = selectedOptionId == option.id
                 Button {
-                    selectedOptionId = option.id
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        selectedOptionId = option.id
+                    }
                 } label: {
                     HStack(spacing: 12) {
-                        Image(systemName: selectedOptionId == option.id ? "checkmark.circle.fill" : "circle")
+                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                             .font(.system(size: 22))
-                            .foregroundStyle(selectedOptionId == option.id ? .green : .secondary)
+                            .foregroundStyle(isSelected ? Color.green : Color(.systemGray3))
 
                         Text(option.label)
                             .font(.body)
+                            .fontWeight(isSelected ? .medium : .regular)
                             .foregroundStyle(.primary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .padding(.vertical, 14)
                     .padding(.horizontal, 16)
-                }
-
-                if option.id != question.options.last?.id {
-                    Divider()
-                        .padding(.leading, 50)
+                    .background(
+                        isSelected ? Color.green.opacity(0.06) : Color(.secondarySystemGroupedBackground),
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(
+                                isSelected ? Color.green.opacity(0.5) : Color(.separator).opacity(0.3),
+                                lineWidth: isSelected ? 1.5 : 0.5
+                            )
+                    )
                 }
             }
         }
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
     }
 
     private var freeTextView: some View {
@@ -365,34 +381,43 @@ private struct CancelFlowSheetView: View {
                 .frame(maxWidth: .infinity)
                 .multilineTextAlignment(.center)
 
-            // Pause duration options (radio buttons)
-            VStack(spacing: 0) {
+            // Pause duration options (card-based)
+            VStack(spacing: 10) {
                 let sortedOptions = pauseConfig.options.sorted { $0.order < $1.order }
                 ForEach(sortedOptions) { option in
+                    let isSelected = selectedPauseOptionId == option.id
                     Button {
-                        selectedPauseOptionId = option.id
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            selectedPauseOptionId = option.id
+                        }
                     } label: {
                         HStack(spacing: 12) {
-                            Image(systemName: selectedPauseOptionId == option.id ? "checkmark.circle.fill" : "circle")
+                            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                                 .font(.system(size: 22))
-                                .foregroundStyle(selectedPauseOptionId == option.id ? .blue : .secondary)
+                                .foregroundStyle(isSelected ? Color.blue : Color(.systemGray3))
 
                             Text(option.label)
                                 .font(.body)
+                                .fontWeight(isSelected ? .medium : .regular)
                                 .foregroundStyle(.primary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .padding(.vertical, 12)
+                        .padding(.vertical, 14)
                         .padding(.horizontal, 16)
-                    }
-
-                    if option.id != sortedOptions.last?.id {
-                        Divider()
-                            .padding(.leading, 50)
+                        .background(
+                            isSelected ? Color.blue.opacity(0.06) : Color(.secondarySystemGroupedBackground),
+                            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .strokeBorder(
+                                    isSelected ? Color.blue.opacity(0.5) : Color(.separator).opacity(0.3),
+                                    lineWidth: isSelected ? 1.5 : 0.5
+                                )
+                        )
                     }
                 }
             }
-            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
         }
     }
 
@@ -410,7 +435,7 @@ private struct CancelFlowSheetView: View {
                     .foregroundStyle(.white)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)
-                    .background(.green, in: RoundedRectangle(cornerRadius: 12))
+                    .background(.green, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
         }
 
@@ -424,7 +449,7 @@ private struct CancelFlowSheetView: View {
                         .tint(.white)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 14)
-                        .background(Color.blue.opacity(0.4), in: RoundedRectangle(cornerRadius: 12))
+                        .background(Color.blue.opacity(0.4), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 } else {
                     Text(pauseConfig.ctaText)
                         .font(.body.weight(.semibold))
@@ -433,7 +458,7 @@ private struct CancelFlowSheetView: View {
                         .padding(.vertical, 14)
                         .background(
                             selectedPauseOptionId != nil ? Color.blue : Color.blue.opacity(0.4),
-                            in: RoundedRectangle(cornerRadius: 12)
+                            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
                         )
                 }
             }
@@ -452,6 +477,29 @@ private struct CancelFlowSheetView: View {
     }
 
     // MARK: - Flow Logic
+
+    private func goBack() {
+        if showingRetention {
+            // Return to last question
+            showingRetention = false
+            offerShown = false
+            pauseShown = false
+            earlyOfferTriggered = false
+            selectedPauseOptionId = nil
+            // Remove the last answer (it was the one that advanced us here)
+            if !answers.isEmpty { answers.removeLast() }
+            // Restore the selection for the current question
+            selectedOptionId = answers.count <= currentQuestionIndex ? nil : nil
+        } else if currentQuestionIndex > 0 {
+            currentQuestionIndex -= 1
+            // Remove the last answer and restore selection
+            if !answers.isEmpty {
+                let removed = answers.removeLast()
+                selectedOptionId = removed.selectedOptionId
+                freeTextInput = removed.freeText ?? ""
+            }
+        }
+    }
 
     private func advanceToNext() {
         guard let question = currentQuestion else { return }
@@ -558,7 +606,8 @@ private struct CancelFlowSheetView: View {
             pauseAccepted: pauseAccepted,
             pauseDurationDays: pauseDurationDays,
             lastStepSeen: lastStepSeen,
-            answers: answers
+            answers: answers,
+            variantId: config.variantId
         )
         onComplete(result, payload)
     }

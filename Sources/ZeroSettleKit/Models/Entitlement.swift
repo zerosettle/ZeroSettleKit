@@ -16,8 +16,15 @@ public struct Entitlement: Identifiable, Sendable, Codable, Equatable {
     // MARK: - Nested Types
 
     /// The origin of a purchase/entitlement.
+    ///
+    /// A single user can hold entitlements from multiple sources simultaneously
+    /// (e.g., a StoreKit subscription and a web checkout consumable).
+    /// ``ZeroSettle/showManageSubscription(userId:)`` uses these values to route
+    /// to the appropriate management UI.
     public enum Source: String, Sendable, Codable {
+        /// Purchased through Apple's StoreKit (App Store billing).
         case storeKit = "store_kit"
+        /// Purchased through ZeroSettle's web checkout (Stripe billing).
         case webCheckout = "web_checkout"
     }
 
@@ -29,6 +36,9 @@ public struct Entitlement: Identifiable, Sendable, Codable, Equatable {
         case paused
         case expired
         case revoked
+        case cancelled
+        case gracePeriod
+        case pastDue
         case unknown(String)
 
         /// The raw string value for serialization and wrapper bridge code.
@@ -38,6 +48,9 @@ public struct Entitlement: Identifiable, Sendable, Codable, Equatable {
             case .paused: return "paused"
             case .expired: return "expired"
             case .revoked: return "revoked"
+            case .cancelled: return "cancelled"
+            case .gracePeriod: return "grace_period"
+            case .pastDue: return "past_due"
             case .unknown(let value): return value
             }
         }
@@ -48,6 +61,9 @@ public struct Entitlement: Identifiable, Sendable, Codable, Equatable {
             case "paused": self = .paused
             case "expired": self = .expired
             case "revoked": self = .revoked
+            case "cancelled": self = .cancelled
+            case "grace_period": self = .gracePeriod
+            case "past_due": self = .pastDue
             default: self = .unknown(rawString)
             }
         }
@@ -79,6 +95,18 @@ public struct Entitlement: Identifiable, Sendable, Codable, Equatable {
     /// When the entitlement expires. `nil` for lifetime/consumable purchases.
     public let expiresAt: Date?
 
+    /// Whether the subscription will auto-renew at the end of the current period.
+    public let willRenew: Bool
+
+    /// Whether this entitlement is currently in a free trial period.
+    public let isTrial: Bool
+
+    /// When the free trial period ends. `nil` if not a trial.
+    public let trialEndsAt: Date?
+
+    /// When the user cancelled the subscription. `nil` if not cancelled.
+    public let cancelledAt: Date?
+
     /// When the purchase was made
     public let purchasedAt: Date
 
@@ -87,9 +115,22 @@ public struct Entitlement: Identifiable, Sendable, Codable, Equatable {
         status == .paused
     }
 
+    /// Whether the user has cancelled but the entitlement is still active until period end.
+    public var isCancelled: Bool {
+        cancelledAt != nil && isActive
+    }
+
+    /// Days remaining in the trial period. `nil` if not a trial.
+    public var trialDaysRemaining: Int? {
+        guard isTrial, let trialEndsAt else { return nil }
+        let remaining = Calendar.current.dateComponents([.day], from: Date(), to: trialEndsAt).day ?? 0
+        return max(0, remaining)
+    }
+
     private enum CodingKeys: String, CodingKey {
         case id, productId, source, isActive, status
         case pausedAt, pauseResumesAt, expiresAt, purchasedAt
+        case willRenew, isTrial, trialEndsAt, cancelledAt
     }
 
     public init(
@@ -101,6 +142,10 @@ public struct Entitlement: Identifiable, Sendable, Codable, Equatable {
         pausedAt: Date? = nil,
         pauseResumesAt: Date? = nil,
         expiresAt: Date? = nil,
+        willRenew: Bool = true,
+        isTrial: Bool = false,
+        trialEndsAt: Date? = nil,
+        cancelledAt: Date? = nil,
         purchasedAt: Date
     ) {
         self.id = id
@@ -111,6 +156,10 @@ public struct Entitlement: Identifiable, Sendable, Codable, Equatable {
         self.pausedAt = pausedAt
         self.pauseResumesAt = pauseResumesAt
         self.expiresAt = expiresAt
+        self.willRenew = willRenew
+        self.isTrial = isTrial
+        self.trialEndsAt = trialEndsAt
+        self.cancelledAt = cancelledAt
         self.purchasedAt = purchasedAt
     }
 
@@ -129,6 +178,10 @@ public struct Entitlement: Identifiable, Sendable, Codable, Equatable {
         pausedAt = try container.decodeIfPresent(Date.self, forKey: .pausedAt)
         pauseResumesAt = try container.decodeIfPresent(Date.self, forKey: .pauseResumesAt)
         expiresAt = try container.decodeIfPresent(Date.self, forKey: .expiresAt)
+        willRenew = try container.decodeIfPresent(Bool.self, forKey: .willRenew) ?? true
+        isTrial = try container.decodeIfPresent(Bool.self, forKey: .isTrial) ?? false
+        trialEndsAt = try container.decodeIfPresent(Date.self, forKey: .trialEndsAt)
+        cancelledAt = try container.decodeIfPresent(Date.self, forKey: .cancelledAt)
         purchasedAt = try container.decode(Date.self, forKey: .purchasedAt)
     }
 
@@ -142,6 +195,10 @@ public struct Entitlement: Identifiable, Sendable, Codable, Equatable {
         try container.encodeIfPresent(pausedAt, forKey: .pausedAt)
         try container.encodeIfPresent(pauseResumesAt, forKey: .pauseResumesAt)
         try container.encodeIfPresent(expiresAt, forKey: .expiresAt)
+        try container.encode(willRenew, forKey: .willRenew)
+        try container.encode(isTrial, forKey: .isTrial)
+        try container.encodeIfPresent(trialEndsAt, forKey: .trialEndsAt)
+        try container.encodeIfPresent(cancelledAt, forKey: .cancelledAt)
         try container.encode(purchasedAt, forKey: .purchasedAt)
     }
 }

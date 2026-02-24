@@ -3,7 +3,7 @@ export { ZSMigrateTipView, default } from './ZSMigrateTipView';
 export type { ZSMigrateTipViewProps } from './ZSMigrateTipView';
 
 // Modal presentation API (recommended for Apple Pay support)
-export { presentMigrateTip, dismissMigrateTip } from './ZSMigrateTipModule';
+export { presentMigrateTip, dismissMigrateTip, resetMigrateTipState } from './ZSMigrateTipModule';
 
 // Manage subscription retention sheet
 export { presentManageSubscriptionSheet, dismissManageSubscriptionSheet } from './ZSManageSubscriptionModule';

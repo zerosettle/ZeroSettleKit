@@ -29,6 +29,8 @@ public enum CancelFlow {
         public let offer: Offer?
         /// Optional pause configuration for the retention page.
         public let pause: PauseConfig?
+        /// A/B experiment variant identifier, if this config is part of an experiment.
+        public let variantId: Int?
     }
 
     /// A single question in the cancel flow questionnaire.
@@ -265,6 +267,8 @@ public enum CancelFlow {
         let pauseDurationDays: Int?
         let lastStepSeen: Int
         let answers: [AnswerPayload]
+        /// A/B experiment variant identifier echoed back from the config.
+        let variantId: Int?
     }
 
     /// A single answer within a cancel flow response.

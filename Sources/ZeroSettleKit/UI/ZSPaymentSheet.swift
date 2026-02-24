@@ -108,6 +108,33 @@ private final class MessageRouter: NSObject, WKScriptMessageHandler {
     }
 }
 
+// MARK: - WebKit Process Pool
+
+/// Shared WebKit process pool and warm-up helper.
+///
+/// The first `WKWebView` in a process triggers GPU, WebContent, and Networking
+/// subprocess launches, which can stall the main thread for 3-5 seconds.
+/// Pre-warming with a throwaway `about:blank` load front-loads that cost
+/// to when the checkout modifier enters the view hierarchy — well before
+/// the user taps buy.
+@MainActor
+private enum WebKitWarmup {
+    static let processPool = WKProcessPool()
+
+    private static var isWarmed = false
+
+    /// Launch WebKit's auxiliary processes by creating a throwaway WKWebView.
+    /// Safe to call multiple times — only the first call does real work.
+    static func warmIfNeeded() {
+        guard !isWarmed else { return }
+        isWarmed = true
+        let config = WKWebViewConfiguration()
+        config.processPool = processPool
+        let wv = WKWebView(frame: .zero, configuration: config)
+        wv.load(URLRequest(url: URL(string: "about:blank")!))
+    }
+}
+
 // MARK: - Checkout Preloader
 
 /// Manages off-screen WKWebView creation and preloading.
@@ -123,11 +150,8 @@ private final class CheckoutPreloader: ObservableObject {
 
     @MainActor
     func loadAndWait(url: URL) async {
-        let trace = PaymentSheetTrace.current
-        let outerSpan = trace?.begin("webView.loadAndWait")
-
-        let createSpan = trace?.begin("webView.create")
         let config = WKWebViewConfiguration()
+        config.processPool = WebKitWarmup.processPool
         config.allowsInlineMediaPlayback = true
         config.userContentController.add(messageRouter, name: "checkoutComplete")
 
@@ -146,11 +170,9 @@ private final class CheckoutPreloader: ObservableObject {
         wv.isOpaque = false
         wv.backgroundColor = .clear
         wv.scrollView.backgroundColor = .clear
-        if let createSpan { trace?.end(createSpan) }
 
         self.webView = wv
 
-        let loadSpan = trace?.begin("webView.loadURL")
         let request = URLRequest(url: url)
         wv.load(request)
 
@@ -164,18 +186,7 @@ private final class CheckoutPreloader: ObservableObject {
                       let body = message.body as? [String: Any],
                       let action = body["action"] as? String else { return }
 
-                if action == "expandSheet" {
-                    trace?.event("JS: expandSheet (preload phase)")
-                    return
-                }
-
-                guard action == "ready" else {
-                    trace?.event("JS: \(action) (preload phase)")
-                    return
-                }
-
-                if let loadSpan { trace?.end(loadSpan) }
-                let readySpan = trace?.begin("webView.measureContent")
+                guard action == "ready" else { return }
 
                 self.webView?.evaluateJavaScript(setupMeasureJS + "\n" + measureContentJS) { [weak self] result, _ in
                     guard let self = self else { return }
@@ -183,8 +194,6 @@ private final class CheckoutPreloader: ObservableObject {
                         if let height = parseJSHeight(result) {
                             self.measuredContentHeight = height
                         }
-                        if let readySpan { trace?.end(readySpan, metadata: ["height": "\(self.measuredContentHeight)"]) }
-                        if let outerSpan { trace?.end(outerSpan) }
                         self.isReady = true
                         self.continuation?.resume()
                         self.continuation = nil
@@ -432,31 +441,22 @@ extension CheckoutSheet where Header == EmptyView {
     ) async -> (checkoutURL: URL, transactionId: String)? {
         // Only webview checkout uses PaymentIntents — safari/safariVC use checkout sessions
         guard ZeroSettle.shared.checkoutType == .webView else { return nil }
-        let trace = PaymentSheetTrace.current
-        let span = trace?.begin("createPaymentIntent", metadata: ["productId": productId])
 
         guard let config = ZeroSettle.shared.currentConfig,
               let baseURL = ZeroSettle.shared.effectiveBaseURL else {
-            trace?.event("createPaymentIntent: SDK not configured")
-            if let span { trace?.end(span, metadata: ["error": "notConfigured"]) }
             return nil
         }
 
         // Check cache first
         let pk = config.publishableKey
-        let cacheSpan = trace?.begin("cache.lookup")
         if let cached = CheckoutCache.shared.get(productId: productId, userId: userId, publishableKey: pk) {
-            if let cacheSpan { trace?.end(cacheSpan, metadata: ["result": "HIT"]) }
-            if let span { trace?.end(span, metadata: ["source": "cache"]) }
             return cached
         }
-        if let cacheSpan { trace?.end(cacheSpan, metadata: ["result": "MISS"]) }
 
         do {
             let backend = Backend(baseURL: baseURL, publishableKey: pk)
             let paymentIntent = try await backend.createPaymentIntent(productId: productId, userId: userId, freeTrialDays: freeTrialDays)
             guard let url = URL(string: paymentIntent.checkoutUrl) else {
-                if let span { trace?.end(span, metadata: ["error": "invalidURL"]) }
                 return nil
             }
 
@@ -465,17 +465,15 @@ extension CheckoutSheet where Header == EmptyView {
                 productId: productId, userId: userId, publishableKey: pk,
                 checkoutURL: url, transactionId: paymentIntent.transactionId
             )
-            trace?.event("cache.store", metadata: ["txnId": paymentIntent.transactionId])
 
-            // Prefetch the checkout page to prime DNS, TLS, and URL cache
-            let prefetchSpan = trace?.begin("prefetch")
-            _ = try? await URLSession.shared.data(from: url)
-            if let prefetchSpan { trace?.end(prefetchSpan) }
+            // Fire-and-forget prefetch to prime DNS, TLS, and URL cache
+            // without blocking the preload return path
+            Task.detached(priority: .utility) {
+                _ = try? await URLSession.shared.data(from: url)
+            }
 
-            if let span { trace?.end(span, metadata: ["source": "network"]) }
             return (url, paymentIntent.transactionId)
         } catch {
-            if let span { trace?.end(span, metadata: ["error": "\(error)"]) }
             return nil
         }
     }
@@ -488,10 +486,7 @@ extension CheckoutSheet where Header == EmptyView {
     ///         await CheckoutSheet.warmUp(productId: products[0].id, userId: "user_123")
     ///     }
     public static func warmUp(productId: String, userId: String? = nil, freeTrialDays: Int = 0) async {
-        let trace = PaymentSheetTrace("warmUp")
-        PaymentSheetTrace.current = trace
         _ = await preload(productId: productId, userId: userId, freeTrialDays: freeTrialDays)
-        trace.finish()
     }
 }
 
@@ -648,7 +643,6 @@ extension CheckoutSheet {
     private func createPaymentIntent() async {
         guard let config = ZeroSettle.shared.currentConfig,
               let baseURL = ZeroSettle.shared.effectiveBaseURL else {
-            PaymentSheetTrace.logger.error("⏱  ◀ createPaymentIntent: SDK not configured")
             await MainActor.run {
                 loadError = PaymentSheetError.notConfigured
             }
@@ -663,7 +657,6 @@ extension CheckoutSheet {
                 self.checkoutURL = URL(string: paymentIntent.checkoutUrl)
             }
         } catch {
-            PaymentSheetTrace.logger.error("⏱  ◀ createPaymentIntent: error=\(error)")
             await MainActor.run {
                 loadError = error
             }
@@ -680,7 +673,6 @@ extension CheckoutSheet {
             recalculateHeight()
 
         case .complete(let txnId):
-            PaymentSheetTrace.logger.info("⏱  ● JS → complete (txnId=\(txnId))")
             Task {
                 await verifyAndComplete(transactionId: txnId)
             }
@@ -690,7 +682,6 @@ extension CheckoutSheet {
             onComplete(.failure(PaymentSheetError.cancelled))
 
         case .error(let message):
-            PaymentSheetTrace.logger.error("⏱  ● JS → error: \(message)")
             dismiss()
             let kind: PaymentFailureDetail.Kind
             let lowered = message.lowercased()
@@ -779,6 +770,7 @@ private struct PaymentWebView: UIViewRepresentable {
 
         // Standard path: create a new WebView
         let configuration = WKWebViewConfiguration()
+        configuration.processPool = WebKitWarmup.processPool
         configuration.allowsInlineMediaPlayback = true
         configuration.userContentController.add(context.coordinator, name: "checkoutComplete")
         configuration.userContentController.add(context.coordinator, name: "consoleLog")
@@ -923,7 +915,6 @@ private struct PaymentWebView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            PaymentSheetTrace.logger.error("⏱  ● webView.didFail: \(error.localizedDescription)")
             DispatchQueue.main.async {
                 self.isLoading = false
             }
@@ -1067,6 +1058,7 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
                     .allowsHitTesting(false)
             )
             .task {
+                WebKitWarmup.warmIfNeeded()
                 if let preload {
                     await preloadProducts(preload)
                 }
@@ -1097,7 +1089,6 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
                         transactionId: preloadedTransactionId,
                         header: header
                     ) { result in
-                        PaymentSheetTrace.logger.info("⏱  ● sheet.result: \(String(describing: result))")
                         if case .success = result {
                             CheckoutCache.shared.invalidate(productId: product.id, userId: userId, publishableKey: ZeroSettle.shared.currentConfig?.publishableKey ?? "")
                             preloadedURL = nil
@@ -1113,7 +1104,6 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
                         dismissible: dismissible,
                         header: header
                     ) { result in
-                        PaymentSheetTrace.logger.info("⏱  ● sheet.result: \(String(describing: result))")
                         if case .success = result {
                             CheckoutCache.shared.invalidate(productId: product.id, userId: userId, publishableKey: ZeroSettle.shared.currentConfig?.publishableKey ?? "")
                         }
@@ -1141,20 +1131,15 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
         }
 
         // Webview path — preload PaymentIntent + WebView, then present sheet
-        let trace = PaymentSheetTrace("preloadAll(isPresented:)")
-        PaymentSheetTrace.current = trace
-
         guard let result = await CheckoutSheet<EmptyView>.preload(
             productId: product.id, userId: userId, freeTrialDays: freeTrialDays
         ) else {
-            guard !Task.isCancelled else { trace.finish(); return }
-            trace.event("sheet.presented", metadata: ["preloaded": "false"])
-            trace.finish()
+            guard !Task.isCancelled else { return }
             showSheet = true
             return
         }
 
-        guard !Task.isCancelled else { trace.finish(); return }
+        guard !Task.isCancelled else { return }
         preloadedURL = result.checkoutURL
         preloadedTransactionId = result.transactionId
 
@@ -1163,9 +1148,7 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
             await preloader.loadAndWait(url: result.checkoutURL)
         }
 
-        guard !Task.isCancelled else { trace.finish(); return }
-        trace.event("sheet.presented", metadata: ["preloaded": "true"])
-        trace.finish()
+        guard !Task.isCancelled else { return }
         showSheet = true
     }
 
@@ -1236,6 +1219,7 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
                     .allowsHitTesting(false)
             )
             .task {
+                WebKitWarmup.warmIfNeeded()
                 if let preload {
                     await preloadProducts(preload)
                 }
@@ -1265,7 +1249,6 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
                             transactionId: preloadedTransactionId,
                             header: header
                         ) { result in
-                            PaymentSheetTrace.logger.info("⏱  ● sheet.result: \(String(describing: result))")
                             if case .success = result {
                                 CheckoutCache.shared.invalidate(productId: product.id, userId: userId, publishableKey: ZeroSettle.shared.currentConfig?.publishableKey ?? "")
                                 preloadedURL = nil
@@ -1282,7 +1265,6 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
                             dismissible: dismissible,
                             header: header
                         ) { result in
-                            PaymentSheetTrace.logger.info("⏱  ● sheet.result: \(String(describing: result))")
                             if case .success = result {
                                 CheckoutCache.shared.invalidate(productId: product.id, userId: userId, publishableKey: ZeroSettle.shared.currentConfig?.publishableKey ?? "")
                             }
@@ -1311,20 +1293,15 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
         }
 
         // Webview path — preload PaymentIntent + WebView, then present sheet
-        let trace = PaymentSheetTrace("preloadAll(item:)")
-        PaymentSheetTrace.current = trace
-
         guard let result = await CheckoutSheet<EmptyView>.preload(
             productId: product.id, userId: userId, freeTrialDays: freeTrialDays
         ) else {
-            guard !Task.isCancelled else { trace.finish(); return }
-            trace.event("sheet.presented", metadata: ["preloaded": "false"])
-            trace.finish()
+            guard !Task.isCancelled else { return }
             showSheet = true
             return
         }
 
-        guard !Task.isCancelled else { trace.finish(); return }
+        guard !Task.isCancelled else { return }
         preloadedURL = result.checkoutURL
         preloadedTransactionId = result.transactionId
 
@@ -1335,9 +1312,7 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
             preloaderProductId = product.id
         }
 
-        guard !Task.isCancelled else { trace.finish(); return }
-        trace.event("sheet.presented", metadata: ["preloaded": "true"])
-        trace.finish()
+        guard !Task.isCancelled else { return }
         showSheet = true
     }
 

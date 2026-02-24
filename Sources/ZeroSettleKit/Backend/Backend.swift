@@ -49,19 +49,15 @@ internal final class Backend: @unchecked Sendable {
     /// - Parameter userId: Optional user ID to check for migration eligibility
     /// - Returns: A ``ProductCatalog`` containing products and remote configuration
     func fetchProducts(userId: String? = nil) async throws -> ProductCatalog {
-        let span = PaymentSheetTrace.current?.begin("fetchProducts", metadata: ["userId": userId ?? "(none)"])
-
         var components = URLComponents(url: apiURL("iap/products/"), resolvingAgainstBaseURL: false)!
         if let userId {
             components.queryItems = [URLQueryItem(name: "user_id", value: userId)]
         }
 
         guard let url = components.url else {
-            if let span { PaymentSheetTrace.current?.end(span, metadata: ["error": "invalidURL"]) }
             throw Backend.wrapError(HTTPError.invalidURL("Failed to construct products URL"))
         }
 
-        let netSpan = PaymentSheetTrace.current?.begin("GET /iap/products")
         let response: ProductsResponse
         do {
             response = try await httpClient.get(
@@ -69,10 +65,7 @@ internal final class Backend: @unchecked Sendable {
                 headers: authHeaders,
                 responseType: ProductsResponse.self
             )
-            if let netSpan { PaymentSheetTrace.current?.end(netSpan, metadata: ["products": "\(response.products.count)"]) }
         } catch {
-            if let netSpan { PaymentSheetTrace.current?.end(netSpan, metadata: ["error": "\(error)"]) }
-            if let span { PaymentSheetTrace.current?.end(span, metadata: ["error": "\(error)"]) }
             throw Backend.wrapError(error)
         }
 
@@ -156,7 +149,6 @@ internal final class Backend: @unchecked Sendable {
             remoteConfig = nil
         }
 
-        if let span { PaymentSheetTrace.current?.end(span, metadata: ["products": "\(response.products.count)"]) }
         return ProductCatalog(products: response.products, config: remoteConfig)
     }
 
@@ -195,20 +187,16 @@ internal final class Backend: @unchecked Sendable {
     /// Create a Stripe PaymentIntent for native checkout (Apple Pay / Card in WebView).
     /// Returns data needed for the Payment Request API and card entry form.
     func createPaymentIntent(productId: String, userId: String? = nil, freeTrialDays: Int) async throws -> PaymentIntentResponse {
-        let span = PaymentSheetTrace.current?.begin("POST /iap/payment-intents", metadata: ["productId": productId])
+        let url = apiURL("iap/payment-intents/")
+        let body = CreatePaymentIntentRequest(productId: productId, userId: userId, freeTrialDays: freeTrialDays)
         do {
-            let url = apiURL("iap/payment-intents/")
-            let body = CreatePaymentIntentRequest(productId: productId, userId: userId, freeTrialDays: freeTrialDays)
-            let response = try await httpClient.post(
+            return try await httpClient.post(
                 url,
                 body: body,
                 headers: authHeaders,
                 responseType: PaymentIntentResponse.self
             )
-            if let span { PaymentSheetTrace.current?.end(span, metadata: ["txnId": response.transactionId]) }
-            return response
         } catch {
-            if let span { PaymentSheetTrace.current?.end(span, metadata: ["error": "\(error)"]) }
             throw Backend.wrapError(error)
         }
     }
@@ -217,18 +205,14 @@ internal final class Backend: @unchecked Sendable {
 
     /// Get the status of a transaction by ID.
     func getTransaction(transactionId: String) async throws -> CheckoutTransaction {
-        let span = PaymentSheetTrace.current?.begin("GET /iap/transactions", metadata: ["txnId": transactionId])
+        let url = apiURL("iap/transactions/\(transactionId)/")
         do {
-            let url = apiURL("iap/transactions/\(transactionId)/")
-            let response = try await httpClient.get(
+            return try await httpClient.get(
                 url,
                 headers: authHeaders,
                 responseType: CheckoutTransaction.self
             )
-            if let span { PaymentSheetTrace.current?.end(span, metadata: ["status": response.status.rawValue]) }
-            return response
         } catch {
-            if let span { PaymentSheetTrace.current?.end(span, metadata: ["error": "\(error)"]) }
             throw Backend.wrapError(error)
         }
     }
@@ -297,6 +281,25 @@ internal final class Backend: @unchecked Sendable {
         return response.entitlements
     }
 
+    // MARK: - Transaction History
+
+    /// Get all transactions for a user (including consumed, expired, refunded).
+    func getTransactionHistory(userId: String) async throws -> [CheckoutTransaction] {
+        var components = URLComponents(url: apiURL("iap/transaction-history/"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "user_id", value: userId)]
+
+        guard let url = components.url else {
+            throw Backend.wrapError(HTTPError.invalidURL("Failed to construct transaction history URL"))
+        }
+
+        let response: TransactionHistoryResponse = try await httpClient.get(
+            url,
+            headers: authHeaders,
+            responseType: TransactionHistoryResponse.self
+        )
+        return response.transactions
+    }
+
     // MARK: - Migration Tracking
 
     /// Track a successful migration conversion (user switched from StoreKit to web checkout).
@@ -353,8 +356,17 @@ internal final class Backend: @unchecked Sendable {
     // MARK: - Cancel Flow
 
     /// Fetch the cancel flow configuration for this app.
-    func fetchCancelFlow() async throws -> CancelFlow.Config {
-        let url = apiURL("iap/cancel-flow/")
+    /// - Parameter userId: Optional user ID for A/B experiment targeting
+    func fetchCancelFlow(userId: String? = nil) async throws -> CancelFlow.Config {
+        var components = URLComponents(url: apiURL("iap/cancel-flow/"), resolvingAgainstBaseURL: false)!
+        if let userId {
+            components.queryItems = [URLQueryItem(name: "user_id", value: userId)]
+        }
+
+        guard let url = components.url else {
+            throw Backend.wrapError(HTTPError.invalidURL("Failed to construct cancel flow URL"))
+        }
+
         return try await httpClient.get(
             url,
             headers: authHeaders,
@@ -499,6 +511,34 @@ internal final class Backend: @unchecked Sendable {
         try await httpClient.executeVoid(urlRequest)
     }
 
+    // MARK: - Funnel Analytics
+
+    /// Send a funnel analytics event (fire-and-forget from the caller's perspective).
+    func trackFunnelEvent(
+        eventType: String,
+        userId: String,
+        productId: String,
+        screenName: String?,
+        metadata: [String: String]?
+    ) async throws {
+        let url = apiURL("iap/events/")
+        let body = TrackFunnelEventRequest(
+            eventType: eventType,
+            userId: userId,
+            productId: productId,
+            screenName: screenName,
+            metadata: metadata
+        )
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authHeaders.forEach { request.setValue($1, forHTTPHeaderField: $0) }
+        request.httpBody = try encoder.encode(body)
+
+        try await httpClient.executeVoid(request)
+    }
+
     // MARK: - Error Wrapping
 
     /// Convert any error thrown by the HTTP layer into a typed ``ZeroSettleError/apiError(_:)``.
@@ -602,6 +642,10 @@ private struct EntitlementsResponse: Decodable {
     let entitlements: [Entitlement]
 }
 
+private struct TransactionHistoryResponse: Decodable {
+    let transactions: [CheckoutTransaction]
+}
+
 internal struct CreateCheckoutSessionRequest: Encodable {
     let productId: String
     let userId: String?
@@ -693,4 +737,12 @@ internal struct UpgradeOfferExecuteResponse: Decodable {
     let sessionId: String?
     let transactionId: String?
     let cancelInstructions: String?
+}
+
+internal struct TrackFunnelEventRequest: Encodable {
+    let eventType: String
+    let userId: String
+    let productId: String
+    let screenName: String?
+    let metadata: [String: String]?
 }

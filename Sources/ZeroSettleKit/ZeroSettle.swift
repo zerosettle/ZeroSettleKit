@@ -163,6 +163,15 @@ public enum ZeroSettleError: Error, LocalizedError {
     }
 }
 
+// MARK: - Funnel Event Types
+
+/// Funnel analytics event types for paywall and checkout tracking.
+public enum FunnelEventType: String, Sendable {
+    case paywallViewed = "paywall_viewed"
+    case checkoutStarted = "checkout_started"
+    case checkoutAbandoned = "checkout_abandoned"
+}
+
 // MARK: - ZeroSettle IAP
 
 /// Main entry point for the ZeroSettle IAP SDK.
@@ -467,17 +476,18 @@ public final class ZeroSettle: ObservableObject {
             await storeKitManager.syncCurrentTransactions(userId: userId)
         }
 
-        // 2. Fetch products + cancel flow config in parallel.
+        // 2. Fetch products, cancel flow config, and restore entitlements in parallel.
         //    Products can now check migration eligibility because the Identity
         //    was created by the sync above.
         async let catalogTask = fetchProducts(userId: userId)
-        async let cancelFlowTask: Void = loadCancelFlowConfig()
+        async let cancelFlowTask: Void = loadCancelFlowConfig(userId: userId)
+        async let _entitlementsTask: Void = {
+            try await self.restoreEntitlements(userId: userId)
+        }()
 
         let catalog = try await catalogTask
         await cancelFlowTask
-
-        // 3. Restore entitlements (local StoreKit + web checkout).
-        try await restoreEntitlements(userId: userId)
+        _ = try await _entitlementsTask
 
         isBootstrapped = true
 
@@ -816,6 +826,48 @@ public final class ZeroSettle: ObservableObject {
         }
     }
 
+    // MARK: - Funnel Analytics
+
+    /// Fire-and-forget analytics event for paywall and checkout funnel tracking.
+    ///
+    /// Sends the event to the ZeroSettle backend asynchronously. Errors are
+    /// silently logged at debug level and never thrown or surfaced to the caller.
+    ///
+    /// - Parameters:
+    ///   - type: The funnel event type (e.g., `.paywallViewed`, `.checkoutStarted`)
+    ///   - productId: The product identifier associated with this event
+    ///   - screenName: Optional screen name where the event occurred
+    ///   - metadata: Optional key-value pairs for additional context
+    public nonisolated static func trackEvent(
+        _ type: FunnelEventType,
+        productId: String,
+        screenName: String? = nil,
+        metadata: [String: String]? = nil
+    ) {
+        Task.detached(priority: .utility) {
+            let instance = await ZeroSettle.shared
+            guard let backend = await instance.backend else {
+                ZSLogger.debug("trackEvent: SDK not configured, dropping event", category: .iap)
+                return
+            }
+
+            let userId = await instance.storeKitManager?.currentUserId ?? "anonymous"
+
+            do {
+                try await backend.trackFunnelEvent(
+                    eventType: type.rawValue,
+                    userId: userId,
+                    productId: productId,
+                    screenName: screenName,
+                    metadata: metadata
+                )
+                ZSLogger.debug("trackEvent: \(type.rawValue) sent for product=\(productId)", category: .iap)
+            } catch {
+                ZSLogger.debug("trackEvent: failed to send \(type.rawValue): \(error)", category: .iap)
+            }
+        }
+    }
+
     // MARK: - Customer Portal
 
     /// Direct Stripe portal access only.
@@ -824,10 +876,8 @@ public final class ZeroSettle: ObservableObject {
     /// Creates a portal session via the backend, presents it in SFSafariViewController,
     /// and automatically refreshes entitlements when the user dismisses.
     ///
-    /// For smart routing that automatically chooses between Stripe and Apple's native
-    /// management UI, use ``showManageSubscription(userId:)`` instead (recommended).
-    ///
     /// - Parameter userId: Your app's user identifier
+    @available(*, deprecated, message: "Use showManageSubscription(userId:) instead — it auto-routes between Stripe and Apple's native management UI based on entitlement sources.")
     public func openCustomerPortal(userId: String) async throws {
         guard let backend, let customerPortalFlow else {
             throw ZeroSettleError.notConfigured
@@ -966,6 +1016,31 @@ public final class ZeroSettle: ObservableObject {
         return allEntitlements
     }
 
+    // MARK: - Transaction History
+
+    /// Fetch the full transaction history for a user.
+    ///
+    /// Unlike ``restoreEntitlements(userId:)`` which only returns **active** entitlements,
+    /// this method returns all transactions regardless of status — including consumed
+    /// consumables, expired subscriptions, refunds, and failed transactions.
+    ///
+    /// - Parameter userId: Your app's user identifier
+    /// - Returns: An array of ``CheckoutTransaction`` ordered by most recent first
+    public func fetchTransactionHistory(userId: String) async throws -> [CheckoutTransaction] {
+        guard let backend else {
+            throw ZeroSettleError.notConfigured
+        }
+
+        do {
+            let transactions = try await backend.getTransactionHistory(userId: userId)
+            ZSLogger.info("Fetched \(transactions.count) transactions for user: \(userId)", category: .iap)
+            return transactions
+        } catch {
+            ZSLogger.error("Failed to fetch transaction history: \(error)", category: .iap)
+            throw Backend.wrapError(error)
+        }
+    }
+
     // MARK: - Cancel Flow
 
     /// Present the cancel flow questionnaire for a subscription cancellation.
@@ -993,7 +1068,7 @@ public final class ZeroSettle: ObservableObject {
             config = cached
         } else {
             do {
-                config = try await backend.fetchCancelFlow()
+                config = try await backend.fetchCancelFlow(userId: userId)
                 cancelFlowConfig = config
             } catch {
                 ZSLogger.error("Failed to fetch cancel flow config: \(error)", category: .iap)
@@ -1028,14 +1103,15 @@ public final class ZeroSettle: ObservableObject {
     /// After ``bootstrap(userId:)``, the config is also available synchronously via
     /// the ``cancelFlowConfig`` published property.
     ///
+    /// - Parameter userId: Optional user ID for A/B experiment targeting
     /// - Returns: The cancel flow ``CancelFlow/Config``
-    public func fetchCancelFlowConfig() async throws -> CancelFlow.Config {
+    public func fetchCancelFlowConfig(userId: String? = nil) async throws -> CancelFlow.Config {
         guard let backend else {
             throw ZeroSettleError.notConfigured
         }
 
         do {
-            let config = try await backend.fetchCancelFlow()
+            let config = try await backend.fetchCancelFlow(userId: userId)
             cancelFlowConfig = config
             ZSLogger.info("Fetched cancel flow config: enabled=\(config.enabled), questions=\(config.questions.count), pause=\(config.pause?.enabled ?? false)", category: .iap)
             return config
@@ -1254,7 +1330,8 @@ public final class ZeroSettle: ObservableObject {
                     userId: userId,
                     currentProductId: currentProduct.referenceId,
                     targetProductId: targetProduct.referenceId,
-                    outcome: result.outcomeName
+                    outcome: result.outcomeName,
+                    variantId: config.variantId
                 ))
                 ZSLogger.debug("Upgrade offer response submitted", category: .iap)
             } catch {
@@ -1311,10 +1388,10 @@ public final class ZeroSettle: ObservableObject {
     // MARK: - Private
 
     /// Load and cache the cancel flow configuration. Non-throwing — logs errors and continues.
-    private func loadCancelFlowConfig() async {
+    private func loadCancelFlowConfig(userId: String? = nil) async {
         guard let backend else { return }
         do {
-            let config = try await backend.fetchCancelFlow()
+            let config = try await backend.fetchCancelFlow(userId: userId)
             cancelFlowConfig = config
             ZSLogger.info("Cancel flow config loaded: enabled=\(config.enabled), questions=\(config.questions.count)", category: .iap)
         } catch {

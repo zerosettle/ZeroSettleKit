@@ -52,3 +52,32 @@ export function dismissMigrateTip(): void {
 
   ZSMigrateTipModule?.dismissMigrateTip?.();
 }
+
+/**
+ * Reset the persisted dismissal state for the migration tip view.
+ * After calling this, the migration tip will appear again for eligible users.
+ *
+ * This is primarily useful during development and testing.
+ *
+ * @example
+ * ```tsx
+ * import { resetMigrateTipState } from 'react-native-zerosettle-kit';
+ *
+ * resetMigrateTipState();
+ * ```
+ */
+export function resetMigrateTipState(): void {
+  if (Platform.OS !== 'ios') {
+    console.warn('[ZeroSettleKit] resetMigrateTipState is only available on iOS');
+    return;
+  }
+
+  if (!ZSMigrateTipModule?.resetMigrateTipState) {
+    console.error(
+      '[ZeroSettleKit] ZSMigrateTipModule.resetMigrateTipState not found. Make sure the native module is properly linked.'
+    );
+    return;
+  }
+
+  ZSMigrateTipModule.resetMigrateTipState();
+}

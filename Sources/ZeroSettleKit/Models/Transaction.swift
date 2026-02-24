@@ -43,13 +43,25 @@ public struct CheckoutTransaction: Identifiable, Sendable, Codable, Equatable {
     /// When this entitlement expires (nil for non-expiring products like non-consumables)
     public let expiresAt: Date?
 
+    /// Human-readable product name (populated in transaction history responses).
+    public let productName: String?
+
+    /// Amount charged in cents (populated in transaction history responses).
+    public let amountCents: Int?
+
+    /// Currency code, e.g. "usd" (populated in transaction history responses).
+    public let currency: String?
+
     public init(
         id: String,
         productId: String,
         status: Status,
         source: Entitlement.Source,
         purchasedAt: Date,
-        expiresAt: Date? = nil
+        expiresAt: Date? = nil,
+        productName: String? = nil,
+        amountCents: Int? = nil,
+        currency: String? = nil
     ) {
         self.id = id
         self.productId = productId
@@ -57,5 +69,8 @@ public struct CheckoutTransaction: Identifiable, Sendable, Codable, Equatable {
         self.source = source
         self.purchasedAt = purchasedAt
         self.expiresAt = expiresAt
+        self.productName = productName
+        self.amountCents = amountCents
+        self.currency = currency
     }
 }

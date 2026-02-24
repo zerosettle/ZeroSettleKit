@@ -63,6 +63,8 @@ public enum UpgradeOffer {
         public let proration: Proration?
         /// Display messaging customized from the dashboard.
         public let display: Display?
+        /// A/B experiment variant identifier, if this config is part of an experiment.
+        public let variantId: Int?
     }
 
     // Custom Codable for Config since IneligibilityReason needs raw string mapping
@@ -154,6 +156,8 @@ public enum UpgradeOffer {
         let currentProductId: String
         let targetProductId: String
         let outcome: String
+        /// A/B experiment variant identifier echoed back from the config.
+        let variantId: Int?
     }
 }
 
@@ -195,7 +199,7 @@ extension UpgradeOffer.ProductInfo: Codable {
 extension UpgradeOffer.Config: Codable {
     private enum CodingKeys: String, CodingKey {
         case available, reason, currentProduct, targetProduct
-        case savingsPercent, upgradeType, proration, display
+        case savingsPercent, upgradeType, proration, display, variantId
     }
 
     public init(from decoder: Decoder) throws {
@@ -212,6 +216,7 @@ extension UpgradeOffer.Config: Codable {
         upgradeType = try container.decodeIfPresent(UpgradeOffer.UpgradeType.self, forKey: .upgradeType)
         proration = try container.decodeIfPresent(UpgradeOffer.Proration.self, forKey: .proration)
         display = try container.decodeIfPresent(UpgradeOffer.Display.self, forKey: .display)
+        variantId = try container.decodeIfPresent(Int.self, forKey: .variantId)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -224,5 +229,6 @@ extension UpgradeOffer.Config: Codable {
         try container.encodeIfPresent(upgradeType, forKey: .upgradeType)
         try container.encodeIfPresent(proration, forKey: .proration)
         try container.encodeIfPresent(display, forKey: .display)
+        try container.encodeIfPresent(variantId, forKey: .variantId)
     }
 }
