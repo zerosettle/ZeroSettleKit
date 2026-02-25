@@ -1186,7 +1186,8 @@ public final class ZeroSettle: ObservableObject {
                     selectedOptionId: $0.selectedOptionId,
                     freeText: $0.freeText
                 )
-            }
+            },
+            variantId: cancelFlowConfig?.variantId
         )
 
         do {
