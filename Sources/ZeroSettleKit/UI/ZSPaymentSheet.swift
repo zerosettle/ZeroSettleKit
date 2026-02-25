@@ -1037,6 +1037,75 @@ internal enum PaymentSheetError: Error, LocalizedError {
     }
 }
 
+// MARK: - Top View Controller Helper
+
+/// Walks the key window's root VC chain to find the topmost presented VC.
+/// Used by checkout modifiers to present via UIKit window-level presentation,
+/// avoiding SwiftUI nested-sheet height constraints.
+private func checkoutTopViewController() -> UIViewController? {
+    guard let windowScene = UIApplication.shared.connectedScenes
+        .compactMap({ $0 as? UIWindowScene })
+        .first(where: { $0.activationState == .foregroundActive }),
+          let rootVC = windowScene.windows.first(where: { $0.isKeyWindow })?.rootViewController
+    else { return nil }
+    var topVC = rootVC
+    while let presented = topVC.presentedViewController {
+        topVC = presented
+    }
+    return topVC
+}
+
+// MARK: - Window-Level Sheet Bridge
+
+/// Lightweight bridge for the modifier path. Unlike `UIKitSheetBridge`, this:
+/// - Accepts an external `CheckoutPreloader` (doesn't create its own)
+/// - Has NO `PreloaderHost` (the modifier's PreloaderHost already hosts the WebView)
+/// - Does NO preloading (modifier already preloaded)
+/// - Presents the sheet immediately (`@State var showSheet = true`)
+private struct WindowLevelSheetBridge<SheetHeader: View>: View {
+    let product: ZSProduct
+    let userId: String?
+    let freeTrialDays: Int
+    let dismissible: Bool
+    let preloader: CheckoutPreloader
+    let checkoutURL: URL?
+    let transactionId: String?
+    let header: () -> SheetHeader
+    let onComplete: (Result<CheckoutTransaction, Error>) -> Void
+    let onDismissed: () -> Void
+
+    @State private var showSheet = true
+
+    var body: some View {
+        Color.clear
+            .ignoresSafeArea()
+            .sheet(isPresented: $showSheet, onDismiss: onDismissed) {
+                if let url = checkoutURL {
+                    CheckoutSheet(
+                        product: product,
+                        userId: userId,
+                        freeTrialDays: freeTrialDays,
+                        dismissible: dismissible,
+                        preloader: preloader,
+                        checkoutURL: url,
+                        transactionId: transactionId,
+                        header: header,
+                        onComplete: onComplete
+                    )
+                } else {
+                    CheckoutSheet(
+                        product: product,
+                        userId: userId,
+                        freeTrialDays: freeTrialDays,
+                        dismissible: dismissible,
+                        header: header,
+                        onComplete: onComplete
+                    )
+                }
+            }
+    }
+}
+
 // MARK: - SwiftUI View Modifier
 
 /// Preloads the PaymentIntent AND the WebView before presenting the sheet.
@@ -1077,45 +1146,46 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
                     preloader.reset()
                 }
             }
-            .sheet(isPresented: $showSheet, onDismiss: {
+            .task(id: showSheet) {
+                guard showSheet else { return }
+                guard let topVC = checkoutTopViewController() else {
+                    showSheet = false
+                    return
+                }
 
-                isPresented = false
-                // Keep preloadedURL/transactionId — they're cached and reusable.
-                // Only reset the WebView (it was consumed by the sheet).
-                preloader.reset()
-            }) {
-                if let url = preloadedURL {
-                    CheckoutSheet(
-                        product: product,
-                        userId: userId,
-                        freeTrialDays: freeTrialDays,
-                        dismissible: dismissible,
-                        preloader: preloader,
-                        checkoutURL: url,
-                        transactionId: preloadedTransactionId,
-                        header: header
-                    ) { result in
+                let bridge = WindowLevelSheetBridge(
+                    product: product,
+                    userId: userId,
+                    freeTrialDays: freeTrialDays,
+                    dismissible: dismissible,
+                    preloader: preloader,
+                    checkoutURL: preloadedURL,
+                    transactionId: preloadedTransactionId,
+                    header: header,
+                    onComplete: { result in
                         if case .success = result {
-                            CheckoutCache.shared.invalidate(productId: product.id, userId: userId, publishableKey: ZeroSettle.shared.currentConfig?.publishableKey ?? "")
+                            CheckoutCache.shared.invalidate(
+                                productId: product.id,
+                                userId: userId,
+                                publishableKey: ZeroSettle.shared.currentConfig?.publishableKey ?? ""
+                            )
                             preloadedURL = nil
                             preloadedTransactionId = nil
                         }
                         onComplete(result)
+                    },
+                    onDismissed: {
+                        topVC.dismiss(animated: false)
+                        isPresented = false
+                        preloader.reset()
+                        showSheet = false
                     }
-                } else {
-                    CheckoutSheet(
-                        product: product,
-                        userId: userId,
-                        freeTrialDays: freeTrialDays,
-                        dismissible: dismissible,
-                        header: header
-                    ) { result in
-                        if case .success = result {
-                            CheckoutCache.shared.invalidate(productId: product.id, userId: userId, publishableKey: ZeroSettle.shared.currentConfig?.publishableKey ?? "")
-                        }
-                        onComplete(result)
-                    }
-                }
+                )
+
+                let hosting = UIHostingController(rootView: bridge)
+                hosting.view.backgroundColor = .clear
+                hosting.modalPresentationStyle = .overFullScreen
+                topVC.present(hosting, animated: false)
             }
     }
 
@@ -1236,48 +1306,52 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
                     await preloadAll(product: product)
                 }
             }
-            .sheet(isPresented: $showSheet, onDismiss: {
-
-                item = nil
-                // Reset WebView and product tracking — the WebView was consumed by the sheet.
-                preloader.reset()
-                preloaderProductId = nil
-            }) {
-                if let product = presentedProduct {
-                    if let url = preloadedURL {
-                        CheckoutSheet(
-                            product: product,
-                            userId: userId,
-                            freeTrialDays: freeTrialDays,
-                            dismissible: dismissible,
-                            preloader: preloader,
-                            checkoutURL: url,
-                            transactionId: preloadedTransactionId,
-                            header: header
-                        ) { result in
-                            if case .success = result {
-                                CheckoutCache.shared.invalidate(productId: product.id, userId: userId, publishableKey: ZeroSettle.shared.currentConfig?.publishableKey ?? "")
-                                preloadedURL = nil
-                                preloadedTransactionId = nil
-                                preloaderProductId = nil
-                            }
-                            onComplete(result)
-                        }
-                    } else {
-                        CheckoutSheet(
-                            product: product,
-                            userId: userId,
-                            freeTrialDays: freeTrialDays,
-                            dismissible: dismissible,
-                            header: header
-                        ) { result in
-                            if case .success = result {
-                                CheckoutCache.shared.invalidate(productId: product.id, userId: userId, publishableKey: ZeroSettle.shared.currentConfig?.publishableKey ?? "")
-                            }
-                            onComplete(result)
-                        }
-                    }
+            .task(id: showSheet) {
+                guard showSheet else { return }
+                guard let product = presentedProduct else {
+                    showSheet = false
+                    return
                 }
+                guard let topVC = checkoutTopViewController() else {
+                    showSheet = false
+                    return
+                }
+
+                let bridge = WindowLevelSheetBridge(
+                    product: product,
+                    userId: userId,
+                    freeTrialDays: freeTrialDays,
+                    dismissible: dismissible,
+                    preloader: preloader,
+                    checkoutURL: preloadedURL,
+                    transactionId: preloadedTransactionId,
+                    header: header,
+                    onComplete: { result in
+                        if case .success = result {
+                            CheckoutCache.shared.invalidate(
+                                productId: product.id,
+                                userId: userId,
+                                publishableKey: ZeroSettle.shared.currentConfig?.publishableKey ?? ""
+                            )
+                            preloadedURL = nil
+                            preloadedTransactionId = nil
+                            preloaderProductId = nil
+                        }
+                        onComplete(result)
+                    },
+                    onDismissed: {
+                        topVC.dismiss(animated: false)
+                        item = nil
+                        preloader.reset()
+                        preloaderProductId = nil
+                        showSheet = false
+                    }
+                )
+
+                let hosting = UIHostingController(rootView: bridge)
+                hosting.view.backgroundColor = .clear
+                hosting.modalPresentationStyle = .overFullScreen
+                topVC.present(hosting, animated: false)
             }
     }
 
