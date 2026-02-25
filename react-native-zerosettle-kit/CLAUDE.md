@@ -22,6 +22,21 @@ When `ZeroSettleKit` bumps its version:
 * Update `package.json` → `version` (follow semver appropriate to the scope of changes)
 * Update `RNZeroSettleKit.podspec` → `s.version` to match package.json
 
+## Backward Compatibility
+**Never introduce breaking changes unless explicitly approved by the user.** This wrapper is consumed by third-party React Native apps.
+
+Safe (non-breaking) changes:
+* Adding new optional properties with defaults
+* Adding new API response fields (old clients ignore unknown keys)
+* Adding new methods or types
+* Adding new optional parameters with defaults to existing methods
+
+Breaking changes (require explicit approval):
+* Removing or renaming exported types, methods, or properties
+* Changing method signatures or serialization keys/formats
+* Removing fields that clients depend on
+* Changing default values in ways that alter existing behavior
+
 ## Coding Standards
 * Neutral language: "External Purchase," "Web Checkout" — never "bypass" or "evade"
 * `ZeroSettle.shared` is `@MainActor`-isolated — bridge methods must dispatch to main actor

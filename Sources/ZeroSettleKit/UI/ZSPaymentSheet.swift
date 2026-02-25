@@ -403,7 +403,7 @@ public struct CheckoutSheet<Header: View>: View {
         self.onComplete = onComplete
         self._isLoading = State(initialValue: false)
         self._webContentHeight = State(initialValue: preloader.measuredContentHeight)
-        let startHeight = min(max(preloader.measuredContentHeight, 200), 700)
+        let startHeight = min(max(preloader.measuredContentHeight, 200), Self.maxSheetHeight)
         self._compactHeight = State(initialValue: startHeight)
     }
 }
@@ -500,6 +500,7 @@ extension CheckoutSheet {
             } else if let url = checkoutURL {
                 if Header.self == EmptyView.self {
                     defaultHeader
+                        .frame(minHeight: dismissible ? 60 : 0)
                         .background(GeometryReader { geo in
                             Color.clear.preference(key: HeaderHeightKey.self, value: geo.size.height)
                         })
@@ -509,7 +510,7 @@ extension CheckoutSheet {
                         }
                 } else {
                     header
-                        .frame(maxWidth: .infinity)
+                        .frame(maxWidth: .infinity, minHeight: dismissible ? 60 : 0)
                         .padding(.bottom, 8)
                         .background(GeometryReader { geo in
                             Color.clear.preference(key: HeaderHeightKey.self, value: geo.size.height)
@@ -594,10 +595,15 @@ extension CheckoutSheet {
 
     // MARK: - Height Calculation
 
+    /// Maximum sheet height: 90% of screen height so it still looks like a sheet.
+    private static var maxSheetHeight: CGFloat {
+        UIScreen.main.bounds.height * 0.9
+    }
+
     private func recalculateHeight() {
         let contentH = webContentHeight > 0 ? webContentHeight : 400
         let totalHeight = headerHeight + contentH
-        let newHeight = min(max(totalHeight, 200), 700)
+        let newHeight = min(max(totalHeight, 200), Self.maxSheetHeight)
 
         guard newHeight != compactHeight else { return }
 

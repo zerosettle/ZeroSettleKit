@@ -35,6 +35,23 @@
 * Modifying model shapes that cross the bridge (serialization contract)
 * Altering delegate/callback protocols
 
+## Backward Compatibility
+**Never introduce breaking changes unless explicitly approved by the user.** The SDKs are consumed by third-party apps — breaking their builds or runtime behavior is unacceptable.
+
+Safe (non-breaking) changes:
+* Adding new optional properties with defaults (`nil`/`false`/`0`)
+* Adding new enum cases (when decoded via `decodeIfPresent` or with an `unknown` fallback)
+* Adding new API response fields (old clients ignore unknown keys)
+* Adding new methods or types
+* Adding new optional parameters with defaults to existing methods
+
+Breaking changes (require explicit approval):
+* Removing or renaming public types, methods, properties, or enum cases
+* Changing method signatures (parameter types, return types, throwability)
+* Changing serialization keys or formats (breaks wire compatibility)
+* Removing API response fields that clients depend on
+* Changing default values in ways that alter existing behavior
+
 ## Coding Standards
 * **Access Control:** `public` for developer-facing API, `internal` for helpers. Be deliberate — every new `public` symbol is a commitment across all wrappers.
 * **Error Handling:** Use `ZSError` enum. Never crash silently.

@@ -50,6 +50,9 @@ public struct ZSProduct: Identifiable, Sendable {
     /// Active promotion, if any
     public let promotion: Promotion?
 
+    /// Subscription group identifier (non-nil for grouped subscriptions)
+    public let subscriptionGroupId: Int?
+
     /// The underlying StoreKit product (populated after reconciliation)
     internal var _storeKitProduct: StoreKit.Product?
 
@@ -84,7 +87,8 @@ public struct ZSProduct: Identifiable, Sendable {
         webPrice: Price? = nil,
         appStorePrice: Price? = nil,
         syncedToAppStoreConnect: Bool = false,
-        promotion: Promotion? = nil
+        promotion: Promotion? = nil,
+        subscriptionGroupId: Int? = nil
     ) {
         self.id = id
         self.displayName = displayName
@@ -94,6 +98,7 @@ public struct ZSProduct: Identifiable, Sendable {
         self.appStorePrice = appStorePrice
         self.syncedToAppStoreConnect = syncedToAppStoreConnect
         self.promotion = promotion
+        self.subscriptionGroupId = subscriptionGroupId
         self._storeKitProduct = nil
     }
 }
@@ -110,6 +115,7 @@ extension ZSProduct: Codable {
         case appStorePrice = "storekitPrice"
         case syncedToAppStoreConnect = "syncedToAsc"
         case promotion
+        case subscriptionGroupId
     }
 
     public init(from decoder: Decoder) throws {
@@ -122,6 +128,7 @@ extension ZSProduct: Codable {
         appStorePrice = try container.decodeIfPresent(Price.self, forKey: .appStorePrice)
         syncedToAppStoreConnect = try container.decodeIfPresent(Bool.self, forKey: .syncedToAppStoreConnect) ?? false
         promotion = try container.decodeIfPresent(Promotion.self, forKey: .promotion)
+        subscriptionGroupId = try container.decodeIfPresent(Int.self, forKey: .subscriptionGroupId)
         _storeKitProduct = nil
     }
 
@@ -135,6 +142,7 @@ extension ZSProduct: Codable {
         try container.encodeIfPresent(appStorePrice, forKey: .appStorePrice)
         try container.encode(syncedToAppStoreConnect, forKey: .syncedToAppStoreConnect)
         try container.encodeIfPresent(promotion, forKey: .promotion)
+        try container.encodeIfPresent(subscriptionGroupId, forKey: .subscriptionGroupId)
     }
 }
 
@@ -150,7 +158,8 @@ extension ZSProduct: Equatable {
         lhs.webPrice == rhs.webPrice &&
         lhs.appStorePrice == rhs.appStorePrice &&
         lhs.syncedToAppStoreConnect == rhs.syncedToAppStoreConnect &&
-        lhs.promotion == rhs.promotion
+        lhs.promotion == rhs.promotion &&
+        lhs.subscriptionGroupId == rhs.subscriptionGroupId
     }
 }
 
