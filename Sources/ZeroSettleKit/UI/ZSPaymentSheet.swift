@@ -1037,22 +1037,15 @@ internal enum PaymentSheetError: Error, LocalizedError {
     }
 }
 
-// MARK: - Top View Controller Helper
+// MARK: - Active Window Scene Helper
 
-/// Walks the key window's root VC chain to find the topmost presented VC.
-/// Used by checkout modifiers to present via UIKit window-level presentation,
-/// avoiding SwiftUI nested-sheet height constraints.
-private func checkoutTopViewController() -> UIViewController? {
-    guard let windowScene = UIApplication.shared.connectedScenes
-        .compactMap({ $0 as? UIWindowScene })
-        .first(where: { $0.activationState == .foregroundActive }),
-          let rootVC = windowScene.windows.first(where: { $0.isKeyWindow })?.rootViewController
-    else { return nil }
-    var topVC = rootVC
-    while let presented = topVC.presentedViewController {
-        topVC = presented
-    }
-    return topVC
+/// Returns the foreground-active UIWindowScene for creating overlay windows.
+/// Used by checkout modifiers to present via a dedicated UIWindow,
+/// escaping any SwiftUI nested-sheet height constraints.
+private func activeWindowScene() -> UIWindowScene? {
+    UIApplication.shared.connectedScenes
+        .compactMap { $0 as? UIWindowScene }
+        .first { $0.activationState == .foregroundActive }
 }
 
 // MARK: - Window-Level Sheet Bridge
@@ -1124,6 +1117,7 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
     @State private var showSheet = false
     @State private var preloadedURL: URL?
     @State private var preloadedTransactionId: String?
+    @State private var overlayWindow: UIWindow?
 
     func body(content: Content) -> some View {
         content
@@ -1148,7 +1142,7 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
             }
             .task(id: showSheet) {
                 guard showSheet else { return }
-                guard let topVC = checkoutTopViewController() else {
+                guard let scene = activeWindowScene() else {
                     showSheet = false
                     return
                 }
@@ -1175,7 +1169,8 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
                         onComplete(result)
                     },
                     onDismissed: {
-                        topVC.dismiss(animated: false)
+                        overlayWindow?.isHidden = true
+                        overlayWindow = nil
                         isPresented = false
                         preloader.reset()
                         showSheet = false
@@ -1184,8 +1179,13 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
 
                 let hosting = UIHostingController(rootView: bridge)
                 hosting.view.backgroundColor = .clear
-                hosting.modalPresentationStyle = .overFullScreen
-                topVC.present(hosting, animated: false)
+
+                let window = UIWindow(windowScene: scene)
+                window.windowLevel = .normal + 1
+                window.backgroundColor = .clear
+                window.rootViewController = hosting
+                window.makeKeyAndVisible()
+                overlayWindow = window
             }
     }
 
@@ -1286,6 +1286,7 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
     @State private var preloadedTransactionId: String?
     @State private var preloaderProductId: String?
     @State private var presentedProduct: ZSProduct?
+    @State private var overlayWindow: UIWindow?
 
     func body(content: Content) -> some View {
         content
@@ -1312,7 +1313,7 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
                     showSheet = false
                     return
                 }
-                guard let topVC = checkoutTopViewController() else {
+                guard let scene = activeWindowScene() else {
                     showSheet = false
                     return
                 }
@@ -1340,7 +1341,8 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
                         onComplete(result)
                     },
                     onDismissed: {
-                        topVC.dismiss(animated: false)
+                        overlayWindow?.isHidden = true
+                        overlayWindow = nil
                         item = nil
                         preloader.reset()
                         preloaderProductId = nil
@@ -1350,8 +1352,13 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
 
                 let hosting = UIHostingController(rootView: bridge)
                 hosting.view.backgroundColor = .clear
-                hosting.modalPresentationStyle = .overFullScreen
-                topVC.present(hosting, animated: false)
+
+                let window = UIWindow(windowScene: scene)
+                window.windowLevel = .normal + 1
+                window.backgroundColor = .clear
+                window.rootViewController = hosting
+                window.makeKeyAndVisible()
+                overlayWindow = window
             }
     }
 
