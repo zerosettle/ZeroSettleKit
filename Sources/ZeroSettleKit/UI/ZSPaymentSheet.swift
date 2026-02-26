@@ -347,6 +347,7 @@ public struct CheckoutSheet<Header: View>: View {
     @State private var transactionId: String?
     @State private var webContentHeight: CGFloat
     @State private var compactHeight: CGFloat
+    @State private var selectedDetent: PresentationDetent
     @State private var headerHeight: CGFloat = 0
 
     // MARK: - Public Initialization (without preloading)
@@ -375,6 +376,7 @@ public struct CheckoutSheet<Header: View>: View {
         self._isLoading = State(initialValue: true)
         self._webContentHeight = State(initialValue: 0)
         self._compactHeight = State(initialValue: 480)
+        self._selectedDetent = State(initialValue: .height(480))
     }
 
     // MARK: - Internal Initialization (with preloaded WebView)
@@ -405,6 +407,7 @@ public struct CheckoutSheet<Header: View>: View {
         self._webContentHeight = State(initialValue: preloader.measuredContentHeight)
         let startHeight = min(max(preloader.measuredContentHeight, 200), Self.maxSheetHeight)
         self._compactHeight = State(initialValue: startHeight)
+        self._selectedDetent = State(initialValue: .height(startHeight))
     }
 }
 
@@ -559,7 +562,7 @@ extension CheckoutSheet {
         }
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .ignoresSafeArea(edges: .bottom)
-        .presentationDetents([.height(compactHeight)])
+        .presentationDetents([.height(compactHeight)], selection: $selectedDetent)
         .presentationDragIndicator(.hidden)
         .presentationBackground(.clear)
         .interactiveDismissDisabled(!dismissible)
@@ -609,6 +612,7 @@ extension CheckoutSheet {
 
         withAnimation(.easeInOut(duration: 0.3)) {
             compactHeight = newHeight
+            selectedDetent = .height(newHeight)
         }
     }
 
