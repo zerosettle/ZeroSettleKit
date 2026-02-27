@@ -1242,6 +1242,7 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
     let dismissible: Bool
     let preload: PaymentSheetPreload?
     let header: () -> Header
+    let onPresent: (() -> Void)?
     let onComplete: (Result<CheckoutTransaction, Error>) -> Void
 
     @StateObject private var preloader = CheckoutPreloader()
@@ -1281,6 +1282,8 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
                     showSheet = false
                     return
                 }
+
+                onPresent?()
 
                 // Evaluate header here — in the original view hierarchy — so @State
                 // references from the call site resolve correctly before crossing
@@ -1478,6 +1481,7 @@ extension View {
         freeTrialDays: Int = 0,
         dismissible: Bool = true,
         preload: PaymentSheetPreload? = nil,
+        onPresent: (() -> Void)? = nil,
         onComplete: @escaping (Result<CheckoutTransaction, Error>) -> Void
     ) -> some View {
         modifier(CheckoutSheetItemModifier<EmptyView>(
@@ -1487,6 +1491,7 @@ extension View {
             dismissible: dismissible,
             preload: preload,
             header: { EmptyView() },
+            onPresent: onPresent,
             onComplete: onComplete
         ))
     }
@@ -1495,12 +1500,15 @@ extension View {
     ///
     /// - Parameter preload: Optional declarative preloading. When set, payment intents are
     ///   created as soon as the view enters the hierarchy.
+    /// - Parameter onPresent: Optional callback invoked just before the checkout sheet appears.
+    ///   Use this to dismiss parent sheets or update UI state.
     public func checkoutSheet<Header: View>(
         item: Binding<ZSProduct?>,
         userId: String? = nil,
         freeTrialDays: Int = 0,
         dismissible: Bool = true,
         preload: PaymentSheetPreload? = nil,
+        onPresent: (() -> Void)? = nil,
         @ViewBuilder header: @escaping () -> Header,
         onComplete: @escaping (Result<CheckoutTransaction, Error>) -> Void
     ) -> some View {
@@ -1511,6 +1519,7 @@ extension View {
             dismissible: dismissible,
             preload: preload,
             header: header,
+            onPresent: onPresent,
             onComplete: onComplete
         ))
     }
