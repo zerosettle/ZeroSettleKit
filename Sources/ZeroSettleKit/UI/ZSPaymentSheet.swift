@@ -1282,6 +1282,11 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
                     return
                 }
 
+                // Evaluate header here — in the original view hierarchy — so @State
+                // references from the call site resolve correctly before crossing
+                // into the overlay UIWindow.
+                let builtHeader = header()
+
                 let bridge = WindowLevelSheetBridge(
                     product: product,
                     userId: userId,
@@ -1290,7 +1295,7 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
                     preloader: preloader,
                     checkoutURL: preloadedURL,
                     transactionId: preloadedTransactionId,
-                    header: header,
+                    header: { builtHeader },
                     onComplete: { result in
                         if case .success = result {
                             CheckoutCache.shared.invalidate(
