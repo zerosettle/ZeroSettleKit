@@ -346,9 +346,7 @@ public struct CheckoutSheet<Header: View>: View {
     @State private var loadError: Error?
     @State private var transactionId: String?
     @State private var webContentHeight: CGFloat
-    @State private var compactHeight: CGFloat
-    @State private var selectedDetent: PresentationDetent
-    @State private var headerHeight: CGFloat = 0
+    @State private var sheetHeight: CGFloat = 480
 
     // MARK: - Public Initialization (without preloading)
 
@@ -375,8 +373,6 @@ public struct CheckoutSheet<Header: View>: View {
         self.onComplete = onComplete
         self._isLoading = State(initialValue: true)
         self._webContentHeight = State(initialValue: 0)
-        self._compactHeight = State(initialValue: 480)
-        self._selectedDetent = State(initialValue: .height(480))
     }
 
     // MARK: - Internal Initialization (with preloaded WebView)
@@ -405,9 +401,6 @@ public struct CheckoutSheet<Header: View>: View {
         self.onComplete = onComplete
         self._isLoading = State(initialValue: false)
         self._webContentHeight = State(initialValue: preloader.measuredContentHeight)
-        let startHeight = min(max(preloader.measuredContentHeight, 200), Self.maxSheetHeight)
-        self._compactHeight = State(initialValue: startHeight)
-        self._selectedDetent = State(initialValue: .height(startHeight))
     }
 }
 
@@ -504,24 +497,10 @@ extension CheckoutSheet {
                 if Header.self == EmptyView.self {
                     defaultHeader
                         .frame(minHeight: dismissible ? 60 : 0)
-                        .background(GeometryReader { geo in
-                            Color.clear.preference(key: HeaderHeightKey.self, value: geo.size.height)
-                        })
-                        .onPreferenceChange(HeaderHeightKey.self) { newHeight in
-                            headerHeight = newHeight
-                            recalculateHeight()
-                        }
                 } else {
                     header
                         .frame(maxWidth: .infinity, minHeight: dismissible ? 60 : 0)
                         .padding(.bottom, 8)
-                        .background(GeometryReader { geo in
-                            Color.clear.preference(key: HeaderHeightKey.self, value: geo.size.height)
-                        })
-                        .onPreferenceChange(HeaderHeightKey.self) { newHeight in
-                            headerHeight = newHeight
-                            recalculateHeight()
-                        }
                 }
 
                 ZStack {
@@ -537,13 +516,23 @@ extension CheckoutSheet {
                         Color(.systemBackground)
                     }
                 }
+                .frame(height: webContentHeight > 0 ? webContentHeight : 400)
             } else {
                 ProgressView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(height: 400)
+                    .frame(maxWidth: .infinity)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(.systemBackground))
+        .frame(maxWidth: .infinity)
+        .fixedSize(horizontal: false, vertical: true)
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.height
+        } action: { newHeight in
+            guard newHeight > 0, newHeight != sheetHeight else { return }
+            withAnimation(.easeInOut(duration: 0.3)) {
+                sheetHeight = newHeight
+            }
+        }
         .overlay(alignment: .topTrailing) {
             if dismissible {
                 Button {
@@ -562,7 +551,7 @@ extension CheckoutSheet {
         }
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .ignoresSafeArea(edges: .bottom)
-        .presentationDetents([.height(compactHeight)], selection: $selectedDetent)
+        .presentationDetents([.height(sheetHeight)])
         .presentationDragIndicator(.hidden)
         .presentationBackground(.clear)
         .interactiveDismissDisabled(!dismissible)
@@ -596,26 +585,6 @@ extension CheckoutSheet {
             .padding(.bottom, 8)
     }
 
-    // MARK: - Height Calculation
-
-    /// Maximum sheet height: 90% of screen height so it still looks like a sheet.
-    private static var maxSheetHeight: CGFloat {
-        UIScreen.main.bounds.height * 0.9
-    }
-
-    private func recalculateHeight() {
-        let contentH = webContentHeight > 0 ? webContentHeight : 400
-        let totalHeight = headerHeight + contentH
-        let newHeight = min(max(totalHeight, 200), Self.maxSheetHeight)
-
-        guard newHeight != compactHeight else { return }
-
-        withAnimation(.easeInOut(duration: 0.3)) {
-            compactHeight = newHeight
-            selectedDetent = .height(newHeight)
-        }
-    }
-
     // MARK: - Error View
 
     private func errorView(_ error: Error) -> some View {
@@ -645,7 +614,8 @@ extension CheckoutSheet {
             .foregroundStyle(.secondary)
             Spacer()
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(height: 300)
+        .frame(maxWidth: .infinity)
     }
 
     // MARK: - Actions
@@ -680,7 +650,6 @@ extension CheckoutSheet {
 
         case .contentHeight(let height):
             webContentHeight = height
-            recalculateHeight()
 
         case .complete(let txnId):
             Task {
@@ -728,15 +697,6 @@ extension CheckoutSheet {
         } catch {
             onComplete(.failure(PaymentSheetError.verificationFailed(error.localizedDescription)))
         }
-    }
-}
-
-// MARK: - Header Height Preference Key
-
-private struct HeaderHeightKey: PreferenceKey {
-    nonisolated(unsafe) static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
     }
 }
 
