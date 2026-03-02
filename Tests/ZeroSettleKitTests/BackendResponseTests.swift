@@ -28,7 +28,7 @@ private struct EntitlementsResponse: Decodable {
 /// and the config parsing is done manually in Backend. We test product array
 /// decoding and config decoding separately.
 private struct ProductsResponse: Decodable {
-    let products: [Product]
+    let products: [ZSProduct]
     let config: ConfigResponse?
 }
 
