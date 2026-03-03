@@ -116,6 +116,11 @@ public struct MigrationPrompt: Codable, Sendable, Equatable {
     /// The product ID to offer for migration
     public let productId: String
 
+    /// The StoreKit product IDs eligible for this migration campaign.
+    /// The SDK matches the user's active StoreKit subscription against this list.
+    /// Defaults to `[productId]` when the backend doesn't provide the field.
+    public let eligibleProductIds: [String]
+
     /// The discount percentage offered (e.g., 20 for 20% off)
     public let discountPercent: Int
 
@@ -128,8 +133,9 @@ public struct MigrationPrompt: Codable, Sendable, Equatable {
     /// The CTA button text to display in the migration prompt
     public let ctaText: String
 
-    public init(productId: String, discountPercent: Int, title: String, message: String, ctaText: String) {
+    public init(productId: String, eligibleProductIds: [String] = [], discountPercent: Int, title: String, message: String, ctaText: String) {
         self.productId = productId
+        self.eligibleProductIds = eligibleProductIds
         self.discountPercent = discountPercent
         self.title = title
         self.message = message

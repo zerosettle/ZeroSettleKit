@@ -74,7 +74,7 @@ internal final class Backend: @unchecked Sendable {
         if let configResponse = response.config {
             // Log raw migration response for debugging
             if let migrationRaw = configResponse.migration {
-                ZSLogger.info("[migration] Raw response from server: shouldShow=\(migrationRaw.shouldShow), productId=\(migrationRaw.productId as Any), discountPercent=\(migrationRaw.discountPercent as Any), title=\(migrationRaw.title as Any), message=\(migrationRaw.message as Any)", category: .iap)
+                ZSLogger.info("[migration] Raw response from server: shouldShow=\(migrationRaw.shouldShow), eligibleProductIds=\(migrationRaw.eligibleProductIds as Any), discountPercent=\(migrationRaw.discountPercent as Any), title=\(migrationRaw.title as Any), message=\(migrationRaw.message as Any)", category: .iap)
             } else {
                 ZSLogger.info("[migration] Server returned nil migration config", category: .iap)
             }
@@ -120,24 +120,25 @@ internal final class Backend: @unchecked Sendable {
 
             let migration: MigrationPrompt?
             if let migrationResponse = configResponse.migration {
-                ZSLogger.info("Migration response received: shouldShow=\(migrationResponse.shouldShow), productId=\(migrationResponse.productId ?? "nil"), discountPercent=\(migrationResponse.discountPercent.map(String.init) ?? "nil"), title=\(migrationResponse.title ?? "nil"), message=\(migrationResponse.message ?? "nil")", category: .iap)
+                let eligible = migrationResponse.eligibleProductIds ?? []
+                ZSLogger.info("Migration response received: shouldShow=\(migrationResponse.shouldShow), eligibleProductIds=\(eligible), discountPercent=\(migrationResponse.discountPercent.map(String.init) ?? "nil"), title=\(migrationResponse.title ?? "nil"), message=\(migrationResponse.message ?? "nil")", category: .iap)
 
                 if migrationResponse.shouldShow,
-                   let productId = migrationResponse.productId,
                    let discountPercent = migrationResponse.discountPercent,
                    let title = migrationResponse.title,
                    let message = migrationResponse.message {
                     migration = MigrationPrompt(
-                        productId: productId,
+                        productId: eligible.first ?? "",
+                        eligibleProductIds: eligible,
                         discountPercent: discountPercent,
                         title: title,
                         message: message,
                         ctaText: migrationResponse.ctaText ?? "Save \(discountPercent)% Forever"
                     )
-                    ZSLogger.info("Migration prompt created: productId=\(productId), discountPercent=\(discountPercent), title=\(title)", category: .iap)
+                    ZSLogger.info("Migration prompt created: eligibleProductIds=\(eligible), discountPercent=\(discountPercent), title=\(title)", category: .iap)
                 } else {
                     migration = nil
-                    ZSLogger.info("Migration prompt nil: shouldShow=\(migrationResponse.shouldShow), missing fields: productId=\(migrationResponse.productId == nil), discountPercent=\(migrationResponse.discountPercent == nil), title=\(migrationResponse.title == nil), message=\(migrationResponse.message == nil)", category: .iap)
+                    ZSLogger.info("Migration prompt nil: shouldShow=\(migrationResponse.shouldShow), missing fields: discountPercent=\(migrationResponse.discountPercent == nil), title=\(migrationResponse.title == nil), message=\(migrationResponse.message == nil)", category: .iap)
                 }
             } else {
                 migration = nil
@@ -631,7 +632,7 @@ private struct JurisdictionConfigResponse: Decodable {
 
 private struct MigrationPromptResponse: Decodable {
     let shouldShow: Bool
-    let productId: String?
+    let eligibleProductIds: [String]?
     let discountPercent: Int?
     let title: String?
     let message: String?
