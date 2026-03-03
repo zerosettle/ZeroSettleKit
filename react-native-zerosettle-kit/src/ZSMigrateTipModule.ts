@@ -12,6 +12,7 @@ const { ZSMigrateTipModule } = NativeModules;
  *
  * @param backgroundColorHex - Background color in hex format (e.g., "#1E1E1E")
  * @param userId - The user identifier passed to the checkout backend.
+ * @param stripeCustomerId - Optional existing Stripe Customer ID (`cus_xxx`) to attach the checkout to.
  *
  * @example
  * ```tsx
@@ -19,9 +20,12 @@ const { ZSMigrateTipModule } = NativeModules;
  *
  * // Show the migrate tip modal
  * presentMigrateTip('#1E1E1E', 'my_user_id');
+ *
+ * // With existing Stripe customer
+ * presentMigrateTip('#1E1E1E', 'my_user_id', 'cus_abc123');
  * ```
  */
-export function presentMigrateTip(backgroundColorHex: string = '#000000', userId: string): void {
+export function presentMigrateTip(backgroundColorHex: string = '#000000', userId: string, stripeCustomerId?: string): void {
   if (Platform.OS !== 'ios') {
     console.warn('[ZeroSettleKit] presentMigrateTip is only available on iOS');
     return;
@@ -32,7 +36,7 @@ export function presentMigrateTip(backgroundColorHex: string = '#000000', userId
     return;
   }
 
-  ZSMigrateTipModule.presentMigrateTip(backgroundColorHex, userId);
+  ZSMigrateTipModule.presentMigrateTip(backgroundColorHex, userId, stripeCustomerId ?? null);
 }
 
 /**

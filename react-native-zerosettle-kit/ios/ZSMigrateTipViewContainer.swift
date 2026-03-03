@@ -13,6 +13,9 @@ public final class ZSMigrateTipViewContainer: UIView {
     @objc var userId: NSString = "" {
         didSet { updateSwiftUIView() }
     }
+    @objc var stripeCustomerId: NSString? {
+        didSet { updateSwiftUIView() }
+    }
     
     public override init(frame: CGRect) {
         super.init(frame: frame)
@@ -29,7 +32,7 @@ public final class ZSMigrateTipViewContainer: UIView {
         let uiColor = UIColor(hex: backgroundColorHex as String) ?? .black
         let swiftUIColor = Color(uiColor)
 
-        let root = ZSMigrateTipView(userId: userId as String, backgroundColor: swiftUIColor)
+        let root = ZSMigrateTipView(userId: userId as String, stripeCustomerId: stripeCustomerId as String?, backgroundColor: swiftUIColor)
         let any = AnyView(root)
 
         let hc = UIHostingController(rootView: any)
@@ -55,7 +58,7 @@ public final class ZSMigrateTipViewContainer: UIView {
         let uiColor = UIColor(hex: backgroundColorHex as String) ?? .black
         let swiftUIColor = Color(uiColor)
 
-        let root = ZSMigrateTipView(userId: userId as String, backgroundColor: swiftUIColor)
+        let root = ZSMigrateTipView(userId: userId as String, stripeCustomerId: stripeCustomerId as String?, backgroundColor: swiftUIColor)
         hc.rootView = AnyView(root)
         hc.view.invalidateIntrinsicContentSize()
         setNeedsLayout()

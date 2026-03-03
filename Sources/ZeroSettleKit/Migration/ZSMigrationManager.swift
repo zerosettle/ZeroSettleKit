@@ -54,6 +54,11 @@ public final class ZSMigrationManager: ObservableObject {
     /// The user identifier for this migration flow.
     public let userId: String
 
+    /// An optional existing Stripe Customer ID (`cus_xxx`) to attach the
+    /// migration checkout to.  When provided the backend will use this customer
+    /// instead of creating a new one, ensuring a unified Billing Portal view.
+    public let stripeCustomerId: String?
+
     // MARK: - Demo Mode
 
     /// Enables demo mode for previewing the migration UI without an active StoreKit subscription.
@@ -92,10 +97,14 @@ public final class ZSMigrationManager: ObservableObject {
     /// The manager immediately evaluates eligibility based on the current state
     /// of ``ZeroSettle/shared`` and re-evaluates whenever it publishes changes.
     ///
-    /// - Parameter userId: Your app's user identifier
-    public init(userId: String) {
+    /// - Parameters:
+    ///   - userId: Your app's user identifier
+    ///   - stripeCustomerId: Optional existing Stripe Customer ID (`cus_xxx`)
+    ///     to attach the checkout to.  When `nil` the backend creates a new customer.
+    public init(userId: String, stripeCustomerId: String? = nil) {
         self.userId = userId
-        ZSLogger.info("[MigrationManager] init(userId: \"\(userId)\")", category: .iap)
+        self.stripeCustomerId = stripeCustomerId
+        ZSLogger.info("[MigrationManager] init(userId: \"\(userId)\", stripeCustomerId: \"\(stripeCustomerId ?? "nil")\")", category: .iap)
 
         // Evaluate immediately
         evaluateEligibility()
@@ -218,8 +227,11 @@ public final class ZSMigrationManager: ObservableObject {
             return
         }
 
-        // Compute free trial days from StoreKit expiration
-        let freeTrialDays = computeFreeTrialDays(from: activeStoreKitEntitlement)
+        // Default 45-day free trial for all migration offers.
+        // The actual free trial duration is adjusted server-side only after
+        // the user's Apple subscription is cancelled.
+        let freeTrialDays = 45
+        ZSLogger.info("[MigrationManager] Using default freeTrialDays=\(freeTrialDays) — actual duration adjusted server-side after Apple subscription cancellation", category: .iap)
 
         let data = MigrationOffer.OfferData(
             prompt: prompt,
@@ -315,7 +327,8 @@ public final class ZSMigrationManager: ObservableObject {
             let paymentIntent = try await backend.createPaymentIntent(
                 productId: offerData.prompt.productId,
                 userId: userId,
-                freeTrialDays: offerData.freeTrialDays
+                freeTrialDays: offerData.freeTrialDays,
+                stripeCustomerId: stripeCustomerId
             )
 
             isLoading = false

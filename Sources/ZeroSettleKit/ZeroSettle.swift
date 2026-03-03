@@ -507,12 +507,15 @@ public final class ZeroSettle: ObservableObject {
     /// a single shared instance. The manager starts in `.loading` and transitions
     /// to `.eligible` or `.ineligible` once bootstrap completes (via Combine).
     ///
-    /// - Parameter userId: Your app's user identifier
+    /// - Parameters:
+    ///   - userId: Your app's user identifier
+    ///   - stripeCustomerId: Optional existing Stripe Customer ID (`cus_xxx`)
+    ///     to attach the checkout to.
     /// - Returns: The shared ``ZSMigrationManager``
     @discardableResult
-    public func migrationManager(for userId: String) -> ZSMigrationManager {
+    public func migrationManager(for userId: String, stripeCustomerId: String? = nil) -> ZSMigrationManager {
         if let existing = migrationManager { return existing }
-        let manager = ZSMigrationManager(userId: userId)
+        let manager = ZSMigrationManager(userId: userId, stripeCustomerId: stripeCustomerId)
         migrationManager = manager
         return manager
     }

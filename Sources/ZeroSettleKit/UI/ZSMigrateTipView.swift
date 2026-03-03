@@ -32,6 +32,7 @@ public struct MigrationTipView: View {
     }
 
     let userId: String
+    let stripeCustomerId: String?
     let backgroundColor: Color
     let titleFont: Font?
     let bodyFont: Font?
@@ -62,6 +63,7 @@ public struct MigrationTipView: View {
     ///
     /// - Parameters:
     ///   - userId: The user identifier passed to the checkout backend.
+    ///   - stripeCustomerId: Optional existing Stripe Customer ID (`cus_xxx`) to attach the checkout to. When `nil`, the backend creates a new customer.
     ///   - backgroundColor: The background color for the view. Defaults to `.black`.
     ///   - titleFont: Optional custom font for title text. When `nil`, the default system bold font is used.
     ///   - bodyFont: Optional custom font for body/message text. When `nil`, the default system font is used.
@@ -71,6 +73,7 @@ public struct MigrationTipView: View {
     /// - Note: Free trial days are automatically calculated based on when the user's current StoreKit subscription expires.
     public init(
         userId: String,
+        stripeCustomerId: String? = nil,
         backgroundColor: Color = .black,
         titleFont: Font? = nil,
         bodyFont: Font? = nil,
@@ -79,6 +82,7 @@ public struct MigrationTipView: View {
         onEvent: ((Event) -> Void)? = nil
     ) {
         self.userId = userId
+        self.stripeCustomerId = stripeCustomerId
         self.backgroundColor = backgroundColor
         self.titleFont = titleFont
         self.bodyFont = bodyFont
@@ -87,7 +91,7 @@ public struct MigrationTipView: View {
         self.onEvent = onEvent
         // Always use the shared singleton manager. migrationManager(for:) guarantees
         // a single instance — whether bootstrap ran first or the view was created first.
-        _manager = StateObject(wrappedValue: ZeroSettle.shared.migrationManager(for: userId))
+        _manager = StateObject(wrappedValue: ZeroSettle.shared.migrationManager(for: userId, stripeCustomerId: stripeCustomerId))
     }
 
     /// Backward-compatible convenience that maps the legacy `onDismiss` closure to
