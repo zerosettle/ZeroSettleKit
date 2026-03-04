@@ -92,7 +92,6 @@ import SwiftUI
 //   - .checkoutSheet(item:userId:freeTrialDays:dismissible:preload:onComplete:)
 //   - .checkoutSheet(item:userId:freeTrialDays:dismissible:preload:header:onComplete:)
 //   - .retentionSheet(isPresented:onResult:)
-//   - .manageSubscription(isPresented:userId:)
 //   - .cancelFlow(isPresented:productId:userId:onResult:)
 //   - .upgradeOffer(isPresented:productId:userId:onResult:)
 //   - .zeroSettleHandler()
@@ -159,15 +158,6 @@ extension View {
         retentionSheet(isPresented: isPresented, onResult: onResult)
     }
 
-    /// Deprecated: use `.manageSubscription(isPresented:userId:)` instead.
-    @available(*, deprecated, renamed: "manageSubscription(isPresented:userId:)")
-    public func zsManageSubscription(
-        isPresented: Binding<Bool>,
-        userId: String
-    ) -> some View {
-        manageSubscription(isPresented: isPresented, userId: userId)
-    }
-
     /// Deprecated: use `.cancelFlow(isPresented:productId:userId:onResult:)` instead.
     @available(*, deprecated, renamed: "cancelFlow(isPresented:productId:userId:onResult:)")
     public func zsCancelFlow(
@@ -199,5 +189,54 @@ extension ZeroSettle {
     @available(*, deprecated, renamed: "migrationManager(for:)")
     public func getOrCreateMigrationManager(userId: String) -> ZSMigrationManager {
         migrationManager(for: userId)
+    }
+
+    /// Removed: use ``presentCancelFlow(productId:userId:)`` for cancellation,
+    /// or `AppStore.showManageSubscriptions(in:)` for Apple billing management.
+    @available(*, unavailable, message: "Use presentCancelFlow(productId:userId:) for cancellation, or AppStore.showManageSubscriptions(in:) directly for Apple billing management.")
+    public func openCustomerPortal(userId: String) async throws {
+        fatalError()
+    }
+
+    /// Removed: use ``presentCancelFlow(productId:userId:)`` for cancellation,
+    /// or `AppStore.showManageSubscriptions(in:)` for Apple billing management.
+    @available(*, unavailable, message: "Use presentCancelFlow(productId:userId:) for cancellation, or AppStore.showManageSubscriptions(in:) directly for Apple billing management.")
+    public func showManageSubscription(userId: String) async throws {
+        fatalError()
+    }
+
+    /// Deprecated: use ``pauseSubscription(productId:userId:pauseDurationDays:)`` instead.
+    @available(*, deprecated, message: "Use pauseSubscription(productId:userId:pauseDurationDays:) instead")
+    public func pauseSubscription(productId: String, userId: String, pauseOptionId: Int) async throws -> Date? {
+        let durationDays = cancelFlowConfig?.pause?.options
+            .first(where: { $0.id == pauseOptionId })?.durationDays
+        return try await pauseSubscription(
+            productId: productId,
+            userId: userId,
+            pauseDurationDays: durationDays
+        )
+    }
+}
+
+// MARK: - Deprecated View Modifier Forwarding (Removed APIs)
+
+extension View {
+
+    /// Deprecated: use `.retentionSheet(isPresented:onResult:)` or `.cancelFlow(isPresented:productId:userId:onResult:)` instead.
+    @available(*, deprecated, message: "Use .retentionSheet(isPresented:onResult:) or .cancelFlow(isPresented:productId:userId:onResult:) instead")
+    public func manageSubscription(
+        isPresented: Binding<Bool>,
+        userId: String
+    ) -> some View {
+        retentionSheet(isPresented: isPresented, onResult: { _ in })
+    }
+
+    /// Deprecated: use `.retentionSheet(isPresented:onResult:)` or `.cancelFlow(isPresented:productId:userId:onResult:)` instead.
+    @available(*, deprecated, message: "Use .retentionSheet(isPresented:onResult:) or .cancelFlow(isPresented:productId:userId:onResult:) instead")
+    public func zsManageSubscription(
+        isPresented: Binding<Bool>,
+        userId: String
+    ) -> some View {
+        manageSubscription(isPresented: isPresented, userId: userId)
     }
 }
