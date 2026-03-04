@@ -30,8 +30,4 @@ RCT_EXTERN_METHOD(cancelSubscription:(NSString *)productId
                   resolve:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
-RCT_EXTERN_METHOD(openCustomerPortal:(NSString *)userId
-                  resolve:(RCTPromiseResolveBlock)resolve
-                  rejecter:(RCTPromiseRejectBlock)reject)
-
 @end

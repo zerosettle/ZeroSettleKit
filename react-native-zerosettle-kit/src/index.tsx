@@ -17,7 +17,6 @@ export {
   pauseSubscription,
   resumeSubscription,
   cancelSubscription,
-  openCustomerPortal,
 } from './ZSCancelFlowModule';
 export type {
   CancelFlowConfig,

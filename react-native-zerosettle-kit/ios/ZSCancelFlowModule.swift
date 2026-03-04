@@ -127,20 +127,6 @@ class ZSCancelFlowModule: NSObject {
         }
     }
 
-    // MARK: - Open Customer Portal
-
-    @objc
-    func openCustomerPortal(_ userId: String, resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
-        Task { @MainActor in
-            do {
-                try await ZeroSettle.shared.openCustomerPortal(userId: userId)
-                resolve(nil)
-            } catch {
-                reject("portal_failed", error.localizedDescription, error)
-            }
-        }
-    }
-
     // MARK: - Serialization
 
     private static func configToMap(_ config: CancelFlow.Config) -> [String: Any] {
