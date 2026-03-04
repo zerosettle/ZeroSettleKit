@@ -31,6 +31,15 @@ public enum CancelFlow {
         public let pause: PauseConfig?
         /// A/B experiment variant identifier, if this config is part of an experiment.
         public let variantId: Int?
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            enabled = try container.decode(Bool.self, forKey: .enabled)
+            questions = try container.decodeIfPresent([Question].self, forKey: .questions) ?? []
+            offer = try container.decodeIfPresent(Offer.self, forKey: .offer)
+            pause = try container.decodeIfPresent(PauseConfig.self, forKey: .pause)
+            variantId = try container.decodeIfPresent(Int.self, forKey: .variantId)
+        }
     }
 
     /// A single question in the cancel flow questionnaire.
@@ -54,6 +63,10 @@ public enum CancelFlow {
         public let id: Int
         public let order: Int
         public let label: String
+        /// Optional SF Symbol name displayed as a leading icon pill.
+        public let iconName: String?
+        /// Optional subtext displayed below the label.
+        public let subtitle: String?
         public let triggersOffer: Bool
         public let triggersPause: Bool
     }
@@ -95,9 +108,11 @@ public enum CancelFlow {
         public let ctaText: String
         public let type: OfferType
         public let value: String
+        /// Duration of the offer in months (e.g., 3 = "3 months"). `nil` when not configured.
+        public let durationMonths: Int?
 
         private enum CodingKeys: String, CodingKey {
-            case enabled, title, body, ctaText, type, value
+            case enabled, title, body, ctaText, type, value, durationMonths
         }
 
         public init(from decoder: Decoder) throws {
@@ -109,6 +124,7 @@ public enum CancelFlow {
             let rawType = try container.decode(String.self, forKey: .type)
             type = OfferType(rawString: rawType)
             value = try container.decode(String.self, forKey: .value)
+            durationMonths = try container.decodeIfPresent(Int.self, forKey: .durationMonths)
         }
 
         public func encode(to encoder: Encoder) throws {
@@ -119,6 +135,7 @@ public enum CancelFlow {
             try container.encode(ctaText, forKey: .ctaText)
             try container.encode(type.rawString, forKey: .type)
             try container.encode(value, forKey: .value)
+            try container.encodeIfPresent(durationMonths, forKey: .durationMonths)
         }
     }
 
