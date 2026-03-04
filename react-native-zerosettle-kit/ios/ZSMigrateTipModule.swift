@@ -12,7 +12,7 @@ class ZSMigrateTipModule: NSObject {
     }
     
     @objc
-    func presentMigrateTip(_ backgroundColorHex: String, userId: String, stripeCustomerId: String?) {
+    func presentMigrateTip(_ backgroundColorHex: String, userId: String) {
         DispatchQueue.main.async {
             guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
                   let rootVC = windowScene.windows.first?.rootViewController else {
@@ -31,7 +31,7 @@ class ZSMigrateTipModule: NSObject {
             let swiftUIColor = Color(uiColor)
 
             // Create the SwiftUI view
-            let migrateTipView = ZSMigrateTipView(userId: userId, stripeCustomerId: stripeCustomerId, backgroundColor: swiftUIColor)
+            let migrateTipView = ZSMigrateTipView(userId: userId, backgroundColor: swiftUIColor)
             
             // Wrap in a hosting controller
             let hostingController = UIHostingController(rootView: 

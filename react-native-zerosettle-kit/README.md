@@ -41,8 +41,6 @@ function MyScreen() {
   return (
     <View style={{ flex: 1 }}>
       <ZSMigrateTipView
-        userId="my_user_id"
-        stripeCustomerId="cus_abc123"      // optional
         backgroundColorHex="#1E1E1E"
         style={{ marginHorizontal: 16, marginTop: 20 }}
       />
@@ -55,8 +53,6 @@ function MyScreen() {
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `userId` | `string` | Required | The user identifier passed to the checkout backend. |
-| `stripeCustomerId` | `string` | - | Optional existing Stripe Customer ID (`cus_xxx`). When provided, the checkout is attached to this customer. |
 | `backgroundColorHex` | `string` | `"#000000"` | Background color in hex format (e.g., `"#FF5733"`) |
 | `style` | `ViewStyle` | - | Standard React Native view style |
 
