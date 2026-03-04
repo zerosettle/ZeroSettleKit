@@ -19,8 +19,6 @@ public struct Entitlement: Identifiable, Sendable, Codable, Equatable {
     ///
     /// A single user can hold entitlements from multiple sources simultaneously
     /// (e.g., a StoreKit subscription and a web checkout consumable).
-    /// ``ZeroSettle/showManageSubscription(userId:)`` uses these values to route
-    /// to the appropriate management UI.
     public enum Source: String, Sendable, Codable {
         /// Purchased through Apple's StoreKit (App Store billing).
         case storeKit = "store_kit"

@@ -12,15 +12,22 @@ public enum ZSLogger {
     private static let subsystem = "com.zerosettle.kit"
 
     public enum Category: String {
-        case auth = "Auth"
-        case balance = "Balance"
-        case signing = "Signing"
+        case migration = "Migration"
+        case checkout = "Checkout"
+        case cancelFlow = "CancelFlow"
+        case entitlements = "Entitlements"
+        case deepLinks = "DeepLinks"
         case network = "Network"
-        case wallet = "Wallet"
-        case blockchain = "Blockchain"
-        case escrow = "Escrow"
-        case iap = "IAP"
         case general = "General"
+    }
+
+    nonisolated(unsafe) private static var loggers: [Category: OSLog] = [:]
+
+    private static func logger(for category: Category) -> OSLog {
+        if let cached = loggers[category] { return cached }
+        let log = OSLog(subsystem: subsystem, category: category.rawValue)
+        loggers[category] = log
+        return log
     }
 
     public static func log(
@@ -28,8 +35,10 @@ public enum ZSLogger {
         category: Category = .general,
         type: OSLogType = .default
     ) {
-        let log = OSLog(subsystem: subsystem, category: category.rawValue)
-        os_log("%{public}@", log: log, type: type, message)
+        os_log("%{public}@", log: logger(for: category), type: type, message)
+        #if DEBUG
+        print("[ZeroSettle/\(category.rawValue)] \(message)")
+        #endif
     }
 
     public static func debug(_ message: String, category: Category = .general) {

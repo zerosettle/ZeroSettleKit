@@ -17,10 +17,10 @@ import Foundation
 /// - **UIKit apps** — Implement this delegate for event-driven callbacks.
 ///   Best when you need to react to individual events (e.g., showing a toast on checkout completion).
 ///
-/// - **SwiftUI apps** — Observe ``ZeroSettle/entitlements`` via `@ObservedObject`:
+/// - **SwiftUI apps** — Read ``ZeroSettle/entitlements`` directly:
 ///   ```swift
-///   @ObservedObject var zs = ZeroSettle.shared
-///   // zs.entitlements is @Published and drives SwiftUI updates automatically.
+///   // ZeroSettle is @Observable — views automatically track property access.
+///   Text("\(ZeroSettle.shared.entitlements.count) entitlements")
 ///   ```
 ///
 /// - **Structured concurrency** — Use ``ZeroSettle/entitlementUpdates`` (`AsyncStream`):
@@ -59,10 +59,13 @@ public protocol ZeroSettleDelegate: AnyObject {
 
     /// Called when the user's entitlements are updated (from either source).
     ///
+    /// > Important: This array includes **all** entitlements (active, expired, revoked).
+    /// > Filter with `\.isActive` for feature gating and billing logic.
+    ///
     /// - Note: For async/await code, prefer ``ZeroSettle/entitlementUpdates``
     ///   (`AsyncStream<[Entitlement]>`) over this delegate method.
     ///
-    /// - Parameter entitlements: The updated list of all entitlements
+    /// - Parameter entitlements: The updated list of all entitlements (filter with `\.isActive` for app logic)
     func zeroSettleEntitlementsDidUpdate(_ entitlements: [Entitlement])
 
     // MARK: - StoreKit Sync Events

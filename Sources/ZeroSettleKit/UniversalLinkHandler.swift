@@ -20,18 +20,18 @@ internal struct ZeroSettleHandlerModifier: ViewModifier {
         content
             .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
                 guard let url = activity.webpageURL else {
-                    ZSLogger.debug("[UniversalLinkHandler] onContinueUserActivity fired but webpageURL is nil", category: .iap)
+                    ZSLogger.debug("onContinueUserActivity fired but webpageURL is nil", category: .deepLinks)
                     return
                 }
-                ZSLogger.info("[UniversalLinkHandler] onContinueUserActivity fired with URL: \(url.absoluteString)", category: .iap)
+                ZSLogger.info("onContinueUserActivity fired with URL: \(url.absoluteString)", category: .deepLinks)
                 ZeroSettle.shared.handleUniversalLink(url)
             }
             .onOpenURL { url in
-                ZSLogger.info("[UniversalLinkHandler] onOpenURL fired with URL: \(url.absoluteString)", category: .iap)
+                ZSLogger.info("onOpenURL fired with URL: \(url.absoluteString)", category: .deepLinks)
                 ZeroSettle.shared.handleUniversalLink(url)
             }
             .onAppear {
-                ZSLogger.debug("[UniversalLinkHandler] handler installed on view appear", category: .iap)
+                ZSLogger.debug("handler installed on view appear", category: .deepLinks)
                 ZeroSettle.shared.handlerInstalled = true
             }
     }
