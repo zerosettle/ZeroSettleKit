@@ -33,7 +33,7 @@ internal final class UpgradeOfferPresenter: NSObject, @unchecked Sendable {
             .compactMap({ $0 as? UIWindowScene })
             .first(where: { $0.activationState == .foregroundActive }),
               let rootViewController = windowScene.windows.first(where: { $0.isKeyWindow })?.rootViewController else {
-            ZSLogger.error("Unable to find root view controller for upgrade offer", category: .iap)
+            ZSLogger.error("Unable to find root view controller for upgrade offer", category: .checkout)
             return .dismissed
         }
 
@@ -366,7 +366,7 @@ private struct UpgradeOfferSheetView: View {
                 await MainActor.run {
                     isLoading = false
                     errorMessage = "Something went wrong. Please try again."
-                    ZSLogger.error("Failed to execute upgrade: \(error)", category: .iap)
+                    ZSLogger.error("Failed to execute upgrade: \(error)", category: .checkout)
                 }
             }
         }

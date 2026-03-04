@@ -74,16 +74,16 @@ internal final class Backend: @unchecked Sendable {
         if let configResponse = response.config {
             // Log raw migration response for debugging
             if let migrationRaw = configResponse.migration {
-                ZSLogger.info("[migration] Raw response from server: shouldShow=\(migrationRaw.shouldShow), eligibleProductIds=\(migrationRaw.eligibleProductIds as Any), discountPercent=\(migrationRaw.discountPercent as Any), title=\(migrationRaw.title as Any), message=\(migrationRaw.message as Any)", category: .iap)
+                ZSLogger.info("Raw migration response from server: shouldShow=\(migrationRaw.shouldShow), eligibleProductIds=\(migrationRaw.eligibleProductIds as Any), discountPercent=\(migrationRaw.discountPercent as Any), title=\(migrationRaw.title as Any), message=\(migrationRaw.message as Any)", category: .network)
             } else {
-                ZSLogger.info("[migration] Server returned nil migration config", category: .iap)
+                ZSLogger.info("Server returned nil migration config", category: .network)
             }
             let checkoutType: CheckoutType
             if let parsed = CheckoutType(rawValue: configResponse.checkout.sheetType) {
                 checkoutType = parsed
             } else {
                 checkoutType = .webView
-                ZSLogger.info("Unrecognized checkout type '\(configResponse.checkout.sheetType)' from backend, defaulting to webView. You may need to update ZeroSettleKit.", category: .iap)
+                ZSLogger.info("Unrecognized checkout type '\(configResponse.checkout.sheetType)' from backend, defaulting to webView. You may need to update ZeroSettleKit.", category: .network)
             }
 
             // Parse jurisdiction overrides
@@ -96,7 +96,7 @@ internal final class Backend: @unchecked Sendable {
                         sheetType = parsed
                     } else {
                         sheetType = .webView
-                        ZSLogger.info("Unrecognized checkout type '\(value.sheetType)' for jurisdiction \(key), defaulting to webView.", category: .iap)
+                        ZSLogger.info("Unrecognized checkout type '\(value.sheetType)' for jurisdiction \(key), defaulting to webView.", category: .network)
                     }
                     jurisdictions[jurisdiction] = JurisdictionCheckoutConfig(
                         sheetType: sheetType,
@@ -108,7 +108,7 @@ internal final class Backend: @unchecked Sendable {
             // Log jurisdiction overrides for developer visibility
             if !jurisdictions.isEmpty {
                 let overrideSummary = jurisdictions.map { "\($0.key.rawValue)=\($0.value.sheetType.rawValue)(enabled:\($0.value.isEnabled))" }.joined(separator: ", ")
-                ZSLogger.info("Jurisdiction overrides: \(overrideSummary)", category: .iap)
+                ZSLogger.info("Jurisdiction overrides: \(overrideSummary)", category: .network)
             }
 
             let checkoutConfig = CheckoutConfig(
@@ -121,28 +121,32 @@ internal final class Backend: @unchecked Sendable {
             let migration: MigrationPrompt?
             if let migrationResponse = configResponse.migration {
                 let eligible = migrationResponse.eligibleProductIds ?? []
-                ZSLogger.info("Migration response received: shouldShow=\(migrationResponse.shouldShow), eligibleProductIds=\(eligible), discountPercent=\(migrationResponse.discountPercent.map(String.init) ?? "nil"), title=\(migrationResponse.title ?? "nil"), message=\(migrationResponse.message ?? "nil")", category: .iap)
+                ZSLogger.info("Migration response received: shouldShow=\(migrationResponse.shouldShow), eligibleProductIds=\(eligible), discountPercent=\(migrationResponse.discountPercent.map(String.init) ?? "nil"), title=\(migrationResponse.title ?? "nil"), message=\(migrationResponse.message ?? "nil")", category: .network)
 
                 if migrationResponse.shouldShow,
                    let discountPercent = migrationResponse.discountPercent,
                    let title = migrationResponse.title,
                    let message = migrationResponse.message {
+                    // Use backend discount if > 0, otherwise fall back to product savings
+                    let effectiveDiscount = discountPercent > 0
+                        ? discountPercent
+                        : (response.products.first(where: { $0.id == eligible.first })?.savingsPercent ?? 0)
                     migration = MigrationPrompt(
                         productId: eligible.first ?? "",
                         eligibleProductIds: eligible,
-                        discountPercent: discountPercent,
+                        discountPercent: effectiveDiscount,
                         title: title,
                         message: message,
-                        ctaText: migrationResponse.ctaText ?? "Save \(discountPercent)% Forever"
+                        ctaText: migrationResponse.ctaText ?? (effectiveDiscount > 0 ? "Save \(effectiveDiscount)% Forever" : "Switch Now")
                     )
-                    ZSLogger.info("Migration prompt created: eligibleProductIds=\(eligible), discountPercent=\(discountPercent), title=\(title)", category: .iap)
+                    ZSLogger.info("Migration prompt created: eligibleProductIds=\(eligible), discountPercent=\(effectiveDiscount), title=\(title)", category: .network)
                 } else {
                     migration = nil
-                    ZSLogger.info("Migration prompt nil: shouldShow=\(migrationResponse.shouldShow), missing fields: discountPercent=\(migrationResponse.discountPercent == nil), title=\(migrationResponse.title == nil), message=\(migrationResponse.message == nil)", category: .iap)
+                    ZSLogger.info("Migration prompt nil: shouldShow=\(migrationResponse.shouldShow), missing fields: discountPercent=\(migrationResponse.discountPercent == nil), title=\(migrationResponse.title == nil), message=\(migrationResponse.message == nil)", category: .network)
                 }
             } else {
                 migration = nil
-                ZSLogger.info("No migration object in config response", category: .iap)
+                ZSLogger.info("No migration object in config response", category: .network)
             }
 
             remoteConfig = RemoteConfig(checkout: checkoutConfig, migration: migration)
@@ -317,24 +321,6 @@ internal final class Backend: @unchecked Sendable {
         try await httpClient.executeVoid(request)
     }
 
-    // MARK: - Customer Portal
-
-    /// Create a Stripe customer portal session for subscription management.
-    func createCustomerPortalSession(userId: String) async throws -> CustomerPortalSession {
-        let url = apiURL("iap/customer-portal-sessions/")
-        let body = CreateCustomerPortalSessionRequest(userId: userId)
-        do {
-            return try await httpClient.post(
-                url,
-                body: body,
-                headers: authHeaders,
-                responseType: CustomerPortalSession.self
-            )
-        } catch {
-            throw Backend.wrapError(error)
-        }
-    }
-
     // MARK: - StoreKit Transaction Sync
 
     /// Forward a StoreKit transaction's JWS representation for server-side verification.
@@ -410,11 +396,11 @@ internal final class Backend: @unchecked Sendable {
     /// - Parameters:
     ///   - productId: The product to pause
     ///   - userId: The user who owns the subscription
-    ///   - pauseOptionId: The selected pause option ID from the cancel flow config
+    ///   - pauseDurationDays: Number of days to pause, or nil for indefinite
     /// - Returns: A ``PauseSubscriptionResponse`` with the resume date
-    func pauseSubscription(productId: String, userId: String, pauseOptionId: Int) async throws -> PauseSubscriptionResponse {
+    func pauseSubscription(productId: String, userId: String, pauseDurationDays: Int?) async throws -> PauseSubscriptionResponse {
         let url = apiURL("iap/subscriptions/pause/")
-        let body = PauseSubscriptionRequest(productId: productId, userId: userId, pauseOptionId: pauseOptionId)
+        let body = PauseSubscriptionRequest(productId: productId, userId: userId, pauseDurationDays: pauseDurationDays)
         do {
             return try await httpClient.post(
                 url,
@@ -692,18 +678,10 @@ private struct MigrationConversionRequest: Encodable {
     let userId: String
 }
 
-internal struct CreateCustomerPortalSessionRequest: Encodable {
-    let userId: String
-}
-
-internal struct CustomerPortalSession: Decodable {
-    let portalUrl: URL
-}
-
 internal struct PauseSubscriptionRequest: Encodable {
     let productId: String
     let userId: String
-    let pauseOptionId: Int
+    let pauseDurationDays: Int?
 }
 
 internal struct PauseSubscriptionResponse: Decodable {

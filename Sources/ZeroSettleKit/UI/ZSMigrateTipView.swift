@@ -40,7 +40,7 @@ public struct MigrationTipView: View {
     let borderColor: Color?
     let onEvent: ((Event) -> Void)?
 
-    @StateObject private var manager: ZSMigrationManager
+    @State private var manager: ZSMigrationManager
 
     // MARK: - UI-only State
 
@@ -91,7 +91,7 @@ public struct MigrationTipView: View {
         self.onEvent = onEvent
         // Always use the shared singleton manager. migrationManager(for:) guarantees
         // a single instance — whether bootstrap ran first or the view was created first.
-        _manager = StateObject(wrappedValue: ZeroSettle.shared.migrationManager(for: userId, stripeCustomerId: stripeCustomerId))
+        _manager = State(wrappedValue: ZeroSettle.shared.migrationManager(for: userId, stripeCustomerId: stripeCustomerId))
     }
 
     /// Backward-compatible convenience that maps the legacy `onDismiss` closure to
@@ -129,7 +129,7 @@ public struct MigrationTipView: View {
     /// Falls back to the backend-provided `discountPercent` if prices aren't available.
     private var computedSavingsPercent: Int {
         if let productId = manager.offerData?.prompt.productId,
-           let product = ZeroSettle.shared.products.first(where: { $0.id == productId }),
+           let product = ZeroSettle.shared.product(for: productId),
            let percent = product.savingsPercent {
             return percent
         }
@@ -140,35 +140,27 @@ public struct MigrationTipView: View {
 
     public var body: some View {
         Group {
-            let _ = ZSLogger.info("[MigrationTipView] body evaluated — manager.state=.\(manager.state), offerData=\(manager.offerData != nil ? "present" : "nil"), showCongratulations=\(showCongratulations), isExpanded=\(isExpanded), checkoutURL=\(checkoutURL?.absoluteString ?? "nil")", category: .iap)
             switch manager.state {
             case .loading:
-                let _ = ZSLogger.info("[MigrationTipView] Rendering: .loading — waiting for bootstrap", category: .iap)
                 Color.clear.frame(height: 0)
 
             case .ineligible:
-                let _ = ZSLogger.info("[MigrationTipView] Rendering: .ineligible — showing empty placeholder", category: .iap)
                 Color.clear.frame(height: 0)
 
             case .dismissed:
-                let _ = ZSLogger.info("[MigrationTipView] Rendering: .dismissed — showing nothing", category: .iap)
                 EmptyView()
 
             case .eligible, .presented:
-                let _ = ZSLogger.info("[MigrationTipView] Rendering: .\(manager.state) — showing offer card", category: .iap)
                 offerCardView
 
             case .accepted:
                 if showCongratulations {
-                    let _ = ZSLogger.info("[MigrationTipView] Rendering: .accepted + showCongratulations — showing congratulations card", category: .iap)
                     congratulationsCardView
                 } else {
-                    let _ = ZSLogger.info("[MigrationTipView] Rendering: .accepted — showing 'Cancel Apple Billing' card", category: .iap)
                     acceptedCardView
                 }
 
             case .completed:
-                let _ = ZSLogger.info("[MigrationTipView] Rendering: .completed — showing congratulations card", category: .iap)
                 congratulationsCardView
             }
         }
@@ -186,10 +178,12 @@ public struct MigrationTipView: View {
         VStack(spacing: 0) {
             // Tip header
             headerView(
-                icon: { Text("🎁").font(.system(size: 44)) },
+                icon: { Text("🎁").font(.largeTitle) },
                 title: "Thanks for being with us!",
                 message: manager.offerData?.prompt.message
-                    ?? "Switch to direct billing and get \(discountPercent)% off forever. Same features, fewer platform fees, and we pass the savings onto you.",
+                    ?? (discountPercent > 0
+                        ? "Switch to direct billing and get \(discountPercent)% off forever. Same features, fewer platform fees, and we pass the savings onto you."
+                        : "Switch to direct billing. Same features, fewer platform fees."),
                 showCloseButton: true
             )
 
@@ -202,8 +196,8 @@ public struct MigrationTipView: View {
                                 .progressViewStyle(CircularProgressViewStyle(tint: backgroundColor))
                                 .scaleEffect(0.8)
                         }
-                        Text(manager.isLoading ? "" : (manager.offerData?.prompt.ctaText ?? "Save \(discountPercent)% Forever"))
-                            .font(ctaFont ?? .system(size: 17, weight: .bold))
+                        Text(manager.isLoading ? "" : (manager.offerData?.prompt.ctaText ?? (discountPercent > 0 ? "Save \(discountPercent)% Forever" : "Switch Now")))
+                            .font(ctaFont ?? .body.weight(.bold))
                             .foregroundColor(backgroundColor)
                     }
                     .frame(maxWidth: .infinity)
@@ -255,7 +249,7 @@ public struct MigrationTipView: View {
                     .padding(.horizontal, 12)
 
                     Text("You won't be billed until the end of your current cycle. Cancel anytime.")
-                        .font(.system(size: 12))
+                        .font(.caption)
                         .foregroundColor(.white.opacity(0.7))
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 30)
@@ -291,7 +285,7 @@ public struct MigrationTipView: View {
                                     .stroke(.green, lineWidth: 3)
                             )
                         Image(systemName: "checkmark")
-                            .font(.system(size: 24, weight: .bold))
+                            .font(.title2.weight(.bold))
                             .foregroundColor(.green)
                     }
                 },
@@ -306,7 +300,7 @@ public struct MigrationTipView: View {
                 }
             }) {
                 Text("Cancel Apple Billing")
-                    .font(ctaFont ?? .system(size: 17, weight: .bold))
+                    .font(ctaFont ?? .body.weight(.bold))
                     .foregroundColor(backgroundColor)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 12)
@@ -332,7 +326,7 @@ public struct MigrationTipView: View {
     private var congratulationsCardView: some View {
         VStack(spacing: 0) {
             headerView(
-                icon: { Text("🎉").font(.system(size: 44)) },
+                icon: { Text("🎉").font(.largeTitle) },
                 title: "Congratulations!",
                 message: "You are now saving \(computedSavingsPercent)% forever.",
                 showCloseButton: false
@@ -363,7 +357,7 @@ public struct MigrationTipView: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .top, spacing: 8) {
                     Text(title)
-                        .font(titleFont ?? .system(size: 20, weight: .bold))
+                        .font(titleFont ?? .title3.weight(.bold))
                         .foregroundColor(.white)
                         .lineLimit(1)
                         .minimumScaleFactor(0.5)
@@ -377,7 +371,7 @@ public struct MigrationTipView: View {
                             }
                         }) {
                             Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 24))
+                                .font(.title2)
                                 .foregroundColor(.white.opacity(0.7))
                         }
                         .offset(y: -4)
@@ -385,7 +379,7 @@ public struct MigrationTipView: View {
                 }
 
                 Text(message)
-                    .font(bodyFont ?? .system(size: 16))
+                    .font(bodyFont ?? .subheadline)
                     .foregroundColor(.white.opacity(0.85))
                     .fixedSize(horizontal: false, vertical: true)
             }
