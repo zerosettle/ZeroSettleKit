@@ -96,7 +96,7 @@ internal final class StoreKitManager: @unchecked Sendable {
             }
         }
 
-        ZSLogger.info("StoreKit transaction listener started", category: .iap)
+        ZSLogger.info("StoreKit transaction listener started", category: .entitlements)
     }
 
     /// Stop listening for StoreKit transaction updates.
@@ -123,25 +123,25 @@ internal final class StoreKitManager: @unchecked Sendable {
     func fetchProducts(for productIds: [String]) async -> [String: StoreKit.Product] {
         guard !productIds.isEmpty else { return [:] }
 
-        ZSLogger.info("Requesting \(productIds.count) products from StoreKit: \(productIds)", category: .iap)
+        ZSLogger.info("Requesting \(productIds.count) products from StoreKit: \(productIds)", category: .entitlements)
 
         do {
             let products = try await StoreKit.Product.products(for: Set(productIds))
             var productMap: [String: StoreKit.Product] = [:]
             for product in products {
                 productMap[product.id] = product
-                ZSLogger.info("StoreKit found: \(product.id) - \(product.displayName) - \(product.displayPrice)", category: .iap)
+                ZSLogger.info("StoreKit found: \(product.id) - \(product.displayName) - \(product.displayPrice)", category: .entitlements)
             }
 
             let missingIds = Set(productIds).subtracting(productMap.keys)
             if !missingIds.isEmpty {
-                ZSLogger.info("StoreKit did NOT find these product IDs: \(Array(missingIds))", category: .iap)
+                ZSLogger.info("StoreKit did NOT find these product IDs: \(Array(missingIds))", category: .entitlements)
             }
 
-            ZSLogger.info("Fetched \(products.count)/\(productIds.count) StoreKit products", category: .iap)
+            ZSLogger.info("Fetched \(products.count)/\(productIds.count) StoreKit products", category: .entitlements)
             return productMap
         } catch {
-            ZSLogger.error("Failed to fetch StoreKit products: \(error)", category: .iap)
+            ZSLogger.error("Failed to fetch StoreKit products: \(error)", category: .entitlements)
             return [:]
         }
     }
@@ -188,9 +188,9 @@ internal final class StoreKitManager: @unchecked Sendable {
                     jwsRepresentation: jws,
                     userId: userId
                 )
-                ZSLogger.info("Synced current transaction \(transaction.id) for \(transaction.productID)", category: .iap)
+                ZSLogger.info("Synced current transaction \(transaction.id) for \(transaction.productID)", category: .entitlements)
             } catch {
-                ZSLogger.error("Failed to sync current transaction \(transaction.id): \(error)", category: .iap)
+                ZSLogger.error("Failed to sync current transaction \(transaction.id): \(error)", category: .entitlements)
             }
         }
     }
@@ -221,17 +221,17 @@ internal final class StoreKitManager: @unchecked Sendable {
                 let jws = result.jwsRepresentation
                 await handleVerifiedTransaction(transaction, jwsRepresentation: jws)
             case .unverified(_, let error):
-                ZSLogger.error("Unverified transaction: \(error.localizedDescription)", category: .iap)
+                ZSLogger.error("Unverified transaction: \(error.localizedDescription)", category: .entitlements)
             }
         }
     }
 
     private func handleVerifiedTransaction(_ transaction: SKTransaction, jwsRepresentation: String) async {
-        ZSLogger.info("StoreKit transaction received: \(transaction.productID) (id: \(transaction.id))", category: .iap)
+        ZSLogger.info("StoreKit transaction received: \(transaction.productID) (id: \(transaction.id))", category: .entitlements)
 
         // If no userId is set, finish immediately and return (preserves pre-retry-queue behavior)
         guard let userId = userId else {
-            ZSLogger.debug("No userId set, finishing transaction without sync", category: .iap)
+            ZSLogger.debug("No userId set, finishing transaction without sync", category: .entitlements)
             await transaction.finish()
             return
         }
@@ -247,7 +247,7 @@ internal final class StoreKitManager: @unchecked Sendable {
             await syncQueue.dequeue(transaction.id)
             await transaction.finish()
 
-            ZSLogger.info("StoreKit transaction synced: \(transaction.productID)", category: .iap)
+            ZSLogger.info("StoreKit transaction synced: \(transaction.productID)", category: .entitlements)
             await MainActor.run {
                 delegate?.storeKitDidSyncTransaction(
                     productId: transaction.productID,
@@ -256,7 +256,7 @@ internal final class StoreKitManager: @unchecked Sendable {
             }
         } catch {
             // Sync failed — enqueue for retry, do NOT finish (StoreKit will redeliver)
-            ZSLogger.error("Failed to sync StoreKit transaction: \(error)", category: .iap)
+            ZSLogger.error("Failed to sync StoreKit transaction: \(error)", category: .entitlements)
 
             await syncQueue.enqueue(StoreKitSyncQueue.PendingSync(
                 jwsRepresentation: jwsRepresentation,

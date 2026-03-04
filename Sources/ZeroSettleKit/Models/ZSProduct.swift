@@ -50,6 +50,9 @@ public struct ZSProduct: Identifiable, Sendable {
     /// Active promotion, if any
     public let promotion: Promotion?
 
+    /// Billing interval for subscriptions: `"week"`, `"month"`, `"year"`. `nil` for non-subscriptions.
+    public let billingInterval: String?
+
     /// Subscription group identifier (non-nil for grouped subscriptions)
     public let subscriptionGroupId: Int?
 
@@ -88,6 +91,7 @@ public struct ZSProduct: Identifiable, Sendable {
         appStorePrice: Price? = nil,
         syncedToAppStoreConnect: Bool = false,
         promotion: Promotion? = nil,
+        billingInterval: String? = nil,
         subscriptionGroupId: Int? = nil
     ) {
         self.id = id
@@ -98,6 +102,7 @@ public struct ZSProduct: Identifiable, Sendable {
         self.appStorePrice = appStorePrice
         self.syncedToAppStoreConnect = syncedToAppStoreConnect
         self.promotion = promotion
+        self.billingInterval = billingInterval
         self.subscriptionGroupId = subscriptionGroupId
         self._storeKitProduct = nil
     }
@@ -115,6 +120,7 @@ extension ZSProduct: Codable {
         case appStorePrice = "storekitPrice"
         case syncedToAppStoreConnect = "syncedToAsc"
         case promotion
+        case billingInterval
         case subscriptionGroupId
     }
 
@@ -128,6 +134,7 @@ extension ZSProduct: Codable {
         appStorePrice = try container.decodeIfPresent(Price.self, forKey: .appStorePrice)
         syncedToAppStoreConnect = try container.decodeIfPresent(Bool.self, forKey: .syncedToAppStoreConnect) ?? false
         promotion = try container.decodeIfPresent(Promotion.self, forKey: .promotion)
+        billingInterval = try container.decodeIfPresent(String.self, forKey: .billingInterval)
         subscriptionGroupId = try container.decodeIfPresent(Int.self, forKey: .subscriptionGroupId)
         _storeKitProduct = nil
     }
@@ -142,6 +149,7 @@ extension ZSProduct: Codable {
         try container.encodeIfPresent(appStorePrice, forKey: .appStorePrice)
         try container.encode(syncedToAppStoreConnect, forKey: .syncedToAppStoreConnect)
         try container.encodeIfPresent(promotion, forKey: .promotion)
+        try container.encodeIfPresent(billingInterval, forKey: .billingInterval)
         try container.encodeIfPresent(subscriptionGroupId, forKey: .subscriptionGroupId)
     }
 }
@@ -159,6 +167,7 @@ extension ZSProduct: Equatable {
         lhs.appStorePrice == rhs.appStorePrice &&
         lhs.syncedToAppStoreConnect == rhs.syncedToAppStoreConnect &&
         lhs.promotion == rhs.promotion &&
+        lhs.billingInterval == rhs.billingInterval &&
         lhs.subscriptionGroupId == rhs.subscriptionGroupId
     }
 }

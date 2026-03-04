@@ -205,21 +205,3 @@ export function cancelSubscription(productId: string, userId: string, immediate:
 
   return ZSCancelFlowModule.cancelSubscription(productId, userId, immediate);
 }
-
-/**
- * Open the Stripe customer portal for the user.
- *
- * @param userId - Your app's user identifier
- * @throws If the portal cannot be opened
- */
-export function openCustomerPortal(userId: string): Promise<void> {
-  if (Platform.OS !== 'ios') {
-    return Promise.reject(new Error('[ZeroSettleKit] openCustomerPortal is only available on iOS'));
-  }
-
-  if (!ZSCancelFlowModule?.openCustomerPortal) {
-    return Promise.reject(new Error('[ZeroSettleKit] ZSCancelFlowModule not found'));
-  }
-
-  return ZSCancelFlowModule.openCustomerPortal(userId);
-}

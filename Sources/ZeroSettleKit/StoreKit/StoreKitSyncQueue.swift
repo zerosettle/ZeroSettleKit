@@ -61,7 +61,7 @@ internal actor StoreKitSyncQueue {
         do {
             return try JSONDecoder().decode([PendingSync].self, from: data)
         } catch {
-            ZSLogger.error("Failed to decode pending StoreKit syncs: \(error)", category: .iap)
+            ZSLogger.error("Failed to decode pending StoreKit syncs: \(error)", category: .entitlements)
             return []
         }
     }
@@ -72,7 +72,7 @@ internal actor StoreKitSyncQueue {
             let data = try JSONEncoder().encode(syncs)
             UserDefaults.standard.set(data, forKey: key)
         } catch {
-            ZSLogger.error("Failed to encode pending StoreKit syncs: \(error)", category: .iap)
+            ZSLogger.error("Failed to encode pending StoreKit syncs: \(error)", category: .entitlements)
         }
     }
 
@@ -96,7 +96,7 @@ internal actor StoreKitSyncQueue {
         }
 
         save(syncs)
-        ZSLogger.info("Enqueued StoreKit sync retry for transaction \(sync.transactionId) (attempt \(sync.attemptCount))", category: .iap)
+        ZSLogger.info("Enqueued StoreKit sync retry for transaction \(sync.transactionId) (attempt \(sync.attemptCount))", category: .entitlements)
     }
 
     /// Remove a sync from the queue after it succeeds or is abandoned.
@@ -123,14 +123,14 @@ internal actor StoreKitSyncQueue {
         let syncs = pendingSyncs()
         guard !syncs.isEmpty else { return }
 
-        ZSLogger.info("Retrying \(syncs.count) pending StoreKit sync(s)", category: .iap)
+        ZSLogger.info("Retrying \(syncs.count) pending StoreKit sync(s)", category: .entitlements)
 
         for sync in syncs {
             // Check if max attempts exceeded
             if sync.attemptCount >= maxAttempts {
                 ZSLogger.error(
                     "Abandoning StoreKit sync for transaction \(sync.transactionId) after \(sync.attemptCount) attempts",
-                    category: .iap
+                    category: .entitlements
                 )
                 dequeue(sync.transactionId)
                 continue
@@ -147,7 +147,7 @@ internal actor StoreKitSyncQueue {
             do {
                 try await syncFn(sync.jwsRepresentation, sync.userId)
                 dequeue(sync.transactionId)
-                ZSLogger.info("Retry succeeded for StoreKit transaction \(sync.transactionId)", category: .iap)
+                ZSLogger.info("Retry succeeded for StoreKit transaction \(sync.transactionId)", category: .entitlements)
             } catch {
                 // Update attempt count and save
                 var updated = sync
@@ -162,7 +162,7 @@ internal actor StoreKitSyncQueue {
 
                 ZSLogger.error(
                     "Retry failed for StoreKit transaction \(sync.transactionId) (attempt \(updated.attemptCount)/\(maxAttempts)): \(error)",
-                    category: .iap
+                    category: .entitlements
                 )
             }
         }

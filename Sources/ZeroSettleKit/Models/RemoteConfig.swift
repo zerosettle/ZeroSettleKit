@@ -113,7 +113,7 @@ public struct CheckoutConfig: Sendable, Equatable {
 /// Data for a migration campaign prompt.
 /// Shown to eligible StoreKit subscribers to encourage switching to web checkout.
 public struct MigrationPrompt: Codable, Sendable, Equatable {
-    /// The product ID to offer for migration
+    /// The default product ID for this campaign (first in eligible list)
     public let productId: String
 
     /// The StoreKit product IDs eligible for this migration campaign.
@@ -137,9 +137,14 @@ public struct MigrationPrompt: Codable, Sendable, Equatable {
         self.productId = productId
         self.eligibleProductIds = eligibleProductIds
         self.discountPercent = discountPercent
-        self.title = title
-        self.message = message
-        self.ctaText = ctaText
+        self.title = Self.interpolate(title, discountPercent: discountPercent)
+        self.message = Self.interpolate(message, discountPercent: discountPercent)
+        self.ctaText = Self.interpolate(ctaText, discountPercent: discountPercent)
+    }
+
+    /// Replace backend template variables (e.g. `{{discount}}`) with actual values.
+    private static func interpolate(_ template: String, discountPercent: Int) -> String {
+        template.replacingOccurrences(of: "{{discount}}", with: "\(discountPercent)")
     }
 }
 

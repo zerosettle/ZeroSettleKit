@@ -13,12 +13,6 @@ export interface ZSMigrateTipViewProps {
   userId: string;
 
   /**
-   * Optional existing Stripe Customer ID (`cus_xxx`) to attach the checkout to.
-   * When provided, the backend uses this customer instead of creating a new one.
-   */
-  stripeCustomerId?: string;
-
-  /**
    * Background color for the tip view in hex format (e.g., "#FF5733")
    * @default "#000000"
    */
@@ -33,7 +27,6 @@ export interface ZSMigrateTipViewProps {
 interface NativeProps {
   backgroundColorHex?: string;
   userId?: string;
-  stripeCustomerId?: string;
   style?: StyleProp<ViewStyle>;
 }
 
@@ -68,7 +61,6 @@ const NativeZSMigrateTipView =
  */
 export function ZSMigrateTipView({
   userId,
-  stripeCustomerId,
   backgroundColorHex = '#000000',
   style,
 }: ZSMigrateTipViewProps) {
@@ -81,7 +73,6 @@ export function ZSMigrateTipView({
     <NativeZSMigrateTipView
       backgroundColorHex={backgroundColorHex}
       userId={userId}
-      stripeCustomerId={stripeCustomerId}
       style={style}
     />
   );

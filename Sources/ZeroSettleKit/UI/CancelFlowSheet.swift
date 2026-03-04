@@ -34,7 +34,7 @@ internal final class CancelFlowPresenter: NSObject, @unchecked Sendable {
             .compactMap({ $0 as? UIWindowScene })
             .first(where: { $0.activationState == .foregroundActive }),
               let rootViewController = windowScene.windows.first(where: { $0.isKeyWindow })?.rootViewController else {
-            ZSLogger.error("Unable to find root view controller for cancel flow", category: .iap)
+            ZSLogger.error("Unable to find root view controller for cancel flow", category: .cancelFlow)
             return .cancelled
         }
 
@@ -61,9 +61,9 @@ internal final class CancelFlowPresenter: NSObject, @unchecked Sendable {
                 Task {
                     do {
                         try await backend.submitCancelFlowResponse(payload)
-                        ZSLogger.debug("Cancel flow response submitted", category: .iap)
+                        ZSLogger.debug("Cancel flow response submitted", category: .cancelFlow)
                     } catch {
-                        ZSLogger.error("Failed to submit cancel flow response: \(error)", category: .iap)
+                        ZSLogger.error("Failed to submit cancel flow response: \(error)", category: .cancelFlow)
                     }
                 }
 
@@ -95,7 +95,9 @@ extension CancelFlowPresenter: UIAdaptivePresentationControllerDelegate {
     func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
         guard !hasResumed else { return }
         hasResumed = true
-        continuation?.resume(returning: .dismissed)
+        // Swipe-to-dismiss = user chose not to cancel (retained),
+        // not "cancel flow unconfigured" (.dismissed).
+        continuation?.resume(returning: .retained)
         continuation = nil
         hostingController = nil
     }
@@ -122,6 +124,9 @@ private struct CancelFlowSheetView: View {
     @State private var earlyOfferTriggered = false
     @State private var selectedPauseOptionId: Int? = nil
     @State private var isPauseLoading = false
+    @State private var slideForward = true
+    @State private var pauseExpanded = false
+    @State private var confettiTrigger = 0
 
     private var currentQuestion: CancelFlow.Question? {
         guard currentQuestionIndex < config.questions.count else { return nil }
@@ -133,6 +138,10 @@ private struct CancelFlowSheetView: View {
     }
 
     private var totalSteps: Int {
+        if earlyOfferTriggered {
+            // Only count steps the user actually saw
+            return (currentQuestionIndex + 1) + 1
+        }
         let questionSteps = config.questions.count
         let retentionStep = hasRetentionPage ? 1 : 0
         return questionSteps + retentionStep
@@ -140,6 +149,9 @@ private struct CancelFlowSheetView: View {
 
     private var currentStep: Int {
         if showingRetention {
+            if earlyOfferTriggered {
+                return currentQuestionIndex + 1
+            }
             return config.questions.count
         }
         return currentQuestionIndex
@@ -161,80 +173,95 @@ private struct CancelFlowSheetView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Top bar: back arrow + progress dots
-            HStack {
-                // Back arrow (visible after first step)
-                Button {
-                    goBack()
-                } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(.primary)
-                        .frame(width: 30, height: 30)
+        ZStack {
+            VStack(spacing: 0) {
+                // Top bar: back arrow + progress dots
+                HStack {
+                    // Back arrow (visible after first step)
+                    Button {
+                        goBack()
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.primary)
+                            .frame(width: 30, height: 30)
+                    }
+                    .opacity(canGoBack ? 1 : 0)
+                    .disabled(!canGoBack)
+
+                    Spacer()
+
+                    progressDots
+
+                    Spacer()
+
+                    // Invisible spacer for symmetry
+                    Color.clear.frame(width: 30, height: 30)
                 }
-                .opacity(canGoBack ? 1 : 0)
-                .disabled(!canGoBack)
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+                .padding(.bottom, 8)
 
-                Spacer()
+                // Content
+                ScrollView {
+                    VStack(spacing: 0) {
+                        if showingRetention {
+                            retentionView
+                        } else if let question = currentQuestion {
+                            questionView(question: question)
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .id(showingRetention ? -1 : currentQuestionIndex)
+                .transition(.push(from: slideForward ? .trailing : .leading))
+                .clipped()
 
-                progressDots
+                Spacer(minLength: 16)
 
-                Spacer()
-
-                // Invisible spacer for symmetry
-                Color.clear.frame(width: 30, height: 30)
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 16)
-            .padding(.bottom, 8)
-
-            // Content
-            ScrollView {
-                VStack(spacing: 0) {
+                // Bottom buttons
+                VStack(spacing: 12) {
                     if showingRetention {
-                        retentionView
-                    } else if let question = currentQuestion {
-                        questionView(question: question)
+                        retentionButtons
+                    } else {
+                        // Continue button
+                        Button {
+                            advanceToNext()
+                        } label: {
+                            Text("Continue")
+                                .font(.body.weight(.semibold))
+                                .foregroundStyle(.white)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 14)
+                                .background(
+                                    canContinue ? Color.green : Color.green.opacity(0.4),
+                                    in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                )
+                        }
+                        .disabled(!canContinue)
+
+                        Button {
+                            finish(result: .cancelled)
+                        } label: {
+                            Text("Skip and cancel subscription")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
                 .padding(.horizontal, 20)
+                .padding(.bottom, 20)
             }
 
-            Spacer(minLength: 16)
-
-            // Bottom buttons
-            VStack(spacing: 12) {
-                if showingRetention {
-                    retentionButtons
-                } else {
-                    // Continue button
-                    Button {
-                        advanceToNext()
-                    } label: {
-                        Text("Continue")
-                            .font(.body.weight(.semibold))
-                            .foregroundStyle(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 14)
-                            .background(
-                                canContinue ? Color.green : Color.green.opacity(0.4),
-                                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            )
-                    }
-                    .disabled(!canContinue)
-
-                    Button {
-                        finish(result: .cancelled)
-                    } label: {
-                        Text("Skip and cancel subscription")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 20)
+            ConfettiCannon(
+                trigger: $confettiTrigger,
+                num: 50,
+                openingAngle: .degrees(40),
+                closingAngle: .degrees(140),
+                radius: 300
+            )
+            .allowsHitTesting(false)
         }
     }
 
@@ -275,39 +302,57 @@ private struct CancelFlowSheetView: View {
     }
 
     private func singleSelectView(question: CancelFlow.Question) -> some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 12) {
             ForEach(question.options) { option in
                 let isSelected = selectedOptionId == option.id
                 Button {
-                    withAnimation(.easeInOut(duration: 0.15)) {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                         selectedOptionId = option.id
                     }
                 } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                            .font(.system(size: 22))
-                            .foregroundStyle(isSelected ? Color.green : Color(.systemGray3))
+                    HStack(spacing: 14) {
+                        if let iconName = option.iconName {
+                            Image(systemName: iconName)
+                                .font(.title3)
+                                .foregroundStyle(isSelected ? Color.green : .secondary)
+                                .frame(width: 44, height: 44)
+                                .background(
+                                    (isSelected ? Color.green.opacity(0.12) : Color(.systemGray4).opacity(0.25)),
+                                    in: RoundedRectangle(cornerRadius: 12)
+                                )
+                        }
 
-                        Text(option.label)
-                            .font(.body)
-                            .fontWeight(isSelected ? .medium : .regular)
-                            .foregroundStyle(.primary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(option.label)
+                                .font(.body.weight(.medium))
+                                .foregroundStyle(.primary)
+
+                            if let subtitle = option.subtitle {
+                                Text(subtitle)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        Spacer(minLength: 8)
+
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(Color.green)
+                            .opacity(isSelected ? 1 : 0)
                     }
-                    .padding(.vertical, 14)
+                    .padding(.vertical, 18)
                     .padding(.horizontal, 16)
                     .background(
-                        isSelected ? Color.green.opacity(0.06) : Color(.secondarySystemGroupedBackground),
-                        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(isSelected ? Color.green.opacity(0.08) : Color(.secondarySystemGroupedBackground))
                     )
                     .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .strokeBorder(
-                                isSelected ? Color.green.opacity(0.5) : Color(.separator).opacity(0.3),
-                                lineWidth: isSelected ? 1.5 : 0.5
-                            )
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(isSelected ? Color.green.opacity(0.5) : Color(.systemGray3).opacity(0.6), lineWidth: isSelected ? 2 : 1)
                     )
                 }
+                .buttonStyle(.plain)
             }
         }
     }
@@ -339,7 +384,11 @@ private struct CancelFlowSheetView: View {
     }
 
     private func offerSection(offer: CancelFlow.Offer) -> some View {
-        VStack(spacing: 16) {
+        let product = ZeroSettle.shared.product(for: productId)
+        let currentPrice = product?.webPrice ?? product?.storeKitPrice
+        let discountPercent = Int(offer.value) ?? 0
+
+        return VStack(spacing: 16) {
             Image(systemName: "gift.fill")
                 .font(.system(size: 44))
                 .foregroundStyle(.green)
@@ -354,69 +403,147 @@ private struct CancelFlowSheetView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
+
+            // Price comparison when a discount offer is available
+            if let price = currentPrice, discountPercent > 0 {
+                let discountedCents = Int((Double(price.amountCents) * Double(100 - discountPercent) / 100.0).rounded())
+                let discountedPrice = Price(amountCents: discountedCents, currencyCode: price.currencyCode)
+                let period: String = {
+                    guard product?.type == .autoRenewableSubscription else { return "" }
+                    switch product?.billingInterval {
+                    case "week": return " / week"
+                    case "year": return " / year"
+                    default: return " / month"
+                    }
+                }()
+
+                VStack(spacing: 8) {
+                    HStack(spacing: 8) {
+                        Text(price.formatted)
+                            .font(.title3)
+                            .strikethrough()
+                            .foregroundStyle(.secondary)
+
+                        Text(discountedPrice.formatted + period)
+                            .font(.title3.weight(.bold))
+                            .foregroundStyle(.green)
+                    }
+
+                    Text(offer.durationMonths.map { "\(discountPercent)% off for \($0) month\($0 == 1 ? "" : "s")" } ?? "\(discountPercent)% off")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(.green, in: Capsule())
+                }
+            }
+        }
+        .onAppear {
+            ZSLogger.debug("offerSection appeared: type=\(offer.type.rawString), value=\(offer.value), productId=\(productId), productFound=\(product != nil), price=\(currentPrice?.formatted ?? "nil"), discountPercent=\(discountPercent)", category: .cancelFlow)
         }
     }
 
     private func pauseSection(pauseConfig: CancelFlow.PauseConfig) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(spacing: 12) {
             // Divider between offer and pause if both are shown
             if config.offer?.enabled == true {
                 Divider()
                     .padding(.vertical, 4)
             }
 
-            Image(systemName: "pause.circle.fill")
-                .font(.system(size: 36))
-                .foregroundStyle(.blue)
-                .frame(maxWidth: .infinity)
-
-            Text(pauseConfig.title)
-                .font(.title3.weight(.semibold))
-                .frame(maxWidth: .infinity)
-                .multilineTextAlignment(.center)
-
-            Text(pauseConfig.body)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity)
-                .multilineTextAlignment(.center)
-
-            // Pause duration options (card-based)
-            VStack(spacing: 10) {
-                let sortedOptions = pauseConfig.options.sorted { $0.order < $1.order }
-                ForEach(sortedOptions) { option in
-                    let isSelected = selectedPauseOptionId == option.id
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.15)) {
-                            selectedPauseOptionId = option.id
-                        }
-                    } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                                .font(.system(size: 22))
-                                .foregroundStyle(isSelected ? Color.blue : Color(.systemGray3))
-
-                            Text(option.label)
-                                .font(.body)
-                                .fontWeight(isSelected ? .medium : .regular)
-                                .foregroundStyle(.primary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .padding(.vertical, 14)
-                        .padding(.horizontal, 16)
+            // Tappable header card
+            Button {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                    pauseExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 14) {
+                    Image(systemName: "pause.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(pauseExpanded ? Color.blue : .secondary)
+                        .frame(width: 44, height: 44)
                         .background(
-                            isSelected ? Color.blue.opacity(0.06) : Color(.secondarySystemGroupedBackground),
-                            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            (pauseExpanded ? Color.blue.opacity(0.12) : Color(.systemGray4).opacity(0.25)),
+                            in: RoundedRectangle(cornerRadius: 12)
                         )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .strokeBorder(
-                                    isSelected ? Color.blue.opacity(0.5) : Color(.separator).opacity(0.3),
-                                    lineWidth: isSelected ? 1.5 : 0.5
-                                )
-                        )
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(pauseConfig.title)
+                            .font(.body.weight(.medium))
+                            .foregroundStyle(.primary)
+
+                        Text(pauseConfig.body)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Image(systemName: "chevron.down")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(pauseExpanded ? 180 : 0))
+                }
+                .padding(.vertical, 18)
+                .padding(.horizontal, 16)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(pauseExpanded ? Color.blue.opacity(0.08) : Color(.secondarySystemGroupedBackground))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(pauseExpanded ? Color.blue.opacity(0.5) : Color(.systemGray3).opacity(0.6), lineWidth: pauseExpanded ? 2 : 1)
+                )
+            }
+            .buttonStyle(.plain)
+
+            // Expandable pause duration options
+            if pauseExpanded {
+                VStack(spacing: 10) {
+                    let sortedOptions = pauseConfig.options.sorted { $0.order < $1.order }
+                    ForEach(sortedOptions) { option in
+                        let isSelected = selectedPauseOptionId == option.id
+                        Button {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                selectedPauseOptionId = option.id
+                            }
+                        } label: {
+                            HStack(spacing: 14) {
+                                Image(systemName: "clock.fill")
+                                    .font(.title3)
+                                    .foregroundStyle(isSelected ? Color.blue : .secondary)
+                                    .frame(width: 44, height: 44)
+                                    .background(
+                                        (isSelected ? Color.blue.opacity(0.12) : Color(.systemGray4).opacity(0.25)),
+                                        in: RoundedRectangle(cornerRadius: 12)
+                                    )
+
+                                Text(option.label)
+                                    .font(.body.weight(.medium))
+                                    .foregroundStyle(.primary)
+
+                                Spacer(minLength: 8)
+
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.title2)
+                                    .foregroundStyle(Color.blue)
+                                    .opacity(isSelected ? 1 : 0)
+                            }
+                            .padding(.vertical, 14)
+                            .padding(.horizontal, 16)
+                            .background(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .fill(isSelected ? Color.blue.opacity(0.08) : Color(.secondarySystemGroupedBackground))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .stroke(isSelected ? Color.blue.opacity(0.5) : Color(.systemGray3).opacity(0.6), lineWidth: isSelected ? 2 : 1)
+                            )
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
     }
@@ -428,7 +555,11 @@ private struct CancelFlowSheetView: View {
         // Accept offer button (if offer is enabled)
         if let offer = config.offer, offer.enabled {
             Button {
-                finish(result: .retained, offerAccepted: true)
+                confettiTrigger += 1
+                Task {
+                    try? await Task.sleep(for: .seconds(1.5))
+                    finish(result: .retained, offerAccepted: true)
+                }
             } label: {
                 Text(offer.ctaText)
                     .font(.body.weight(.semibold))
@@ -439,8 +570,8 @@ private struct CancelFlowSheetView: View {
             }
         }
 
-        // Pause button (if pause is enabled)
-        if let pauseConfig = config.pause, pauseConfig.enabled, !pauseConfig.options.isEmpty {
+        // Pause button (only when pause is expanded and a duration is selected)
+        if let pauseConfig = config.pause, pauseConfig.enabled, !pauseConfig.options.isEmpty, pauseExpanded {
             Button {
                 submitPause()
             } label: {
@@ -479,30 +610,35 @@ private struct CancelFlowSheetView: View {
     // MARK: - Flow Logic
 
     private func goBack() {
+        slideForward = false
+
         if showingRetention {
-            // Return to last question
-            showingRetention = false
             offerShown = false
             pauseShown = false
             earlyOfferTriggered = false
             selectedPauseOptionId = nil
-            // Remove the last answer (it was the one that advanced us here)
+            pauseExpanded = false
             if !answers.isEmpty { answers.removeLast() }
-            // Restore the selection for the current question
-            selectedOptionId = answers.count <= currentQuestionIndex ? nil : nil
+            selectedOptionId = nil
+            withAnimation(.easeInOut(duration: 0.3)) {
+                showingRetention = false
+            }
         } else if currentQuestionIndex > 0 {
-            currentQuestionIndex -= 1
-            // Remove the last answer and restore selection
             if !answers.isEmpty {
                 let removed = answers.removeLast()
                 selectedOptionId = removed.selectedOptionId
                 freeTextInput = removed.freeText ?? ""
+            }
+            withAnimation(.easeInOut(duration: 0.3)) {
+                currentQuestionIndex -= 1
             }
         }
     }
 
     private func advanceToNext() {
         guard let question = currentQuestion else { return }
+
+        slideForward = true
 
         // Record answer
         let answer: CancelFlow.AnswerPayload
@@ -533,24 +669,30 @@ private struct CancelFlowSheetView: View {
             offerShown = config.offer?.enabled == true
             pauseShown = config.pause?.enabled == true
             lastStepSeen = config.questions.count
-            showingRetention = true
+            withAnimation(.easeInOut(duration: 0.3)) {
+                showingRetention = true
+            }
             return
         }
 
         // Move to next question
         let nextIndex = currentQuestionIndex + 1
         if nextIndex < config.questions.count {
-            currentQuestionIndex = nextIndex
             lastStepSeen = max(lastStepSeen, nextIndex)
-            selectedOptionId = nil
-            freeTextInput = ""
+            withAnimation(.easeInOut(duration: 0.3)) {
+                currentQuestionIndex = nextIndex
+                selectedOptionId = nil
+                freeTextInput = ""
+            }
         } else {
             // Last question answered, no trigger
             if hasRetentionPage {
                 offerShown = config.offer?.enabled == true
                 pauseShown = config.pause?.enabled == true
                 lastStepSeen = config.questions.count
-                showingRetention = true
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    showingRetention = true
+                }
             } else {
                 finish(result: .cancelled)
             }
@@ -559,6 +701,8 @@ private struct CancelFlowSheetView: View {
 
     private func submitPause() {
         guard let pauseOptionId = selectedPauseOptionId else { return }
+        let selectedOption = config.pause?.options.first { $0.id == pauseOptionId }
+        let durationDays = selectedOption?.durationDays
         isPauseLoading = true
 
         Task {
@@ -566,11 +710,8 @@ private struct CancelFlowSheetView: View {
                 let response = try await backend.pauseSubscription(
                     productId: productId,
                     userId: userId,
-                    pauseOptionId: pauseOptionId
+                    pauseDurationDays: durationDays
                 )
-
-                let selectedOption = config.pause?.options.first { $0.id == pauseOptionId }
-                let durationDays = selectedOption?.durationDays
 
                 await MainActor.run {
                     isPauseLoading = false
@@ -583,8 +724,13 @@ private struct CancelFlowSheetView: View {
             } catch {
                 await MainActor.run {
                     isPauseLoading = false
-                    // On failure, stay on the retention page so the user can retry or cancel
-                    ZSLogger.error("Failed to pause subscription from cancel flow: \(error)", category: .iap)
+                    ZSLogger.error("Failed to pause subscription from cancel flow: \(error)", category: .cancelFlow)
+                    // Still dismiss — the cancel flow response payload records the intent
+                    finish(
+                        result: .paused(resumesAt: nil),
+                        pauseAccepted: true,
+                        pauseDurationDays: durationDays
+                    )
                 }
             }
         }
@@ -614,10 +760,10 @@ private struct CancelFlowSheetView: View {
 
     private func outcomeString(_ result: CancelFlow.Result) -> String {
         switch result {
-        case .cancelled: return "cancelled"
-        case .retained: return "retained"
-        case .paused: return "paused"
-        case .dismissed: return "dismissed"
+        case .cancelled: return CancelFlow.Outcome.cancelled.rawValue
+        case .retained: return CancelFlow.Outcome.retained.rawValue
+        case .paused: return CancelFlow.Outcome.paused.rawValue
+        case .dismissed: return CancelFlow.Outcome.dismissed.rawValue
         }
     }
 }
@@ -673,3 +819,4 @@ extension View {
         ))
     }
 }
+

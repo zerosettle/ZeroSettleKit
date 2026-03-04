@@ -257,7 +257,7 @@ Full guides, API reference, and integration walkthroughs are available at **[doc
 - [Subscription State](https://docs.zerosettle.io/iap/subscription-state)
 - [StoreKit Integration](https://docs.zerosettle.io/iap/storekit-integration)
 - [RevenueCat Integration](https://docs.zerosettle.io/iap/revenuecat-integration)
-- [Customer Portal](https://docs.zerosettle.io/iap/customer-portal)
+- [Cancel Flow](https://docs.zerosettle.io/iap/cancel-flow)
 - [Best Practices](https://docs.zerosettle.io/iap/best-practices)
 
 ## License
