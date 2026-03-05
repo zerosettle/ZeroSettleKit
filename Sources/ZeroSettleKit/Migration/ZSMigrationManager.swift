@@ -409,6 +409,12 @@ public final class ZSMigrationManager: ObservableObject {
 
         do {
             let backend = try makeBackend()
+
+            if let baseURL = ZeroSettle.shared.effectiveBaseURL {
+                let paymentIntentsURL = baseURL.appendingPathComponent("iap/payment-intents/")
+                ZSLogger.info("[MigrationManager] Stripe payment intents URL: \(paymentIntentsURL.absoluteString)", category: .migration)
+            }
+
             let paymentIntent = try await backend.createPaymentIntent(
                 productId: offerData.prompt.productId,
                 userId: userId,

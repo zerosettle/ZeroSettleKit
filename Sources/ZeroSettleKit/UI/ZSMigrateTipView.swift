@@ -55,8 +55,8 @@ public struct MigrationTipView: View {
 
     static let collapsedHeight: CGFloat = 190
     static let applePayCollapsedHeight: CGFloat = 190
-    static let applePayCardExpandedHeight: CGFloat = 820
-    static let noApplePayExpandedHeight: CGFloat = 750
+    static let applePayCardExpandedHeight: CGFloat = 870
+    static let noApplePayExpandedHeight: CGFloat = 800
     static let noApplePayCollapsedHeight: CGFloat = 90
 
     /// Creates a new migrate tip view.
@@ -457,6 +457,10 @@ public struct MigrationTipView: View {
 
     private func startWebViewCheckout() {
         Task {
+            if let baseURL = ZeroSettle.shared.effectiveBaseURL {
+                let paymentIntentsURL = baseURL.appendingPathComponent("iap/payment-intents/")
+                ZSLogger.info("[MigrateTipView] Stripe payment intents URL: \(paymentIntentsURL.absoluteString)", category: .migration)
+            }
             let url = await manager.startCheckout()
             if let url {
                 checkoutURL = url
@@ -623,13 +627,26 @@ struct CheckoutWebView: UIViewRepresentable {
               log('Installing payment method detection (all-frames user script).');
 
               // Inject custom CSS (ok if duplicated across frames)
+              // Detect if we're inside the Stripe payment (card entry) iframe
+              var isStripePaymentFrame = window.location.href.indexOf('js.stripe.com') !== -1
+                  && window.location.href.indexOf('componentName=payment') !== -1;
+
               try {
                 var style = document.createElement('style');
-                style.innerHTML = `
-                  html, body, .payment-sheet, .checkout-container, .container, #root, #app, main {
-                    background-color: rgb(\(r), \(g), \(b)) !important;
-                    background: rgb(\(r), \(g), \(b)) !important;
-                  }
+                if (isStripePaymentFrame) {
+                  // Inside the Stripe payment iframe — force white background
+                  style.innerHTML = `
+                    html, body {
+                      background-color: #f2f2f6 !important;
+                      background: #f2f2f6 !important;
+                    }
+                  `;
+                } else {
+                  style.innerHTML = `
+                    html, body, .payment-sheet, .checkout-container, .container, #root, #app, main {
+                      background-color: rgb(\(r), \(g), \(b)) !important;
+                      background: rgb(\(r), \(g), \(b)) !important;
+                    }
 
                   /* Hide embedded close/back buttons inside checkout */
                   .close-btn,
@@ -692,6 +709,7 @@ struct CheckoutWebView: UIViewRepresentable {
                     color: white !important;
                   }
                 `;
+                }
                 document.head && document.head.appendChild(style);
               } catch (e) {
                 log('CSS inject failed: ' + safeStr(e));
@@ -753,14 +771,29 @@ struct CheckoutWebView: UIViewRepresentable {
               }
 
               // Detect custom Apple Pay container (non-accordion checkout)
+              // Supports both legacy #apple-pay-container and the new Express Checkout
+              // Element layout where #express-checkout-container.visible holds Apple Pay.
               var applePayDetected = false;
               function detectCustomApplePay(reason) {
                 if (applePayDetected) { return; }
+                // Legacy: dedicated Apple Pay container
                 var container = document.getElementById('apple-pay-container');
                 if (container && container.classList.contains('visible')) {
                   applePayDetected = true;
                   log('[' + reason + '] Custom Apple Pay container detected.');
                   try { window.webkit.messageHandlers.paymentMethodChanged.postMessage('apple_pay_detected'); } catch (e) {}
+                  return;
+                }
+                // New: Stripe Express Checkout Element (Apple Pay + Google Pay + Link)
+                var expressContainer = document.getElementById('express-checkout-container');
+                if (expressContainer && expressContainer.classList.contains('visible')) {
+                  // Verify that the container actually rendered content (has a visible iframe)
+                  var iframe = expressContainer.querySelector('iframe');
+                  if (iframe && iframe.offsetHeight > 0) {
+                    applePayDetected = true;
+                    log('[' + reason + '] Express Checkout container with Apple Pay detected.');
+                    try { window.webkit.messageHandlers.paymentMethodChanged.postMessage('apple_pay_detected'); } catch (e) {}
+                  }
                 }
               }
 
