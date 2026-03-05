@@ -47,15 +47,15 @@ public struct MigrationTipView: View {
     @State private var isExpanded = false
     @State private var ctaTapped = false
     @State private var webViewLoaded = false
-    @State private var contentHeight: CGFloat = 190
+    @State private var contentHeight: CGFloat = 180
     @State private var showCongratulations = false
     @State private var confettiTrigger = 0
     @State private var checkoutURL: URL?
     @State private var hasApplePay = false
 
-    static let collapsedHeight: CGFloat = 190
-    static let applePayCollapsedHeight: CGFloat = 190
-    static let applePayCardExpandedHeight: CGFloat = 870
+    static let collapsedHeight: CGFloat = 180
+    static let applePayCollapsedHeight: CGFloat = 180
+    static let applePayCardExpandedHeight: CGFloat = 840
     static let noApplePayExpandedHeight: CGFloat = 800
     static let noApplePayCollapsedHeight: CGFloat = 90
 
