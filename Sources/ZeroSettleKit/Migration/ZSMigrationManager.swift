@@ -255,8 +255,16 @@ public final class ZSMigrationManager: ObservableObject {
             return
         }
 
-        let prompt = resolved.prompt
+        var prompt = resolved.prompt
         let matchedEntitlement = resolved.matchedEntitlement
+
+        // If backend sent discount 0, resolve the real savings from the matched product's prices
+        if prompt.discountPercent == 0,
+           let product = catalogProducts.first(where: { $0.id == matchedEntitlement.productId }),
+           let savings = product.savingsPercent, savings > 0 {
+            ZSLogger.info("Resolving discount from product prices: \(matchedEntitlement.productId) savingsPercent=\(savings)%", category: .migration)
+            prompt = prompt.withDiscount(savings)
+        }
 
         // ── Log the Stripe product mapping for the migration target product ──
         ZSLogger.info("Migration prompt resolved — matched StoreKit product '\(matchedEntitlement.productId)' from eligible list \(prompt.eligibleProductIds), discount=\(prompt.discountPercent)%, title=\"\(prompt.title)\", ctaText=\"\(prompt.ctaText)\"", category: .migration)
@@ -306,14 +314,15 @@ public final class ZSMigrationManager: ObservableObject {
                 return nil
             }
 
-            // Build a prompt with productId set to the matched entitlement's product
+            // Build a prompt with productId set to the matched entitlement's product.
+            // Use raw templates so {{discount}} can be re-interpolated later with the real savings.
             let resolvedPrompt = MigrationPrompt(
                 productId: matchedEntitlement.productId,
                 eligibleProductIds: backendPrompt.eligibleProductIds,
                 discountPercent: backendPrompt.discountPercent,
-                title: backendPrompt.title,
-                message: backendPrompt.message,
-                ctaText: backendPrompt.ctaText
+                title: backendPrompt.rawTitle,
+                message: backendPrompt.rawMessage,
+                ctaText: backendPrompt.rawCtaText
             )
             ZSLogger.debug("Matched StoreKit product '\(matchedEntitlement.productId)' from eligible list", category: .migration)
             return (resolvedPrompt, matchedEntitlement)

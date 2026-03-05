@@ -124,22 +124,63 @@ public struct MigrationPrompt: Codable, Sendable, Equatable {
     /// The discount percentage offered (e.g., 20 for 20% off)
     public let discountPercent: Int
 
-    /// The title to display in the migration prompt
+    /// The title to display in the migration prompt (with `{{discount}}` interpolated)
     public let title: String
 
-    /// The message body to display in the migration prompt
+    /// The message body to display in the migration prompt (with `{{discount}}` interpolated)
     public let message: String
 
-    /// The CTA button text to display in the migration prompt
+    /// The CTA button text to display in the migration prompt (with `{{discount}}` interpolated)
     public let ctaText: String
+
+    // Raw templates before interpolation, used to re-interpolate with a corrected discount
+    internal let rawTitle: String
+    internal let rawMessage: String
+    internal let rawCtaText: String
+
+    private enum CodingKeys: String, CodingKey {
+        case productId, eligibleProductIds, discountPercent, title, message, ctaText
+    }
 
     public init(productId: String, eligibleProductIds: [String] = [], discountPercent: Int, title: String, message: String, ctaText: String) {
         self.productId = productId
         self.eligibleProductIds = eligibleProductIds
         self.discountPercent = discountPercent
+        self.rawTitle = title
+        self.rawMessage = message
+        self.rawCtaText = ctaText
         self.title = Self.interpolate(title, discountPercent: discountPercent)
         self.message = Self.interpolate(message, discountPercent: discountPercent)
         self.ctaText = Self.interpolate(ctaText, discountPercent: discountPercent)
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        productId = try container.decode(String.self, forKey: .productId)
+        eligibleProductIds = try container.decodeIfPresent([String].self, forKey: .eligibleProductIds) ?? []
+        let disc = try container.decode(Int.self, forKey: .discountPercent)
+        discountPercent = disc
+        let t = try container.decode(String.self, forKey: .title)
+        let m = try container.decode(String.self, forKey: .message)
+        let c = try container.decode(String.self, forKey: .ctaText)
+        rawTitle = t
+        rawMessage = m
+        rawCtaText = c
+        title = Self.interpolate(t, discountPercent: disc)
+        message = Self.interpolate(m, discountPercent: disc)
+        ctaText = Self.interpolate(c, discountPercent: disc)
+    }
+
+    /// Returns a copy with `{{discount}}` re-interpolated using the given discount percent.
+    internal func withDiscount(_ newDiscount: Int) -> MigrationPrompt {
+        MigrationPrompt(
+            productId: productId,
+            eligibleProductIds: eligibleProductIds,
+            discountPercent: newDiscount,
+            title: rawTitle,
+            message: rawMessage,
+            ctaText: rawCtaText
+        )
     }
 
     /// Replace backend template variables (e.g. `{{discount}}`) with actual values.
