@@ -627,18 +627,27 @@ struct CheckoutWebView: UIViewRepresentable {
               log('Installing payment method detection (all-frames user script).');
 
               // Inject custom CSS (ok if duplicated across frames)
-              // Detect if we're inside the Stripe payment (card entry) iframe
+              // Detect which Stripe sub-frame we're inside
               var isStripePaymentFrame = window.location.href.indexOf('js.stripe.com') !== -1
                   && window.location.href.indexOf('componentName=payment') !== -1;
+              var isStripeExpressCheckoutFrame = window.location.href.indexOf('js.stripe.com') !== -1
+                  && window.location.href.indexOf('componentName=expressCheckout') !== -1;
 
               try {
                 var style = document.createElement('style');
                 if (isStripePaymentFrame) {
-                  // Inside the Stripe payment iframe — force white background
+                  // Inside the Stripe payment iframe — force light background
                   style.innerHTML = `
                     html, body {
                       background-color: #f2f2f6 !important;
                       background: #f2f2f6 !important;
+                    }
+                  `;
+                } else if (isStripeExpressCheckoutFrame) {
+                  // Inside the Stripe express checkout iframe — show plain Apple Pay button
+                  style.innerHTML = `
+                    .p-ApplePayButton--subscribe {
+                      -apple-pay-button-type: plain !important;
                     }
                   `;
                 } else {
@@ -647,6 +656,15 @@ struct CheckoutWebView: UIViewRepresentable {
                       background-color: rgb(\(r), \(g), \(b)) !important;
                       background: rgb(\(r), \(g), \(b)) !important;
                     }
+
+                  /* Hide loading checkout spinner */
+                  #loading-state,
+                  .loading-container,
+                  .loading-spinner,
+                  .loading-text {
+                    display: none !important;
+                    visibility: hidden !important;
+                  }
 
                   /* Hide embedded close/back buttons inside checkout */
                   .close-btn,
