@@ -40,7 +40,7 @@ public struct MigrationTipView: View {
     let borderColor: Color?
     let onEvent: ((Event) -> Void)?
 
-    @State private var manager: ZSMigrationManager
+    @ObservedObject private var manager: ZSMigrationManager
 
     // MARK: - UI-only State
 
@@ -95,7 +95,9 @@ public struct MigrationTipView: View {
         self.onEvent = onEvent
         // Always use the shared singleton manager. migrationManager(for:) guarantees
         // a single instance — whether bootstrap ran first or the view was created first.
-        _manager = State(wrappedValue: ZeroSettle.shared.migrationManager(for: userId, stripeCustomerId: stripeCustomerId))
+        let mgr = ZeroSettle.shared.migrationManager(for: userId, stripeCustomerId: stripeCustomerId)
+        _manager = ObservedObject(wrappedValue: mgr)
+        ZSLogger.info("[MigrateTipView] init — manager.state=.\(mgr.state), offerData=\(mgr.offerData != nil ? "present" : "nil"), userId=\(userId)", category: .migration)
     }
 
     /// Backward-compatible convenience that maps the legacy `onDismiss` closure to
@@ -133,18 +135,23 @@ public struct MigrationTipView: View {
     // MARK: - Body
 
     public var body: some View {
+        let _ = ZSLogger.info("[MigrateTipView] body evaluated — state=.\(manager.state), offerData=\(manager.offerData != nil ? "present(productId=\(manager.offerData!.prompt.productId), discount=\(manager.offerData!.prompt.discountPercent)%)" : "nil"), isExpanded=\(isExpanded)", category: .migration)
         Group {
             switch manager.state {
             case .loading:
+                let _ = ZSLogger.debug("[MigrateTipView] Rendering .loading — showing clear placeholder", category: .migration)
                 Color.clear.frame(height: 0)
 
             case .ineligible:
+                let _ = ZSLogger.debug("[MigrateTipView] Rendering .ineligible — showing clear placeholder", category: .migration)
                 Color.clear.frame(height: 0)
 
             case .dismissed:
+                let _ = ZSLogger.debug("[MigrateTipView] Rendering .dismissed — showing EmptyView", category: .migration)
                 EmptyView()
 
             case .eligible, .presented:
+                let _ = ZSLogger.debug("[MigrateTipView] Rendering .\(manager.state) — showing offerCardView", category: .migration)
                 offerCardView
 
             case .accepted:
@@ -159,6 +166,7 @@ public struct MigrationTipView: View {
             }
         }
         .onChange(of: manager.state) { _, newState in
+            ZSLogger.info("[MigrateTipView] state changed → .\(newState)", category: .migration)
             if newState == .dismissed {
                 onEvent?(.dismissed)
             }
