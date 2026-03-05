@@ -250,14 +250,16 @@ public struct MigrationTipView: View {
                                 }
                             }
                         },
-                        onCheckoutSuccess: { _ in
+                        onCheckoutSuccess: { transactionId in
                             withAnimation(.easeInOut(duration: 0.25)) {
                                 isExpanded = false
                                 webViewLoaded = false
                                 contentHeight = Self.collapsedHeight
                                 checkoutURL = nil
                             }
-                            manager.markCheckoutSucceeded()
+                            Task {
+                                await manager.markCheckoutSucceeded(transactionId: transactionId)
+                            }
                             onEvent?(.checkoutCompleted)
                         }
                     )
@@ -465,7 +467,7 @@ public struct MigrationTipView: View {
             let iap = ZeroSettle.shared
             do {
                 try await iap.purchase(productId: offerData.activeStoreKitProductId, userId: userId)
-                manager.markCheckoutSucceeded()
+                await manager.markCheckoutSucceeded()
                 onEvent?(.checkoutCompleted)
             } catch {
                 // Stay in presented state; user can retry
@@ -480,7 +482,7 @@ struct CheckoutWebView: UIViewRepresentable {
     let backgroundColor: UIColor
     let onLoaded: () -> Void
     let onPaymentMethodChanged: (String) -> Void
-    let onCheckoutSuccess: (URL) -> Void
+    let onCheckoutSuccess: (String?) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -538,13 +540,14 @@ struct CheckoutWebView: UIViewRepresentable {
         let backgroundColor: UIColor
         let onLoaded: () -> Void
         let onPaymentMethodChanged: (String) -> Void
-        let onCheckoutSuccess: (URL) -> Void
+        let onCheckoutSuccess: (String?) -> Void
+        private var hasCompleted = false
 
         init(
             backgroundColor: UIColor,
             onLoaded: @escaping () -> Void,
             onPaymentMethodChanged: @escaping (String) -> Void,
-            onCheckoutSuccess: @escaping (URL) -> Void
+            onCheckoutSuccess: @escaping (String?) -> Void
         ) {
             self.backgroundColor = backgroundColor
             self.onLoaded = onLoaded
@@ -564,8 +567,6 @@ struct CheckoutWebView: UIViewRepresentable {
                 let action = body["action"] as? String ?? ""
                 let success = body["success"] as? Bool ?? false
 
-                print("🧾 checkoutComplete received: action=\(action), success=\(success)")
-
                 if action == "expandSheet" {
                     DispatchQueue.main.async {
                         self.onPaymentMethodChanged("card_expanded")
@@ -575,10 +576,11 @@ struct CheckoutWebView: UIViewRepresentable {
                         self.onPaymentMethodChanged("card_collapsed")
                     }
                 } else if action == "complete" || success {
+                    guard !hasCompleted else { return }
+                    hasCompleted = true
+                    let transactionId = body["transaction_id"] as? String
                     DispatchQueue.main.async {
-                        // Create a placeholder URL for the success callback
-                        let successURL = URL(string: "https://zerosettle.io/checkout/success")!
-                        self.onCheckoutSuccess(successURL)
+                        self.onCheckoutSuccess(transactionId)
                     }
                 }
             }
@@ -833,8 +835,15 @@ struct CheckoutWebView: UIViewRepresentable {
                     || query.contains("result=succeeded")
 
                 if looksLikeSuccess {
+                    guard !hasCompleted else {
+                        decisionHandler(.cancel)
+                        return
+                    }
+                    hasCompleted = true
+                    let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+                    let transactionId = components?.queryItems?.first(where: { $0.name == "transaction_id" })?.value
                     DispatchQueue.main.async {
-                        self.onCheckoutSuccess(url)
+                        self.onCheckoutSuccess(transactionId)
                     }
                 }
 

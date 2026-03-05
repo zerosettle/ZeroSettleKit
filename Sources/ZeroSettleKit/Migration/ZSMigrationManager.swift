@@ -421,14 +421,33 @@ public final class ZSMigrationManager: ObservableObject {
 
     /// Mark the web checkout as succeeded.
     ///
-    /// Transitions from `.presented` to `.accepted` and fires migration conversion tracking.
-    public func markCheckoutSucceeded() {
+    /// Transitions from `.presented` to `.accepted`, verifies the transaction with the
+    /// backend, refreshes entitlements, fires delegate events, and tracks migration conversion.
+    ///
+    /// - Parameter transactionId: The transaction ID returned by the checkout page.
+    ///   When provided, the backend is polled to verify payment and entitlements are refreshed.
+    public func markCheckoutSucceeded(transactionId: String? = nil) async {
         guard state == .presented else {
             ZSLogger.info("markCheckoutSucceeded() ignored — state is .\(state), expected .presented", category: .migration)
             return
         }
         state = .accepted
-        ZSLogger.info(".presented → .accepted — checkout succeeded for userId=\(userId)", category: .migration)
+        ZSLogger.info(".presented → .accepted — checkout succeeded for userId=\(userId), transactionId=\(transactionId ?? "nil")", category: .migration)
+
+        // Verify transaction and refresh entitlements (matches ZSPaymentSheet pattern)
+        if let transactionId {
+            do {
+                let backend = try makeBackend()
+                let transaction = try await backend.verifyTransaction(transactionId: transactionId)
+                ZSLogger.info("Migration transaction verified: \(transaction.id) for \(transaction.productId)", category: .migration)
+                await ZeroSettle.shared.delegate?.zeroSettleCheckoutDidComplete(transaction: transaction)
+                await ZeroSettle.shared.refreshEntitlementsAfterCheckout(transaction: transaction)
+            } catch {
+                ZSLogger.error("Migration transaction verification failed: \(error)", category: .migration)
+            }
+        } else {
+            ZSLogger.info("No transactionId provided — skipping verification (entitlements will sync on next refresh)", category: .migration)
+        }
 
         // Fire-and-forget conversion tracking
         Task {

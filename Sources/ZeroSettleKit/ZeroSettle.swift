@@ -1507,7 +1507,7 @@ public final class ZeroSettle: ObservableObject {
     /// Refresh entitlements after a successful checkout.
     /// Fetches fresh entitlements from the backend and merges with StoreKit entitlements.
     /// Falls back to creating a local entitlement if the backend call fails.
-    private func refreshEntitlementsAfterCheckout(transaction: CheckoutTransaction) async {
+    internal func refreshEntitlementsAfterCheckout(transaction: CheckoutTransaction) async {
         guard let backend else { return }
 
         if let userId = storeKitManager?.currentUserId {
