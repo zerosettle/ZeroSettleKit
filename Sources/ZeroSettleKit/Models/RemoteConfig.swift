@@ -133,13 +133,33 @@ public struct MigrationPrompt: Codable, Sendable, Equatable {
     /// The CTA button text to display in the migration prompt
     public let ctaText: String
 
-    public init(productId: String, eligibleProductIds: [String] = [], discountPercent: Int, title: String, message: String, ctaText: String) {
+    /// Per-product prompt data keyed by product ID.
+    /// When present, provides product-specific discount and text overrides.
+    public let perProductPrompts: [String: PerProductData]?
+
+    /// Per-product prompt data with product-specific discount and interpolated text.
+    public struct PerProductData: Codable, Sendable, Equatable {
+        public let discountPercent: Int
+        public let title: String
+        public let message: String
+        public let ctaText: String
+
+        public init(discountPercent: Int, title: String, message: String, ctaText: String) {
+            self.discountPercent = discountPercent
+            self.title = title
+            self.message = message
+            self.ctaText = ctaText
+        }
+    }
+
+    public init(productId: String, eligibleProductIds: [String] = [], discountPercent: Int, title: String, message: String, ctaText: String, perProductPrompts: [String: PerProductData]? = nil) {
         self.productId = productId
         self.eligibleProductIds = eligibleProductIds
         self.discountPercent = discountPercent
         self.title = title
         self.message = message
         self.ctaText = ctaText
+        self.perProductPrompts = perProductPrompts
     }
 }
 

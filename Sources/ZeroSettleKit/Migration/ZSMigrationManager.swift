@@ -306,15 +306,30 @@ public final class ZSMigrationManager: ObservableObject {
                 return nil
             }
 
-            // Build a prompt with productId set to the matched entitlement's product
-            let resolvedPrompt = MigrationPrompt(
-                productId: matchedEntitlement.productId,
-                eligibleProductIds: backendPrompt.eligibleProductIds,
-                discountPercent: backendPrompt.discountPercent,
-                title: backendPrompt.title,
-                message: backendPrompt.message,
-                ctaText: backendPrompt.ctaText
-            )
+            // Build a prompt with productId set to the matched entitlement's product,
+            // using per-product data when available for accurate discount/text
+            let resolvedPrompt: MigrationPrompt
+            if let perProduct = backendPrompt.perProductPrompts?[matchedEntitlement.productId] {
+                resolvedPrompt = MigrationPrompt(
+                    productId: matchedEntitlement.productId,
+                    eligibleProductIds: backendPrompt.eligibleProductIds,
+                    discountPercent: perProduct.discountPercent,
+                    title: perProduct.title,
+                    message: perProduct.message,
+                    ctaText: perProduct.ctaText,
+                    perProductPrompts: backendPrompt.perProductPrompts
+                )
+            } else {
+                resolvedPrompt = MigrationPrompt(
+                    productId: matchedEntitlement.productId,
+                    eligibleProductIds: backendPrompt.eligibleProductIds,
+                    discountPercent: backendPrompt.discountPercent,
+                    title: backendPrompt.title,
+                    message: backendPrompt.message,
+                    ctaText: backendPrompt.ctaText,
+                    perProductPrompts: backendPrompt.perProductPrompts
+                )
+            }
             ZSLogger.debug("Matched StoreKit product '\(matchedEntitlement.productId)' from eligible list", category: .migration)
             return (resolvedPrompt, matchedEntitlement)
         }

@@ -127,13 +127,22 @@ internal final class Backend: @unchecked Sendable {
                    let discountPercent = migrationResponse.discountPercent,
                    let title = migrationResponse.title,
                    let message = migrationResponse.message {
+                    let perProductData = migrationResponse.perProductPrompts?.mapValues { pp in
+                        MigrationPrompt.PerProductData(
+                            discountPercent: pp.discountPercent,
+                            title: pp.title,
+                            message: pp.message,
+                            ctaText: pp.ctaText ?? "Switch Now"
+                        )
+                    }
                     migration = MigrationPrompt(
                         productId: eligible.first ?? "",
                         eligibleProductIds: eligible,
                         discountPercent: discountPercent,
                         title: title,
                         message: message,
-                        ctaText: migrationResponse.ctaText ?? "Switch Now"
+                        ctaText: migrationResponse.ctaText ?? "Switch Now",
+                        perProductPrompts: perProductData
                     )
                     ZSLogger.info("Migration prompt created: eligibleProductIds=\(eligible), discountPercent=\(discountPercent), title=\(title)", category: .network)
                 } else {
@@ -618,6 +627,14 @@ private struct MigrationPromptResponse: Decodable {
     let discountPercent: Int?
     let title: String?
     let message: String?
+    let ctaText: String?
+    let perProductPrompts: [String: PerProductPromptResponse]?
+}
+
+private struct PerProductPromptResponse: Decodable {
+    let discountPercent: Int
+    let title: String
+    let message: String
     let ctaText: String?
 }
 
