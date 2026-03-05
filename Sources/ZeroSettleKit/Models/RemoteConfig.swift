@@ -137,14 +137,9 @@ public struct MigrationPrompt: Codable, Sendable, Equatable {
         self.productId = productId
         self.eligibleProductIds = eligibleProductIds
         self.discountPercent = discountPercent
-        self.title = Self.interpolate(title, discountPercent: discountPercent)
-        self.message = Self.interpolate(message, discountPercent: discountPercent)
-        self.ctaText = Self.interpolate(ctaText, discountPercent: discountPercent)
-    }
-
-    /// Replace backend template variables (e.g. `{{discount}}`) with actual values.
-    private static func interpolate(_ template: String, discountPercent: Int) -> String {
-        template.replacingOccurrences(of: "{{discount}}", with: "\(discountPercent)")
+        self.title = title
+        self.message = message
+        self.ctaText = ctaText
     }
 }
 
