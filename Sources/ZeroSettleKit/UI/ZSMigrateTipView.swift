@@ -125,20 +125,9 @@ public struct MigrationTipView: View {
 
     // MARK: - Convenience
 
-    /// The savings percentage for the specific migration target product.
-    /// Prefers the backend-computed value (already scoped to the target product),
-    /// then falls back to the local product catalog's web vs App Store prices.
-    /// Returns 0 if no discount is available.
+    /// The savings percentage for the migration target product, sent by the backend.
     private var discountPercent: Int {
-        if let prompt = manager.offerData?.prompt, prompt.discountPercent > 0 {
-            return prompt.discountPercent
-        }
-        if let productId = manager.offerData?.prompt.productId,
-           let product = ZeroSettle.shared.product(for: productId),
-           let percent = product.savingsPercent {
-            return percent
-        }
-        return 0
+        manager.offerData?.prompt.discountPercent ?? 0
     }
 
     // MARK: - Body
