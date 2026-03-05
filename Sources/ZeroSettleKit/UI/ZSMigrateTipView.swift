@@ -47,14 +47,15 @@ public struct MigrationTipView: View {
     @State private var isExpanded = false
     @State private var ctaTapped = false
     @State private var webViewLoaded = false
-    @State private var contentHeight: CGFloat = 220
+    @State private var contentHeight: CGFloat = 190
     @State private var showCongratulations = false
     @State private var confettiTrigger = 0
     @State private var checkoutURL: URL?
+    @State private var hasApplePay = false
 
     static let collapsedHeight: CGFloat = 190
-    static let applePayExpandedHeight: CGFloat = 690
-    static let cardExpandedHeight: CGFloat = 690
+    static let applePayCollapsedHeight: CGFloat = 190
+    static let applePayCardExpandedHeight: CGFloat = 820
     static let noApplePayExpandedHeight: CGFloat = 750
     static let noApplePayCollapsedHeight: CGFloat = 90
 
@@ -229,21 +230,34 @@ public struct MigrationTipView: View {
                             webViewLoaded = true
                         },
                         onPaymentMethodChanged: { paymentMethod in
-                            let newHeight: CGFloat
                             switch paymentMethod {
-                            case "apple_pay":
-                                newHeight = Self.applePayExpandedHeight
-                            case "card":
-                                newHeight = Self.cardExpandedHeight
-                            case "card_no_apple_pay":
-                                newHeight = Self.noApplePayExpandedHeight
-                            case "collapsed_no_apple_pay":
-                                newHeight = Self.noApplePayCollapsedHeight
+                            case "apple_pay_detected":
+                                hasApplePay = true
+                                print("📐 [MigrateTip] apple_pay_detected → applePayCollapsed (\(Self.applePayCollapsedHeight))")
+                                withAnimation(.easeInOut(duration: 0.25)) {
+                                    contentHeight = Self.applePayCollapsedHeight
+                                }
+                            case "card_expanded":
+                                let newHeight = hasApplePay
+                                    ? Self.applePayCardExpandedHeight
+                                    : Self.noApplePayExpandedHeight
+                                print("📐 [MigrateTip] card_expanded (hasApplePay=\(hasApplePay)) → \(newHeight)")
+                                withAnimation(.easeInOut(duration: 0.25)) {
+                                    contentHeight = newHeight
+                                }
+                            case "card_collapsed":
+                                let newHeight = hasApplePay
+                                    ? Self.applePayCollapsedHeight
+                                    : Self.noApplePayCollapsedHeight
+                                print("📐 [MigrateTip] card_collapsed (hasApplePay=\(hasApplePay)) → \(newHeight)")
+                                withAnimation(.easeInOut(duration: 0.25)) {
+                                    contentHeight = newHeight
+                                }
                             default:
-                                newHeight = Self.collapsedHeight
-                            }
-                            withAnimation(.easeInOut(duration: 0.25)) {
-                                contentHeight = newHeight
+                                print("📐 [MigrateTip] unknown state '\(paymentMethod)' → collapsedHeight (\(Self.collapsedHeight))")
+                                withAnimation(.easeInOut(duration: 0.25)) {
+                                    contentHeight = Self.collapsedHeight
+                                }
                             }
                         },
                         onCheckoutSuccess: { _ in
@@ -564,11 +578,11 @@ struct CheckoutWebView: UIViewRepresentable {
 
                 if action == "expandSheet" {
                     DispatchQueue.main.async {
-                        self.onPaymentMethodChanged("card_no_apple_pay")
+                        self.onPaymentMethodChanged("card_expanded")
                     }
                 } else if action == "collapseSheet" {
                     DispatchQueue.main.async {
-                        self.onPaymentMethodChanged("collapsed_no_apple_pay")
+                        self.onPaymentMethodChanged("card_collapsed")
                     }
                 } else if action == "complete" || success {
                     DispatchQueue.main.async {
@@ -738,11 +752,23 @@ struct CheckoutWebView: UIViewRepresentable {
                 return !!t.closest('[data-value="apple_pay"]') || !!t.closest('[data-value="card"]');
               }
 
+              // Detect custom Apple Pay container (non-accordion checkout)
+              var applePayDetected = false;
+              function detectCustomApplePay(reason) {
+                if (applePayDetected) { return; }
+                var container = document.getElementById('apple-pay-container');
+                if (container && container.classList.contains('visible')) {
+                  applePayDetected = true;
+                  log('[' + reason + '] Custom Apple Pay container detected.');
+                  try { window.webkit.messageHandlers.paymentMethodChanged.postMessage('apple_pay_detected'); } catch (e) {}
+                }
+              }
+
               // Initial probing (Stripe often hydrates late)
-              setTimeout(function() { report('t+300ms'); }, 300);
-              setTimeout(function() { report('t+800ms'); }, 800);
-              setTimeout(function() { report('t+1500ms'); }, 1500);
-              setTimeout(function() { report('t+3000ms'); }, 3000);
+              setTimeout(function() { detectCustomApplePay('t+300ms'); report('t+300ms'); }, 300);
+              setTimeout(function() { detectCustomApplePay('t+800ms'); report('t+800ms'); }, 800);
+              setTimeout(function() { detectCustomApplePay('t+1500ms'); report('t+1500ms'); }, 1500);
+              setTimeout(function() { detectCustomApplePay('t+3000ms'); report('t+3000ms'); }, 3000);
 
               // Tap detection: when a payment method is tapped, re-check after animation/hydration.
               document.addEventListener('click', function(e) {
