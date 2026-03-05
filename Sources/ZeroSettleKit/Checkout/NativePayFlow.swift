@@ -98,7 +98,7 @@ extension NativePay {
             // 3. Build PKPaymentRequest via Stripe helper
             let paymentRequest = StripeAPI.paymentRequest(
                 withMerchantIdentifier: merchantId,
-                country: "US",
+                country: response.merchantCountry ?? "US",
                 currency: response.currency.uppercased()
             )
 

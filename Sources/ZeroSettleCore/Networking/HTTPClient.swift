@@ -108,7 +108,7 @@ public final class HTTPClient: @unchecked Sendable {
         }
 
         guard (200...299).contains(httpResponse.statusCode) else {
-            logAPIError(statusCode: httpResponse.statusCode, url: request.url, data: data)
+            logAPIError(statusCode: httpResponse.statusCode, url: request.url, requestBody: request.httpBody, data: data)
             throw HTTPError.httpError(statusCode: httpResponse.statusCode, body: data)
         }
 
@@ -123,12 +123,22 @@ public final class HTTPClient: @unchecked Sendable {
     // MARK: - Error Logging
 
     /// Parse and log API error responses with debug info for developers.
-    private func logAPIError(statusCode: Int, url: URL?, data: Data) {
+    private func logAPIError(statusCode: Int, url: URL?, requestBody: Data?, data: Data) {
         let urlString = url?.absoluteString ?? "unknown"
+
+        // Extract product identifier from request body if present
+        let productContext: String
+        if let body = requestBody,
+           let bodyJSON = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+           let productId = bodyJSON["product_id"] as? String ?? bodyJSON["productId"] as? String {
+            productContext = ", product: \(productId)"
+        } else {
+            productContext = ""
+        }
 
         // Try to parse JSON error response
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            ZSLogger.error("[ZeroSettle] HTTP \(statusCode) from \(urlString)", category: .network)
+            ZSLogger.error("[ZeroSettle] HTTP \(statusCode) from \(urlString)\(productContext)", category: .network)
             return
         }
 
@@ -137,7 +147,7 @@ public final class HTTPClient: @unchecked Sendable {
 
         // Log the main error
         ZSLogger.error(
-            "[ZeroSettle] API Error: \(errorMessage) (code: \(errorCode), status: \(statusCode))",
+            "[ZeroSettle] API Error: \(errorMessage) (code: \(errorCode), status: \(statusCode), url: \(urlString)\(productContext))",
             category: .network
         )
 
@@ -181,7 +191,7 @@ public final class HTTPClient: @unchecked Sendable {
         }
 
         guard (200...299).contains(httpResponse.statusCode) else {
-            logAPIError(statusCode: httpResponse.statusCode, url: request.url, data: data)
+            logAPIError(statusCode: httpResponse.statusCode, url: request.url, requestBody: request.httpBody, data: data)
             throw HTTPError.httpError(statusCode: httpResponse.statusCode, body: data)
         }
     }

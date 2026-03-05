@@ -124,6 +124,11 @@ public struct MigrationPrompt: Codable, Sendable, Equatable {
     /// The discount percentage offered (e.g., 20 for 20% off)
     public let discountPercent: Int
 
+    /// Approximate number of free trial days for the migration checkout.
+    /// Provided by the backend based on the remaining StoreKit subscription period.
+    /// Defaults to 0 if the backend doesn't provide this field.
+    public let freeTrialDays: Int
+
     /// The title to display in the migration prompt
     public let title: String
 
@@ -152,10 +157,11 @@ public struct MigrationPrompt: Codable, Sendable, Equatable {
         }
     }
 
-    public init(productId: String, eligibleProductIds: [String] = [], discountPercent: Int, title: String, message: String, ctaText: String, perProductPrompts: [String: PerProductData]? = nil) {
+    public init(productId: String, eligibleProductIds: [String] = [], discountPercent: Int, freeTrialDays: Int = 0, title: String, message: String, ctaText: String, perProductPrompts: [String: PerProductData]? = nil) {
         self.productId = productId
         self.eligibleProductIds = eligibleProductIds
         self.discountPercent = discountPercent
+        self.freeTrialDays = freeTrialDays
         self.title = title
         self.message = message
         self.ctaText = ctaText

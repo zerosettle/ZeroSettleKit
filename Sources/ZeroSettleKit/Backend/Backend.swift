@@ -139,6 +139,7 @@ internal final class Backend: @unchecked Sendable {
                         productId: eligible.first ?? "",
                         eligibleProductIds: eligible,
                         discountPercent: discountPercent,
+                        freeTrialDays: migrationResponse.freeTrialDays ?? 0,
                         title: title,
                         message: message,
                         ctaText: migrationResponse.ctaText ?? "Switch Now",
@@ -625,6 +626,7 @@ private struct MigrationPromptResponse: Decodable {
     let shouldShow: Bool
     let eligibleProductIds: [String]?
     let discountPercent: Int?
+    let freeTrialDays: Int?
     let title: String?
     let message: String?
     let ctaText: String?
@@ -676,6 +678,8 @@ internal struct PaymentIntentResponse: Decodable {
     let checkoutUrl: String
     /// BYOS: connected account ID for PaymentIntent confirmation.
     let stripeAccount: String?
+    /// ISO country code of the connected Stripe account (for Apple Pay).
+    let merchantCountry: String?
     /// Whether this is a recurring (subscription) payment.
     let isSubscription: Bool?
     /// Billing interval for subscriptions: "week", "month", "year".

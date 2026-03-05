@@ -267,11 +267,10 @@ public final class ZSMigrationManager: ObservableObject {
             ZSLogger.info("[MigrationManager] ⚠️ Migration target product '\(prompt.productId)' not found in catalog — available product IDs: \(catalogProducts.map { $0.id })", category: .migration)
         }
 
-        // Default 45-day free trial for all migration offers.
-        // The actual free trial duration is adjusted server-side only after
-        // the user's Apple subscription is cancelled.
-        let freeTrialDays = 45
-        ZSLogger.info("[MigrationManager] Using default freeTrialDays=\(freeTrialDays) — actual duration adjusted server-side after Apple subscription cancellation", category: .migration)
+        // Use backend-provided free trial days (approximate remaining StoreKit period).
+        // The precise trial_end is resolved server-side at checkout time via Apple's API.
+        let freeTrialDays = prompt.freeTrialDays
+        ZSLogger.info("Using freeTrialDays=\(freeTrialDays) from migration config", category: .migration)
 
         let data = MigrationOffer.OfferData(
             prompt: prompt,
@@ -311,6 +310,7 @@ public final class ZSMigrationManager: ObservableObject {
                     productId: matchedEntitlement.productId,
                     eligibleProductIds: backendPrompt.eligibleProductIds,
                     discountPercent: perProduct.discountPercent,
+                    freeTrialDays: backendPrompt.freeTrialDays,
                     title: perProduct.title,
                     message: perProduct.message,
                     ctaText: perProduct.ctaText,
@@ -321,6 +321,7 @@ public final class ZSMigrationManager: ObservableObject {
                     productId: matchedEntitlement.productId,
                     eligibleProductIds: backendPrompt.eligibleProductIds,
                     discountPercent: backendPrompt.discountPercent,
+                    freeTrialDays: backendPrompt.freeTrialDays,
                     title: backendPrompt.title,
                     message: backendPrompt.message,
                     ctaText: backendPrompt.ctaText,
