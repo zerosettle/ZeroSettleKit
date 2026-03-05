@@ -125,19 +125,20 @@ public struct MigrationTipView: View {
 
     // MARK: - Convenience
 
+    /// The savings percentage for the specific migration target product.
+    /// Prefers the backend-computed value (already scoped to the target product),
+    /// then falls back to the local product catalog's web vs App Store prices.
+    /// Returns 0 if no discount is available.
     private var discountPercent: Int {
-        manager.offerData?.prompt.discountPercent ?? 15
-    }
-
-    /// The savings percentage computed from the product catalog's web vs App Store prices.
-    /// Falls back to the backend-provided `discountPercent` if prices aren't available.
-    private var computedSavingsPercent: Int {
+        if let prompt = manager.offerData?.prompt, prompt.discountPercent > 0 {
+            return prompt.discountPercent
+        }
         if let productId = manager.offerData?.prompt.productId,
            let product = ZeroSettle.shared.product(for: productId),
            let percent = product.savingsPercent {
             return percent
         }
-        return discountPercent
+        return 0
     }
 
     // MARK: - Body
@@ -355,7 +356,7 @@ public struct MigrationTipView: View {
             headerView(
                 icon: { Text("🎉").font(.largeTitle) },
                 title: "Congratulations!",
-                message: "You are now saving \(computedSavingsPercent)% forever.",
+                message: "You are now saving \(discountPercent)% forever.",
                 showCloseButton: false
             )
         }
