@@ -127,18 +127,19 @@ internal final class Backend: @unchecked Sendable {
                    let discountPercent = migrationResponse.discountPercent,
                    let title = migrationResponse.title,
                    let message = migrationResponse.message {
-                    // Pass through the backend discount as-is. When it's 0, the
-                    // MigrationManager will resolve the real savings from the
-                    // matched product's web vs StoreKit price and re-interpolate.
+                    // Use backend discount if > 0, otherwise fall back to product savings
+                    let effectiveDiscount = discountPercent > 0
+                        ? discountPercent
+                        : (response.products.first(where: { $0.id == eligible.first })?.savingsPercent ?? 0)
                     migration = MigrationPrompt(
                         productId: eligible.first ?? "",
                         eligibleProductIds: eligible,
-                        discountPercent: discountPercent,
+                        discountPercent: effectiveDiscount,
                         title: title,
                         message: message,
-                        ctaText: migrationResponse.ctaText ?? (discountPercent > 0 ? "Save \(discountPercent)% Forever" : "Switch Now")
+                        ctaText: migrationResponse.ctaText ?? (effectiveDiscount > 0 ? "Save \(effectiveDiscount)% Forever" : "Switch Now")
                     )
-                    ZSLogger.info("Migration prompt created: eligibleProductIds=\(eligible), discountPercent=\(discountPercent), title=\(title)", category: .network)
+                    ZSLogger.info("Migration prompt created: eligibleProductIds=\(eligible), discountPercent=\(effectiveDiscount), title=\(title)", category: .network)
                 } else {
                     migration = nil
                     ZSLogger.info("Migration prompt nil: shouldShow=\(migrationResponse.shouldShow), missing fields: discountPercent=\(migrationResponse.discountPercent == nil), title=\(migrationResponse.title == nil), message=\(migrationResponse.message == nil)", category: .network)
