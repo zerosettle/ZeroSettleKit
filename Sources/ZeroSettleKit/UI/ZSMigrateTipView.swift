@@ -45,6 +45,7 @@ public struct MigrationTipView: View {
     // MARK: - UI-only State
 
     @State private var isExpanded = false
+    @State private var ctaTapped = false
     @State private var webViewLoaded = false
     @State private var contentHeight: CGFloat = 220
     @State private var showCongratulations = false
@@ -54,6 +55,8 @@ public struct MigrationTipView: View {
     static let collapsedHeight: CGFloat = 190
     static let applePayExpandedHeight: CGFloat = 690
     static let cardExpandedHeight: CGFloat = 690
+    static let noApplePayExpandedHeight: CGFloat = 750
+    static let noApplePayCollapsedHeight: CGFloat = 90
 
     /// Creates a new migrate tip view.
     ///
@@ -189,25 +192,31 @@ public struct MigrationTipView: View {
 
             // CTA button (hidden when webview is expanded)
             if !isExpanded {
-                Button(action: { startCheckout() }) {
-                    HStack(spacing: 8) {
-                        if manager.isLoading {
-                            ProgressView()
-                                .progressViewStyle(CircularProgressViewStyle(tint: backgroundColor))
-                                .scaleEffect(0.8)
+                if ctaTapped {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                        .padding(.bottom, 16)
+                } else {
+                    Button(action: { ctaTapped = true; startCheckout() }) {
+                        HStack(spacing: 8) {
+                            if manager.isLoading {
+                                ProgressView()
+                                    .progressViewStyle(CircularProgressViewStyle(tint: backgroundColor))
+                                    .scaleEffect(0.8)
+                            }
+                            Text(manager.isLoading ? "" : (manager.offerData?.prompt.ctaText ?? (discountPercent > 0 ? "Save \(discountPercent)% Forever" : "Switch Now")))
+                                .font(ctaFont ?? .body.weight(.bold))
+                                .foregroundColor(backgroundColor)
                         }
-                        Text(manager.isLoading ? "" : (manager.offerData?.prompt.ctaText ?? (discountPercent > 0 ? "Save \(discountPercent)% Forever" : "Switch Now")))
-                            .font(ctaFont ?? .body.weight(.bold))
-                            .foregroundColor(backgroundColor)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(Color.white)
+                        .clipShape(Capsule())
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .background(Color.white)
-                    .clipShape(Capsule())
+                    .disabled(manager.isLoading)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 16)
                 }
-                .disabled(manager.isLoading)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 16)
             }
 
             // Inline WebView (only when expanded)
@@ -226,6 +235,10 @@ public struct MigrationTipView: View {
                                 newHeight = Self.applePayExpandedHeight
                             case "card":
                                 newHeight = Self.cardExpandedHeight
+                            case "card_no_apple_pay":
+                                newHeight = Self.noApplePayExpandedHeight
+                            case "collapsed_no_apple_pay":
+                                newHeight = Self.noApplePayCollapsedHeight
                             default:
                                 newHeight = Self.collapsedHeight
                             }
@@ -549,8 +562,15 @@ struct CheckoutWebView: UIViewRepresentable {
 
                 print("🧾 checkoutComplete received: action=\(action), success=\(success)")
 
-                // Handle completion - check for "complete" action or direct success flag
-                if action == "complete" || success {
+                if action == "expandSheet" {
+                    DispatchQueue.main.async {
+                        self.onPaymentMethodChanged("card_no_apple_pay")
+                    }
+                } else if action == "collapseSheet" {
+                    DispatchQueue.main.async {
+                        self.onPaymentMethodChanged("collapsed_no_apple_pay")
+                    }
+                } else if action == "complete" || success {
                     DispatchQueue.main.async {
                         // Create a placeholder URL for the success callback
                         let successURL = URL(string: "https://zerosettle.io/checkout/success")!
@@ -679,14 +699,14 @@ struct CheckoutWebView: UIViewRepresentable {
               var lastPaymentMethod = null;
 
               function computeActivePaymentMethod() {
-                // Check which payment method accordion is expanded
+                // Check Stripe accordion buttons (only present when Apple Pay is available)
                 if (isButtonExpanded('card')) {
                   return 'card';
                 }
                 if (isButtonExpanded('apple_pay')) {
                   return 'apple_pay';
                 }
-                return 'collapsed';
+                return null;
               }
 
               function report(reason) {
@@ -702,6 +722,9 @@ struct CheckoutWebView: UIViewRepresentable {
                   + ' card=' + safeStr(cardState)
                   + ' => paymentMethod=' + safeStr(paymentMethod));
 
+                // null means no accordion buttons found (no-Apple-Pay case);
+                // that path is handled by expandSheet/collapseSheet instead.
+                if (paymentMethod === null) { return; }
                 if (lastPaymentMethod === paymentMethod) { return; }
                 lastPaymentMethod = paymentMethod;
 
