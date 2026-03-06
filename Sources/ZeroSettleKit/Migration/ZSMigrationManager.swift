@@ -265,6 +265,9 @@ public final class ZSMigrationManager: ObservableObject {
             }
         } else {
             ZSLogger.info("[MigrationManager] ⚠️ Migration target product '\(prompt.productId)' not found in catalog — available product IDs: \(catalogProducts.map { $0.id })", category: .migration)
+            state = .ineligible
+            offerData = nil
+            return
         }
 
         // Use backend-provided free trial days (approximate remaining StoreKit period).
@@ -431,6 +434,15 @@ public final class ZSMigrationManager: ObservableObject {
             checkoutError = error
             isLoading = false
             ZSLogger.error("[MigrationManager] Payment intent failed: \(error)", category: .migration)
+
+            // If the product doesn't exist on the backend, the migration offer is invalid —
+            // hide the view by transitioning to .ineligible.
+            if case .apiError(let detail) = error as? ZeroSettleError, detail.statusCode == 404 {
+                state = .ineligible
+                self.offerData = nil
+                ZSLogger.info("[MigrationManager] .presented → .ineligible — product not found on backend (404)", category: .migration)
+            }
+
             return nil
         }
     }

@@ -55,7 +55,7 @@ public struct MigrationTipView: View {
 
     static let collapsedHeight: CGFloat = 180
     static let applePayCollapsedHeight: CGFloat = 180
-    static let applePayCardExpandedHeight: CGFloat = 840
+    static let applePayCardExpandedHeight: CGFloat = 820
     static let noApplePayExpandedHeight: CGFloat = 800
     static let noApplePayCollapsedHeight: CGFloat = 90
 
@@ -467,6 +467,8 @@ public struct MigrationTipView: View {
                 withAnimation(.easeInOut(duration: 0.3)) {
                     isExpanded = true
                 }
+            } else {
+                ctaTapped = false
             }
         }
     }
