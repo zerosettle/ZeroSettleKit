@@ -26,9 +26,16 @@ internal final class WebCheckoutFlow: NSObject {
     /// Reference to the presented Safari view controller
     private var safariViewController: SFSafariViewController?
 
-    /// The universal link hosts used for callbacks (accept both prod and dev).
-    private static let callbackHosts = ["api.zerosettle.io", "landing.zerosettle.ngrok.app"]
-    private static let callbackPathPrefix = "/checkout/callback"
+    /// The universal link hosts used for callbacks.
+    ///
+    /// ZeroSettle uses **universal links only** — no custom URL schemes.
+    /// Universal links are verified via AASA, cannot be hijacked by other apps,
+    /// and provide a seamless return-to-app experience.  The developer must add
+    /// the Associated Domains entitlement for this to work:
+    ///   `applinks:api.zerosettle.io?mode=developer` (dev)
+    ///   `applinks:api.zerosettle.io` (production)
+    private static let callbackHosts = CheckoutConstants.callbackHosts
+    private static let callbackPathPrefix = CheckoutConstants.callbackPathPrefix
 
     /// Currently presented SFSafariViewController (if any).
     private weak var presentedSafariVC: SFSafariViewController?

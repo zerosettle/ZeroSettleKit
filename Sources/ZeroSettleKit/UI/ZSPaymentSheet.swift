@@ -22,10 +22,11 @@ private let setupMeasureJS = """
 (function() {
     if (window.__zsMeasure) return;
     window.__zsMeasure = function() {
+        var scrollY = window.scrollY || window.pageYOffset || 0;
         var el = document.getElementById('checkout-content');
         if (el) {
             var rect = el.getBoundingClientRect();
-            return rect.top + rect.height;
+            return rect.top + scrollY + rect.height;
         }
         var viewH = window.innerHeight;
         var nodes = document.body.children;
@@ -45,7 +46,8 @@ private let setupMeasureJS = """
         for (var i = 0; i < nodes.length; i++) {
             if (nodes[i].offsetHeight > 0) {
                 var r = nodes[i].getBoundingClientRect();
-                if (r.bottom > maxBottom) maxBottom = r.bottom;
+                var bottom = r.bottom + scrollY;
+                if (bottom > maxBottom) maxBottom = bottom;
             }
         }
         return maxBottom > 0 ? maxBottom : 400;
@@ -165,7 +167,7 @@ private final class CheckoutPreloader: ObservableObject {
         config.userContentController.addUserScript(heightScript)
 
         let wv = WKWebView(frame: CGRect(x: 0, y: 0, width: 393, height: 600), configuration: config)
-        wv.scrollView.bounces = false
+        wv.scrollView.bounces = true
         wv.scrollView.contentInsetAdjustmentBehavior = .never
         wv.isOpaque = false
         wv.backgroundColor = .clear
@@ -348,6 +350,11 @@ public struct CheckoutSheet<Header: View>: View {
     @State private var webContentHeight: CGFloat
     @State private var sheetHeight: CGFloat = 480
 
+    /// Maximum WebView height — leave room for header, safe areas, and grab indicator.
+    private var maxWebViewHeight: CGFloat {
+        UIScreen.main.bounds.height - 180
+    }
+
     // MARK: - Public Initialization (without preloading)
 
     public init(
@@ -516,7 +523,7 @@ extension CheckoutSheet {
                         Color(.systemBackground)
                     }
                 }
-                .frame(height: webContentHeight > 0 ? webContentHeight : 400)
+                .frame(height: webContentHeight > 0 ? min(webContentHeight, maxWebViewHeight) : 400)
             } else {
                 ProgressView()
                     .frame(height: 400)
@@ -776,7 +783,7 @@ private struct PaymentWebView: UIViewRepresentable {
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
-        webView.scrollView.bounces = false
+        webView.scrollView.bounces = true
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.isOpaque = false
         webView.backgroundColor = .clear
@@ -811,13 +818,8 @@ private struct PaymentWebView: UIViewRepresentable {
         private var hasCompleted = false
         var hasReinstalledObserver = false
 
-        private let callbackHosts = [
-            "api.zerosettle.io",
-            "zerosettle.io",
-            "landing.zerosettle.ngrok.app",
-            "api.zerosettle.ngrok.app"
-        ]
-        private let callbackPathPrefix = "/checkout/callback"
+        private let callbackHosts = CheckoutConstants.callbackHosts
+        private let callbackPathPrefix = CheckoutConstants.callbackPathPrefix
 
         init(isLoading: Binding<Bool>, onAction: @escaping (WebViewAction) -> Void) {
             self._isLoading = isLoading

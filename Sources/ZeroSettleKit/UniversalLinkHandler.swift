@@ -13,11 +13,18 @@ internal import ZeroSettleCore
 
 // MARK: - View Modifier
 
-/// A view modifier that automatically handles ZeroSettle IAP universal link callbacks.
+/// A view modifier that handles ZeroSettle checkout callbacks via universal links.
+///
+/// ZeroSettle uses **universal links only** — no custom URL schemes.
+/// The developer must add the Associated Domains entitlement for this to work:
+///   `applinks:api.zerosettle.io?mode=developer` (dev)
+///   `applinks:api.zerosettle.io` (production)
+///
 /// Apply this to your root view to enable automatic checkout callback handling.
 internal struct ZeroSettleHandlerModifier: ViewModifier {
     public func body(content: Content) -> some View {
         content
+            // Primary path: universal links fire via NSUserActivity.
             .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
                 guard let url = activity.webpageURL else {
                     ZSLogger.debug("onContinueUserActivity fired but webpageURL is nil", category: .deepLinks)
@@ -26,6 +33,9 @@ internal struct ZeroSettleHandlerModifier: ViewModifier {
                 ZSLogger.info("onContinueUserActivity fired with URL: \(url.absoluteString)", category: .deepLinks)
                 ZeroSettle.shared.handleUniversalLink(url)
             }
+            // Safety net: onOpenURL can also deliver universal links in some
+            // SwiftUI lifecycle edge cases.  We do NOT register a custom URL
+            // scheme — this handler only processes https:// universal links.
             .onOpenURL { url in
                 ZSLogger.info("onOpenURL fired with URL: \(url.absoluteString)", category: .deepLinks)
                 ZeroSettle.shared.handleUniversalLink(url)
