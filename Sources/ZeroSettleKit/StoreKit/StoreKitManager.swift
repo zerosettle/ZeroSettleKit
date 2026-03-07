@@ -198,6 +198,11 @@ internal final class StoreKitManager: @unchecked Sendable {
     // MARK: - Current Entitlements
 
     /// Get the current entitlements from StoreKit's verified transactions.
+    ///
+    /// For subscriptions, also queries `Product.SubscriptionInfo.Status` to get
+    /// the real-time `willAutoRenew` flag from `RenewalInfo`. This is more
+    /// up-to-date than `Transaction.currentEntitlements` alone, which Apple
+    /// caches aggressively in sandbox (often several minutes stale).
     func getCurrentEntitlements() async -> [Entitlement] {
         var entitlements: [Entitlement] = []
 
@@ -215,11 +220,43 @@ internal final class StoreKitManager: @unchecked Sendable {
                 }
             }
 
-            let entitlement = entitlementFromTransaction(transaction, originalTransactionId: originalTxnId)
+            // For subscriptions, fetch real-time renewal status to detect cancellation
+            // sooner than the cached transaction data would show it.
+            let renewalStatus: RenewalStatus? = transaction.expirationDate != nil
+                ? await fetchSubscriptionRenewalStatus(for: transaction.productID)
+                : nil
+
+            let entitlement = entitlementFromTransaction(
+                transaction,
+                originalTransactionId: originalTxnId,
+                renewalStatus: renewalStatus
+            )
             entitlements.append(entitlement)
         }
 
         return entitlements
+    }
+
+    /// Real-time renewal status from `Product.SubscriptionInfo.Status`.
+    struct RenewalStatus {
+        let willAutoRenew: Bool
+    }
+
+    /// Fetches the real-time renewal status for a subscription product.
+    ///
+    /// Uses `Product.SubscriptionInfo.Status` which reflects the current
+    /// auto-renew preference immediately, unlike `Transaction.currentEntitlements`
+    /// which can be cached for minutes in sandbox.
+    private func fetchSubscriptionRenewalStatus(for productId: String) async -> RenewalStatus? {
+        guard let product = try? await Product.products(for: [productId]).first,
+              let subscription = product.subscription,
+              let statuses = try? await subscription.status,
+              let status = statuses.first(where: { $0.state == .subscribed }) ?? statuses.first,
+              case .verified(let renewalInfo) = status.renewalInfo else {
+            return nil
+        }
+        ZSLogger.debug("RenewalStatus for product=\(productId): willAutoRenew=\(renewalInfo.willAutoRenew)", category: .entitlements)
+        return RenewalStatus(willAutoRenew: renewalInfo.willAutoRenew)
     }
 
     /// Fetches the original transaction ID from a subscription's RenewalInfo.
@@ -304,7 +341,11 @@ internal final class StoreKitManager: @unchecked Sendable {
         }
     }
 
-    private func entitlementFromTransaction(_ transaction: SKTransaction, originalTransactionId: UInt64? = nil) -> Entitlement {
+    private func entitlementFromTransaction(
+        _ transaction: SKTransaction,
+        originalTransactionId: UInt64? = nil,
+        renewalStatus: RenewalStatus? = nil
+    ) -> Entitlement {
         let isActive: Bool
         let expiresAt: Date?
 
@@ -322,12 +363,25 @@ internal final class StoreKitManager: @unchecked Sendable {
 
         let origId = originalTransactionId ?? (transaction.originalID != 0 ? transaction.originalID : transaction.id)
 
+        // Use real-time renewal status when available; default to true for
+        // non-subscription products or when status couldn't be fetched.
+        let willRenew = renewalStatus?.willAutoRenew ?? true
+        let cancelledAt: Date? = (renewalStatus != nil && !willRenew) ? Date() : nil
+        let status: Entitlement.Status = {
+            if !isActive { return .expired }
+            if cancelledAt != nil { return .cancelled }
+            return .active
+        }()
+
         return Entitlement(
             id: "storekit_\(transaction.id)",
             productId: transaction.productID,
             source: .storeKit,
             isActive: isActive,
+            status: status,
             expiresAt: expiresAt,
+            willRenew: willRenew,
+            cancelledAt: cancelledAt,
             purchasedAt: transaction.purchaseDate,
             storekitOriginalTransactionId: String(origId)
         )
