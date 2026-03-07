@@ -267,28 +267,26 @@ public final class ZSMigrationManager: ObservableObject {
         let matchedEntitlement = resolved.matchedEntitlement
 
         // ── Check 9: Subscription tenure within subscription window ──
-        if prompt.minSubscriptionDays > 0 || prompt.maxSubscriptionDays != nil {
-            let tenureDays: Int
-            if let originalDate = matchedEntitlement.originalPurchaseDate {
-                tenureDays = Calendar.current.dateComponents([.day], from: originalDate, to: Date()).day ?? 0
-            } else {
-                // Fall back to purchasedAt (current period) if originalPurchaseDate unavailable
-                tenureDays = Calendar.current.dateComponents([.day], from: matchedEntitlement.purchasedAt, to: Date()).day ?? 0
-            }
-            ZSLogger.info("[MigrationTip] Subscription tenure: \(tenureDays) days (original=\(matchedEntitlement.originalPurchaseDate?.description ?? "nil"), window=\(prompt.minSubscriptionDays)-\(prompt.maxSubscriptionDays.map(String.init) ?? "∞")d)", category: .migration)
+        let tenureDays: Int
+        if let originalDate = matchedEntitlement.originalPurchaseDate {
+            tenureDays = Calendar.current.dateComponents([.day], from: originalDate, to: Date()).day ?? 0
+        } else {
+            // Fall back to purchasedAt (current period) if originalPurchaseDate unavailable
+            tenureDays = Calendar.current.dateComponents([.day], from: matchedEntitlement.purchasedAt, to: Date()).day ?? 0
+        }
+        ZSLogger.info("[MigrationTip] Subscription tenure: \(tenureDays) days (original=\(matchedEntitlement.originalPurchaseDate?.description ?? "nil"), window=\(prompt.minSubscriptionDays)-\(prompt.maxSubscriptionDays.map(String.init) ?? "∞")d)", category: .migration)
 
-            if tenureDays < prompt.minSubscriptionDays {
-                state = .ineligible
-                offerData = nil
-                ZSLogger.info("[MigrationTip] SKIP: subscription tenure \(tenureDays)d < minSubscriptionDays \(prompt.minSubscriptionDays)d", category: .migration)
-                return
-            }
-            if let maxDays = prompt.maxSubscriptionDays, tenureDays > maxDays {
-                state = .ineligible
-                offerData = nil
-                ZSLogger.info("[MigrationTip] SKIP: subscription tenure \(tenureDays)d > maxSubscriptionDays \(maxDays)d", category: .migration)
-                return
-            }
+        if tenureDays < prompt.minSubscriptionDays {
+            state = .ineligible
+            offerData = nil
+            ZSLogger.info("[MigrationTip] SKIP: subscription tenure \(tenureDays)d < minSubscriptionDays \(prompt.minSubscriptionDays)d", category: .migration)
+            return
+        }
+        if let maxDays = prompt.maxSubscriptionDays, tenureDays > maxDays {
+            state = .ineligible
+            offerData = nil
+            ZSLogger.info("[MigrationTip] SKIP: subscription tenure \(tenureDays)d > maxSubscriptionDays \(maxDays)d", category: .migration)
+            return
         }
 
         // ── Check 10: Target product exists in catalog ──
