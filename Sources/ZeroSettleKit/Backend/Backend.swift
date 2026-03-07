@@ -520,6 +520,24 @@ internal final class Backend: @unchecked Sendable {
         try await httpClient.executeVoid(urlRequest)
     }
 
+    // MARK: - StoreKit Subscription Status (Server-Side)
+
+    /// Query the server for real-time Apple subscription status (bypasses on-device cache).
+    func getStoreKitSubscriptionStatus(originalTransactionId: String) async throws -> StoreKitSubscriptionStatusResponse {
+        var components = URLComponents(url: apiURL("iap/storekit-subscription-status/"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "original_transaction_id", value: originalTransactionId)]
+
+        guard let url = components.url else {
+            throw Backend.wrapError(HTTPError.invalidURL("Failed to construct storekit-subscription-status URL"))
+        }
+
+        return try await httpClient.get(
+            url,
+            headers: authHeaders,
+            responseType: StoreKitSubscriptionStatusResponse.self
+        )
+    }
+
     // MARK: - Funnel Analytics
 
     /// Send a funnel analytics event (fire-and-forget from the caller's perspective).
@@ -769,4 +787,13 @@ internal struct TrackFunnelEventRequest: Encodable {
     let productId: String
     let screenName: String?
     let metadata: [String: String]?
+}
+
+internal struct StoreKitSubscriptionStatusResponse: Decodable {
+    /// 1 = active (subscribed + auto-renew on), 2 = cancelled/expired/other
+    let status: Int
+    /// 0 = auto-renew off, 1 = auto-renew on
+    let autoRenewStatus: Int
+    /// Subscription expiration date, if available
+    let expiresAt: Date?
 }

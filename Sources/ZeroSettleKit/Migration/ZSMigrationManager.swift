@@ -143,12 +143,16 @@ public final class ZSMigrationManager: ObservableObject {
         let iap = ZeroSettle.shared
 
         // ── Always sync Apple subscription status to backend ──
-        let syncProductId = iap.entitlements.first(where: { $0.source == .storeKit })?.productId
-            ?? iap.entitlements.first(where: { $0.source == .webCheckout })?.productId
+        let syncEntitlement = iap.entitlements.first(where: { $0.source == .storeKit })
+            ?? iap.entitlements.first(where: { $0.source == .webCheckout })
+        let syncProductId = syncEntitlement?.productId
+        let syncOrigTxnId = syncEntitlement?.storekitOriginalTransactionId
         if let syncProductId {
             Task { [weak self] in
                 guard let self else { return }
-                let result = await self.fetchAppleSubscriptionStatus(productId: syncProductId)
+                // Try server-side first (real-time), fall back to on-device StoreKit
+                let result = await self.fetchAppleSubscriptionStatusFromServer(originalTransactionId: syncOrigTxnId)
+                    ?? await self.fetchAppleSubscriptionStatus(productId: syncProductId)
                 let appleStatus = result?.status ?? 1
                 let expirationDate = result?.expirationDate
                 ZSLogger.info("[MigrationTip] Syncing Apple status=\(appleStatus == 1 ? "active" : "cancelled") for \(syncProductId) to backend", category: .migration)
@@ -504,11 +508,10 @@ public final class ZSMigrationManager: ObservableObject {
 
     /// Open the Apple subscription management sheet.
     ///
-    /// After the sheet dismisses, optimistically transitions to `.completed` so the
-    /// UI can show a congrats/confetti view immediately. The actual cancellation status
-    /// is verified on the next app launch — if the subscription wasn't really cancelled,
-    /// ``evaluateEligibility()`` will detect both StoreKit + web are still active and
-    /// transition back to `.accepted` with ``storekitCancelRequired`` set to `true`.
+    /// After the sheet dismisses, queries the server-side Apple endpoint for real-time
+    /// cancellation status. If cancelled, transitions to `.completed`. If still active,
+    /// stays in `.accepted` with ``storekitCancelRequired`` set. Falls back to on-device
+    /// StoreKit if the server call fails.
     public func showAppleSubscriptionManagement() async {
         guard state == .accepted else {
             ZSLogger.info("[MigrationManager] showAppleSubscriptionManagement() ignored — state is .\(state), expected .accepted", category: .migration)
@@ -528,33 +531,59 @@ public final class ZSMigrationManager: ObservableObject {
             return
         }
 
-        // Optimistically mark as completed — show confetti/congrats immediately.
-        // If the user didn't actually cancel, evaluateEligibility() on next launch
-        // will put them back into .accepted (Check 6: both StoreKit + web active).
-        storekitCancelRequired = false
-        state = .completed
-        ZSLogger.info("[MigrationManager] .accepted → .completed (optimistic) — Apple subscription management dismissed", category: .migration)
-
-        // Fire-and-forget: sync the actual status to the backend in the background
+        // Sheet dismissed — verify cancellation via server-side Apple API (real-time)
         let productId = offerData?.activeStoreKitProductId
             ?? ZeroSettle.shared.entitlements.first(where: { $0.source == .storeKit && $0.isActive })?.productId
+        let origTxnId = offerData?.activeStoreKitOriginalTransactionId
+            ?? ZeroSettle.shared.entitlements.first(where: { $0.source == .storeKit && $0.isActive })?.storekitOriginalTransactionId
         let txnId = checkoutTransactionId
-        Task { [weak self] in
-            guard let self else { return }
-            let result = await self.fetchAppleSubscriptionStatus(productId: productId)
-            let appleStatus = result?.status ?? 1
-            let expirationDate = result?.expirationDate
-            ZSLogger.info("[MigrationManager] Background sync: Apple status=\(appleStatus == 1 ? "active" : "cancelled") for product=\(productId ?? "nil")", category: .migration)
 
-            if let txnId {
-                do {
-                    let backend = try self.makeBackend()
-                    try await backend.updateStorekitStatus(transactionId: txnId, storekitStatus: appleStatus, storekitSubscriptionEnd: expirationDate)
-                    ZSLogger.info("[MigrationManager] Background sync: backend updated storekit_status=\(appleStatus) on transaction=\(txnId)", category: .migration)
-                } catch {
-                    ZSLogger.error("[MigrationManager] Background sync: failed to update backend: \(error)", category: .migration)
-                }
+        // Try server-side first (real-time), fall back to on-device StoreKit
+        let result = await fetchAppleSubscriptionStatusFromServer(originalTransactionId: origTxnId)
+            ?? await fetchAppleSubscriptionStatus(productId: productId)
+        let appleStatus = result?.status ?? 1
+        let expirationDate = result?.expirationDate
+        ZSLogger.info("[MigrationManager] Post-dismiss verification: Apple status=\(appleStatus == 1 ? "active" : "cancelled") for product=\(productId ?? "nil")", category: .migration)
+
+        if appleStatus == 2 {
+            // Confirmed cancelled
+            storekitCancelRequired = false
+            state = .completed
+            ZSLogger.info("[MigrationManager] .accepted → .completed (verified cancelled)", category: .migration)
+        } else {
+            // Still active — user didn't cancel
+            storekitCancelRequired = true
+            ZSLogger.info("[MigrationManager] Subscription still active after manage sheet — storekitCancelRequired=true", category: .migration)
+        }
+
+        // Sync status to backend
+        if let txnId {
+            do {
+                let backend = try makeBackend()
+                try await backend.updateStorekitStatus(transactionId: txnId, storekitStatus: appleStatus, storekitSubscriptionEnd: expirationDate)
+                ZSLogger.info("[MigrationManager] Backend updated storekit_status=\(appleStatus) on transaction=\(txnId)", category: .migration)
+            } catch {
+                ZSLogger.error("[MigrationManager] Failed to update backend: \(error)", category: .migration)
             }
+        }
+    }
+
+    /// Query the server for real-time Apple subscription status (bypasses on-device StoreKit cache).
+    /// Returns the same tuple as fetchAppleSubscriptionStatus, or nil on failure.
+    private func fetchAppleSubscriptionStatusFromServer(originalTransactionId: String?) async -> (status: Int, expirationDate: Date?)? {
+        guard let originalTransactionId else {
+            ZSLogger.info("[MigrationManager] fetchAppleSubscriptionStatusFromServer — originalTransactionId is nil", category: .migration)
+            return nil
+        }
+
+        do {
+            let backend = try makeBackend()
+            let response = try await backend.getStoreKitSubscriptionStatus(originalTransactionId: originalTransactionId)
+            ZSLogger.info("[MigrationManager] Server subscription status: status=\(response.status), autoRenew=\(response.autoRenewStatus), expires=\(response.expiresAt?.description ?? "nil")", category: .migration)
+            return (response.status, response.expiresAt)
+        } catch {
+            ZSLogger.info("[MigrationManager] Server subscription status failed, will fall back to on-device: \(error)", category: .migration)
+            return nil
         }
     }
 
