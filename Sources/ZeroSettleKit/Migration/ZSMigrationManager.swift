@@ -403,7 +403,7 @@ public final class ZSMigrationManager: ObservableObject {
         checkoutError = nil
         isLoading = true
 
-        ZSLogger.info("[MigrationManager] Creating payment intent: productId=\(offerData.prompt.productId), userId=\(userId), stripeCustomerId=\(stripeCustomerId ?? "nil"), freeTrialDays=\(offerData.freeTrialDays), activeStoreKitProductId=\(offerData.activeStoreKitProductId), discount=\(offerData.prompt.discountPercent)%", category: .migration)
+        ZSLogger.info("[MigrationManager] Creating payment intent: productId=\(offerData.prompt.productId), userId=\(userId), stripeCustomerId=\(stripeCustomerId ?? "nil"), freeTrialDays=\(offerData.freeTrialDays), activeStoreKitProductId=\(offerData.activeStoreKitProductId), activeStoreKitExpiresAt=\(offerData.activeStoreKitExpiresAt?.description ?? "nil"), discount=\(offerData.prompt.discountPercent)%", category: .migration)
 
         // Log the Stripe product mapping being used for checkout
         let catalogProducts = ZeroSettle.shared.products
