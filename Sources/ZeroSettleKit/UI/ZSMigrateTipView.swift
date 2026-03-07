@@ -162,7 +162,7 @@ public struct MigrationTipView: View {
                 }
 
             case .completed:
-                congratulationsCardView
+                EmptyView()
             }
         }
         .onChange(of: manager.state) { _, newState in
