@@ -266,8 +266,8 @@ public final class ZSMigrationManager: ObservableObject {
         let prompt = resolved.prompt
         let matchedEntitlement = resolved.matchedEntitlement
 
-        // ── Check 9: Subscription tenure meets minimum LTV days ──
-        if prompt.minUserLtv > 0 {
+        // ── Check 9: Subscription tenure within subscription window ──
+        if prompt.minSubscriptionDays > 0 || prompt.maxSubscriptionDays != nil {
             let tenureDays: Int
             if let originalDate = matchedEntitlement.originalPurchaseDate {
                 tenureDays = Calendar.current.dateComponents([.day], from: originalDate, to: Date()).day ?? 0
@@ -275,12 +275,18 @@ public final class ZSMigrationManager: ObservableObject {
                 // Fall back to purchasedAt (current period) if originalPurchaseDate unavailable
                 tenureDays = Calendar.current.dateComponents([.day], from: matchedEntitlement.purchasedAt, to: Date()).day ?? 0
             }
-            ZSLogger.info("[MigrationTip] Subscription tenure: \(tenureDays) days (original=\(matchedEntitlement.originalPurchaseDate?.description ?? "nil"), minLtv=\(prompt.minUserLtv))", category: .migration)
+            ZSLogger.info("[MigrationTip] Subscription tenure: \(tenureDays) days (original=\(matchedEntitlement.originalPurchaseDate?.description ?? "nil"), window=\(prompt.minSubscriptionDays)-\(prompt.maxSubscriptionDays.map(String.init) ?? "∞")d)", category: .migration)
 
-            if tenureDays < prompt.minUserLtv {
+            if tenureDays < prompt.minSubscriptionDays {
                 state = .ineligible
                 offerData = nil
-                ZSLogger.info("[MigrationTip] SKIP: subscription tenure \(tenureDays)d < minUserLtv \(prompt.minUserLtv)d", category: .migration)
+                ZSLogger.info("[MigrationTip] SKIP: subscription tenure \(tenureDays)d < minSubscriptionDays \(prompt.minSubscriptionDays)d", category: .migration)
+                return
+            }
+            if let maxDays = prompt.maxSubscriptionDays, tenureDays > maxDays {
+                state = .ineligible
+                offerData = nil
+                ZSLogger.info("[MigrationTip] SKIP: subscription tenure \(tenureDays)d > maxSubscriptionDays \(maxDays)d", category: .migration)
                 return
             }
         }

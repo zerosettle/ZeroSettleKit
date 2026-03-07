@@ -139,14 +139,15 @@ internal final class Backend: @unchecked Sendable {
                         productId: eligible.first ?? "",
                         eligibleProductIds: eligible,
                         discountPercent: discountPercent,
-                        minUserLtv: migrationResponse.minUserLtv ?? 0,
+                        minSubscriptionDays: migrationResponse.minSubscriptionDays ?? 0,
+                        maxSubscriptionDays: migrationResponse.maxSubscriptionDays,
                         freeTrialDays: migrationResponse.freeTrialDays ?? 0,
                         title: title,
                         message: message,
                         ctaText: migrationResponse.ctaText ?? "Switch Now",
                         perProductPrompts: perProductData
                     )
-                    ZSLogger.info("Migration prompt created: eligibleProductIds=\(eligible), discountPercent=\(discountPercent), minUserLtv=\(migrationResponse.minUserLtv ?? 0), title=\(title)", category: .network)
+                    ZSLogger.info("Migration prompt created: eligibleProductIds=\(eligible), discountPercent=\(discountPercent), subscriptionWindow=\(migrationResponse.minSubscriptionDays ?? 0)-\(migrationResponse.maxSubscriptionDays.map(String.init) ?? "∞")d, title=\(title)", category: .network)
                 } else {
                     migration = nil
                     ZSLogger.info("Migration prompt nil: shouldShow=\(migrationResponse.shouldShow), missing fields: discountPercent=\(migrationResponse.discountPercent == nil), title=\(migrationResponse.title == nil), message=\(migrationResponse.message == nil)", category: .network)
@@ -661,7 +662,8 @@ private struct MigrationPromptResponse: Decodable {
     let shouldShow: Bool
     let eligibleProductIds: [String]?
     let discountPercent: Int?
-    let minUserLtv: Int?
+    let minSubscriptionDays: Int?
+    let maxSubscriptionDays: Int?
     let freeTrialDays: Int?
     let title: String?
     let message: String?
