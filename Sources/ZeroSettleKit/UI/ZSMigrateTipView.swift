@@ -49,6 +49,7 @@ public struct MigrationTipView: View {
     @State private var webViewLoaded = false
     @State private var contentHeight: CGFloat = 180
     @State private var showCongratulations = false
+    @State private var checkingCancellation = false
     @State private var confettiTrigger = 0
     @State private var checkoutURL: URL?
     @State private var hasApplePay = false
@@ -155,7 +156,11 @@ public struct MigrationTipView: View {
                 offerCardView
 
             case .accepted:
-                acceptedCardView
+                if checkingCancellation {
+                    checkingCancellationView
+                } else {
+                    acceptedCardView
+                }
 
             case .completed:
                 if showCongratulations {
@@ -349,6 +354,29 @@ public struct MigrationTipView: View {
         )
     }
 
+    /// Loading spinner shown while checking if Apple subscription was cancelled.
+    private var checkingCancellationView: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+                .controlSize(.regular)
+            Text("Checking subscription status...")
+                .font(bodyFont ?? .subheadline)
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 24)
+        .background(backgroundColor)
+        .cornerRadius(16)
+        .overlay(
+            Group {
+                if let borderColor {
+                    RoundedRectangle(cornerRadius: 16)
+                        .stroke(borderColor, lineWidth: 2)
+                }
+            }
+        )
+    }
+
     /// Card shown after subscription management with confetti.
     private var congratulationsCardView: some View {
         VStack(spacing: 0) {
@@ -419,18 +447,21 @@ public struct MigrationTipView: View {
 
     @MainActor
     private func openSubscriptionManagement() async {
+        // Show the Apple manage subscription sheet
+        // showAppleSubscriptionManagement opens the sheet, then after dismiss
+        // checks StoreKit status and updates backend — we show a spinner during that
+        withAnimation(.easeInOut(duration: 0.2)) {
+            checkingCancellation = true
+        }
         await manager.showAppleSubscriptionManagement()
         onEvent?(.appleSubscriptionManagementOpened)
+        withAnimation(.easeInOut(duration: 0.2)) {
+            checkingCancellation = false
+        }
 
-        // Only show congratulations if the subscription was actually cancelled
-        // (manager transitions to .completed). If still active, manager stays
-        // in .accepted with storekitCancelRequired=true — the UI will keep
-        // showing the cancel prompt.
         guard manager.state == .completed else { return }
 
-        // Show congratulations state with confetti.
-        // The trigger increment must be deferred so the congratulationsCardView
-        // renders first and the confettiCannon observes the 0→1 change.
+        // Show congratulations with confetti
         withAnimation(.easeInOut(duration: 0.3)) {
             showCongratulations = true
         }
