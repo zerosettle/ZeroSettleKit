@@ -458,19 +458,19 @@ public struct MigrationTipView: View {
         }
         await manager.showAppleSubscriptionManagement()
         onEvent?(.appleSubscriptionManagementOpened)
-        withAnimation(.easeInOut(duration: 0.2)) {
+        guard manager.state == .completed else {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                checkingCancellation = false
+            }
+            return
+        }
+
+        // Set congratulations before clearing loading so the view transitions directly
+        showCongratulations = true
+        withAnimation(.easeInOut(duration: 0.3)) {
             checkingCancellation = false
         }
-
-        guard manager.state == .completed else { return }
-
-        // Show congratulations with confetti
-        withAnimation(.easeInOut(duration: 0.3)) {
-            showCongratulations = true
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            self.confettiTrigger += 1
-        }
+        confettiTrigger += 1
 
         onEvent?(.migrationCompleted)
 
