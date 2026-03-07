@@ -54,6 +54,13 @@ public struct MigrationTipView: View {
     @State private var checkoutURL: URL?
     @State private var hasApplePay = false
 
+    private var renewalDateString: String? {
+        guard let date = manager.offerData?.activeStoreKitExpiresAt else { return nil }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM d"
+        return formatter.string(from: date)
+    }
+
     static let collapsedHeight: CGFloat = 180
     static let applePayCollapsedHeight: CGFloat = 180
     static let applePayCardExpandedHeight: CGFloat = 820
@@ -280,7 +287,7 @@ public struct MigrationTipView: View {
                     .cornerRadius(12)
                     .padding(.horizontal, 12)
 
-                    Text("You won't be billed until the end of your current cycle. Cancel anytime.")
+                    Text("You won't be billed until the end of your current cycle\(renewalDateString.map { " (\($0))" } ?? ""). Cancel anytime.")
                         .font(.caption)
                         .foregroundColor(.white.opacity(0.7))
                         .multilineTextAlignment(.center)
