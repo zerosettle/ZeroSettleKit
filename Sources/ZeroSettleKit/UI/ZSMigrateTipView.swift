@@ -358,10 +358,11 @@ public struct MigrationTipView: View {
     private var checkingCancellationView: some View {
         VStack(spacing: 12) {
             ProgressView()
+                .tint(.white)
                 .controlSize(.regular)
             Text("Checking subscription status...")
                 .font(bodyFont ?? .subheadline)
-                .foregroundColor(.secondary)
+                .foregroundColor(.white.opacity(0.8))
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 24)
