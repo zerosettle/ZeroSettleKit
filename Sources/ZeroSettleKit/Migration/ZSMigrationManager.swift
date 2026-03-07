@@ -167,7 +167,8 @@ public final class ZSMigrationManager: ObservableObject {
             let data = MigrationOffer.OfferData(
                 prompt: prompt,
                 freeTrialDays: 7,
-                activeStoreKitProductId: "wizzGoldWeekly"
+                activeStoreKitProductId: "wizzGoldWeekly",
+                activeStoreKitExpiresAt: nil
             )
 
             state = .eligible
@@ -278,7 +279,8 @@ public final class ZSMigrationManager: ObservableObject {
         let data = MigrationOffer.OfferData(
             prompt: prompt,
             freeTrialDays: freeTrialDays,
-            activeStoreKitProductId: matchedEntitlement.productId
+            activeStoreKitProductId: matchedEntitlement.productId,
+            activeStoreKitExpiresAt: matchedEntitlement.expiresAt
         )
 
         state = .eligible
@@ -423,7 +425,8 @@ public final class ZSMigrationManager: ObservableObject {
                 productId: offerData.prompt.productId,
                 userId: userId,
                 freeTrialDays: offerData.freeTrialDays,
-                stripeCustomerId: stripeCustomerId
+                stripeCustomerId: stripeCustomerId,
+                storekitSubscriptionEnd: offerData.activeStoreKitExpiresAt
             )
 
             isLoading = false
