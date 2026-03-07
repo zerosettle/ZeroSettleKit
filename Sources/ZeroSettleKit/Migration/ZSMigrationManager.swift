@@ -243,14 +243,20 @@ public final class ZSMigrationManager: ObservableObject {
 
         if !activeWebEntitlements.isEmpty && !activeStoreKitEntitlements.isEmpty {
             // User has both active StoreKit + active web entitlements.
-            // This means they completed web checkout but may not have cancelled Apple billing yet.
-            // Check our backend transaction history to determine if Apple billing is still active.
-            ZSLogger.info("[MigrationManager] ⚠️ Both active StoreKit AND web entitlements detected — possible pending Apple cancellation", category: .migration)
-            ZSLogger.info("[MigrationManager]   Active StoreKit: \(activeStoreKitEntitlements.map { "\($0.productId)(expires=\($0.expiresAt?.description ?? "nil"))" })", category: .migration)
+            // StoreKit SDK says Apple billing is still active → show cancel prompt.
+            ZSLogger.info("[MigrationManager] ⚠️ Both active StoreKit AND web entitlements detected — Apple billing still active", category: .migration)
+            ZSLogger.info("[MigrationManager]   Active StoreKit: \(activeStoreKitEntitlements.map { "\($0.productId)(expires=\($0.expiresAt?.description ?? "nil"), origTxnId=\($0.storekitOriginalTransactionId ?? "nil"))" })", category: .migration)
             ZSLogger.info("[MigrationManager]   Active Web: \(activeWebEntitlements.map { "\($0.productId)(expires=\($0.expiresAt?.description ?? "nil"))" })", category: .migration)
-            ZSLogger.info("[MigrationManager]   Fetching transaction history from backend for userId=\(userId) to check storekitStatus...", category: .migration)
+            storekitCancelRequired = true
+            state = .accepted
+            ZSLogger.info("[MigrationManager] → .accepted — StoreKit subscription still active, showing 'Cancel Apple Billing' prompt", category: .migration)
+
+            // Update the backend transaction's storekit_status to reflect Apple is still active.
+            // Look up by external_user_id + product, then update storekit_status=1 (subscribed).
+            let skProductId = activeStoreKitEntitlements.first?.productId
             Task { [weak self] in
-                await self?.checkForPendingAppleCancellation()
+                guard let self else { return }
+                await self.syncStorekitStatusToBackend(productId: skProductId, status: 1)
             }
             return
         }
@@ -259,6 +265,13 @@ public final class ZSMigrationManager: ObservableObject {
             state = .ineligible
             offerData = nil
             ZSLogger.info("[MigrationManager] → .ineligible — active web entitlement(s) but no active StoreKit subscription (Apple billing already cancelled or never existed)", category: .migration)
+
+            // StoreKit is no longer active — update backend to reflect cancellation (status=2 expired)
+            let skProductId = storeKitEntitlements.first?.productId ?? activeWebEntitlements.first?.productId
+            Task { [weak self] in
+                guard let self else { return }
+                await self.syncStorekitStatusToBackend(productId: skProductId, status: 2)
+            }
             return
         }
 
@@ -552,19 +565,24 @@ public final class ZSMigrationManager: ObservableObject {
             return
         }
 
-        // ── Step 1: Check StoreKit locally for the real subscription status ──
-        let productId = offerData?.activeStoreKitProductId
+        // ── Step 1: Refresh StoreKit entitlements and check subscription status ──
         ZSLogger.info("[MigrationManager] ── Post-dismiss subscription check START ──", category: .migration)
+
+        // Resolve the product ID — offerData may be nil if we came from evaluateEligibility path
+        let productId = offerData?.activeStoreKitProductId
+            ?? ZeroSettle.shared.entitlements.first(where: { $0.source == .storeKit && $0.isActive })?.productId
         ZSLogger.info("[MigrationManager] Checking StoreKit subscription status for product=\(productId ?? "nil"), checkoutTransactionId=\(checkoutTransactionId ?? "nil")", category: .migration)
 
+        // Re-fetch subscription status directly from StoreKit (not cached entitlements)
         let storekitStatus = await fetchStorekitSubscriptionStatus(productId: productId)
         let statusLabel: String = {
             switch storekitStatus {
-            case 1: return "subscribed"
+            case 1: return "subscribed (will renew)"
             case 2: return "expired"
             case 3: return "billingRetry"
             case 4: return "gracePeriod"
             case 5: return "revoked"
+            case 6: return "cancelled (won't renew)"
             case .none: return "unknown/nil"
             default: return "unexpected(\(storekitStatus!))"
             }
@@ -602,9 +620,13 @@ public final class ZSMigrationManager: ObservableObject {
 
     /// Query StoreKit for the current subscription renewal state of a product.
     ///
-    /// Returns: 1=subscribed, 2=expired, 3=billingRetry, 4=gracePeriod, 5=revoked, nil=unknown
+    /// Returns: 1=subscribed (will renew), 2=expired, 3=billingRetry, 4=gracePeriod,
+    ///          5=revoked, 6=cancelled (subscribed but won't renew), nil=unknown
     private func fetchStorekitSubscriptionStatus(productId: String?) async -> Int? {
-        guard let productId else { return nil }
+        guard let productId else {
+            ZSLogger.info("[MigrationManager] fetchStorekitSubscriptionStatus — productId is nil", category: .migration)
+            return nil
+        }
 
         guard let product = try? await Product.products(for: [productId]).first,
               let subscription = product.subscription else {
@@ -618,8 +640,18 @@ public final class ZSMigrationManager: ObservableObject {
             return nil
         }
 
+        // Check willAutoRenew from RenewalInfo — a "cancelled" subscription is still
+        // .subscribed but has willAutoRenew=false
+        var willAutoRenew = true
+        if case .verified(let renewalInfo) = status.renewalInfo {
+            willAutoRenew = renewalInfo.willAutoRenew
+            ZSLogger.info("[MigrationManager] RenewalInfo: willAutoRenew=\(willAutoRenew), state=\(status.state)", category: .migration)
+        }
+
         switch status.state {
-        case .subscribed: return 1
+        case .subscribed:
+            // Subscribed but auto-renew off = user cancelled
+            return willAutoRenew ? 1 : 6
         case .expired: return 2
         case .inBillingRetryPeriod: return 3
         case .inGracePeriod: return 4
@@ -628,51 +660,35 @@ public final class ZSMigrationManager: ObservableObject {
         }
     }
 
-    /// Checks the backend for a migration transaction where Apple billing is still active.
-    /// If found, transitions to `.accepted` with `storekitCancelRequired = true`.
-    /// Otherwise, transitions to `.ineligible` (migration already complete).
-    private func checkForPendingAppleCancellation() async {
-        ZSLogger.info("[MigrationManager] ── checkForPendingAppleCancellation() START ──", category: .migration)
+    /// Syncs the StoreKit subscription status to the backend.
+    /// Fetches transaction history by userId, finds the matching web checkout transaction
+    /// for the given product, and updates its storekit_status.
+    private func syncStorekitStatusToBackend(productId: String?, status: Int) async {
+        ZSLogger.info("[MigrationManager] syncStorekitStatusToBackend — userId=\(userId), productId=\(productId ?? "nil"), status=\(status)", category: .migration)
         do {
             let backend = try makeBackend()
-            ZSLogger.info("[MigrationManager] Fetching transaction history from backend for userId=\(userId)...", category: .migration)
             let transactions = try await backend.getTransactionHistory(userId: userId)
-            ZSLogger.info("[MigrationManager] Backend returned \(transactions.count) transaction(s) for userId=\(userId)", category: .migration)
+            ZSLogger.info("[MigrationManager] Fetched \(transactions.count) transaction(s) for userId=\(userId)", category: .migration)
 
-            // Log all transactions for visibility
-            for (i, txn) in transactions.enumerated() {
-                ZSLogger.info("[MigrationManager]   Transaction[\(i)]: id=\(txn.id), productId=\(txn.productId), source=\(txn.source.rawValue), status=\(txn.status.rawValue), storekitStatus=\(txn.storekitStatus.map(String.init) ?? "nil"), purchasedAt=\(txn.purchasedAt), expiresAt=\(txn.expiresAt?.description ?? "nil")", category: .migration)
+            // Find the web checkout transaction for this product
+            let matchingTxn = transactions.first { txn in
+                txn.source == .webCheckout && txn.status == .completed && (productId == nil || txn.productId == productId)
             }
 
-            // Find a web checkout transaction where Apple billing is still active
-            let pendingCancellation = transactions.first { txn in
-                txn.source == .webCheckout && txn.status == .completed && (txn.storekitStatus == 1 || txn.storekitStatus == 4)
-            }
-
-            if let txn = pendingCancellation {
-                ZSLogger.info("[MigrationManager] ✅ Found pending Apple cancellation — transaction id=\(txn.id), productId=\(txn.productId), storekitStatus=\(txn.storekitStatus.map(String.init) ?? "nil") (1=Active, 4=GracePeriod)", category: .migration)
+            if let txn = matchingTxn {
+                ZSLogger.info("[MigrationManager] Found matching transaction: id=\(txn.id), productId=\(txn.productId), currentStorekitStatus=\(txn.storekitStatus.map(String.init) ?? "nil") → updating to \(status)", category: .migration)
+                try await backend.updateStorekitStatus(transactionId: txn.id, storekitStatus: status)
                 checkoutTransactionId = txn.id
-                storekitCancelRequired = true
-                state = .accepted
-                ZSLogger.info("[MigrationManager] → .accepted — Apple billing still active on backend, showing 'Cancel Apple Billing' prompt", category: .migration)
+                ZSLogger.info("[MigrationManager] ✅ Updated storekit_status=\(status) on transaction=\(txn.id)", category: .migration)
             } else {
-                // No transaction with active Apple billing — migration is fully complete
-                let webTxns = transactions.filter { $0.source == .webCheckout }
-                ZSLogger.info("[MigrationManager] No pending Apple cancellation found among \(webTxns.count) web checkout transaction(s)", category: .migration)
-                if !webTxns.isEmpty {
-                    ZSLogger.info("[MigrationManager]   Web transactions storekitStatuses: \(webTxns.map { "id=\($0.id) storekitStatus=\($0.storekitStatus.map(String.init) ?? "nil") status=\($0.status.rawValue)" })", category: .migration)
+                ZSLogger.info("[MigrationManager] No matching web checkout transaction found for productId=\(productId ?? "nil")", category: .migration)
+                for (i, txn) in transactions.enumerated() {
+                    ZSLogger.info("[MigrationManager]   Transaction[\(i)]: id=\(txn.id), productId=\(txn.productId), source=\(txn.source.rawValue), status=\(txn.status.rawValue), storekitStatus=\(txn.storekitStatus.map(String.init) ?? "nil")", category: .migration)
                 }
-                state = .ineligible
-                offerData = nil
-                ZSLogger.info("[MigrationManager] → .ineligible — Apple billing already cancelled or no migration transaction exists", category: .migration)
             }
         } catch {
-            ZSLogger.error("[MigrationManager] ❌ Failed to fetch transaction history from backend: \(error)", category: .migration)
-            state = .ineligible
-            offerData = nil
-            ZSLogger.info("[MigrationManager] → .ineligible — defaulting due to backend error", category: .migration)
+            ZSLogger.error("[MigrationManager] ❌ Failed to sync storekit status to backend: \(error)", category: .migration)
         }
-        ZSLogger.info("[MigrationManager] ── checkForPendingAppleCancellation() END — state=.\(state) ──", category: .migration)
     }
 
     /// Dismiss the migration offer.
