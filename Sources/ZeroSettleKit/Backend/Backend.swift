@@ -707,6 +707,10 @@ internal struct PaymentIntentResponse: Decodable {
     let isSubscription: Bool?
     /// Billing interval for subscriptions: "week", "month", "year".
     let subscriptionInterval: String?
+    /// Unix timestamp for trial end (migration free trials). When set, amount is 0 and payment is deferred.
+    let trialEnd: Int?
+    /// The amount (in cents) the customer will be charged when the trial ends.
+    let pendingAmount: Int?
 }
 
 private struct SyncStoreKitTransactionRequest: Encodable {

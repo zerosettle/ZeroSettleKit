@@ -102,9 +102,21 @@ extension NativePay {
                 currency: response.currency.uppercased()
             )
 
-            let amount = NSDecimalNumber(value: response.amount).dividing(by: 100)
+            let isTrial = response.trialEnd != nil
+            let displayAmount: NSDecimalNumber
+            let summaryItemType: PKPaymentSummaryItemType
+
+            if isTrial, let pendingAmount = response.pendingAmount, pendingAmount > 0 {
+                // Free trial: show the subscription price as pending (card saved, charged later)
+                displayAmount = NSDecimalNumber(value: pendingAmount).dividing(by: 100)
+                summaryItemType = .pending
+            } else {
+                displayAmount = NSDecimalNumber(value: response.amount).dividing(by: 100)
+                summaryItemType = .final
+            }
+
             var summaryItems = [
-                PKPaymentSummaryItem(label: response.productName, amount: amount),
+                PKPaymentSummaryItem(label: response.productName, amount: displayAmount, type: summaryItemType),
             ]
 
             // Recurring payment disclosure for subscriptions (iOS 16+)
@@ -113,7 +125,7 @@ extension NativePay {
                     let recurring = PKRecurringPaymentRequest(
                         paymentDescription: response.productName,
                         regularBilling: PKRecurringPaymentSummaryItem(
-                            label: response.productName, amount: amount
+                            label: response.productName, amount: displayAmount
                         ),
                         managementURL: URL(string: "https://zerosettle.io/manage")!
                     )
@@ -124,7 +136,7 @@ extension NativePay {
             }
 
             summaryItems.append(
-                PKPaymentSummaryItem(label: "ZeroSettle", amount: amount, type: .final)
+                PKPaymentSummaryItem(label: "ZeroSettle", amount: displayAmount, type: summaryItemType)
             )
             paymentRequest.paymentSummaryItems = summaryItems
             paymentRequest.requiredBillingContactFields = [.postalAddress]
