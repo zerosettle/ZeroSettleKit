@@ -183,7 +183,17 @@ public final class ZSMigrationManager: ObservableObject {
             return
         }
 
-        // ── Check 3: Demo mode (bypasses all real checks) ──
+        // ── Check 3: US-only ──
+        let jurisdiction = iap.detectedJurisdiction ?? .row
+        guard jurisdiction == .us else {
+            state = .ineligible
+            offerData = nil
+            ZSLogger.info("[MigrationTip] SKIP: jurisdiction=\(jurisdiction.rawValue), migration is US-only", category: .migration)
+            return
+        }
+        ZSLogger.info("[MigrationTip] Jurisdiction: \(jurisdiction.rawValue) — eligible region", category: .migration)
+
+        // ── Check 4: Demo mode (bypasses all real checks) ──
         if Self.demoMode {
             let prompt = MigrationPrompt(
                 productId: "wizzGoldWeekly",
@@ -202,7 +212,7 @@ public final class ZSMigrationManager: ObservableObject {
             return
         }
 
-        // ── Check 4: Not permanently dismissed ──
+        // ── Check 5: Not permanently dismissed ──
         guard !Self.isPermanentlyDismissed else {
             state = .dismissed
             offerData = nil
@@ -221,7 +231,7 @@ public final class ZSMigrationManager: ObservableObject {
             ZSLogger.info("[MigrationTip]   \(ent.source.rawValue): \(ent.productId) active=\(ent.isActive) status=\(ent.status.rawString) willRenew=\(ent.willRenew) expires=\(ent.expiresAt?.description ?? "nil") origTxnId=\(ent.storekitOriginalTransactionId ?? "nil") originalPurchase=\(ent.originalPurchaseDate?.description ?? "nil")", category: .migration)
         }
 
-        // ── Check 5: Has active StoreKit subscription ──
+        // ── Check 6: Has active StoreKit subscription ──
         guard !activeStoreKitEntitlements.isEmpty else {
             state = .ineligible
             offerData = nil
@@ -229,7 +239,7 @@ public final class ZSMigrationManager: ObservableObject {
             return
         }
 
-        // ── Check 6: Both StoreKit + web active ──
+        // ── Check 7: Both StoreKit + web active ──
         if !activeWebEntitlements.isEmpty && !activeStoreKitEntitlements.isEmpty {
             let appleWillRenew = activeStoreKitEntitlements.first?.willRenew ?? true
             if appleWillRenew {
@@ -246,7 +256,7 @@ public final class ZSMigrationManager: ObservableObject {
             return
         }
 
-        // ── Check 7: Web-only active → already migrated, no tip needed ──
+        // ── Check 8: Web-only active → already migrated, no tip needed ──
         guard activeWebEntitlements.isEmpty else {
             state = .ineligible
             offerData = nil
@@ -254,7 +264,7 @@ public final class ZSMigrationManager: ObservableObject {
             return
         }
 
-        // ── Check 8: Migration prompt resolved from backend or sandbox ──
+        // ── Check 9: Migration prompt resolved from backend or sandbox ──
         guard let resolved = resolveMigrationPrompt(activeStoreKitEntitlements: activeStoreKitEntitlements) else {
             state = .ineligible
             offerData = nil
@@ -266,7 +276,7 @@ public final class ZSMigrationManager: ObservableObject {
         let prompt = resolved.prompt
         let matchedEntitlement = resolved.matchedEntitlement
 
-        // ── Check 9: Target product exists in catalog ──
+        // ── Check 10: Target product exists in catalog ──
         let catalogProducts = iap.products
         guard let targetProduct = catalogProducts.first(where: { $0.id == prompt.productId }) else {
             state = .ineligible
@@ -275,7 +285,7 @@ public final class ZSMigrationManager: ObservableObject {
             return
         }
 
-        // ── Check 10: Subscription tenure from StoreKit ──
+        // ── Check 11: Subscription tenure from StoreKit ──
         let productId = matchedEntitlement.productId
         Task { [weak self] in
             guard let self else { return }
