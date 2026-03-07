@@ -150,8 +150,9 @@ public final class ZSMigrationManager: ObservableObject {
                 guard let self else { return }
                 let info = await self.fetchStorekitSubscriptionInfo(productId: syncProductId)
                 let status = info?.status ?? 1
-                ZSLogger.info("[MigrationTip] Syncing StoreKit status=\(status) willAutoRenew=\(info?.willAutoRenew ?? true) for \(syncProductId) to backend", category: .migration)
-                await self.syncStorekitStatusToBackend(productId: syncProductId, status: status)
+                let willAutoRenew = info?.willAutoRenew
+                ZSLogger.info("[MigrationTip] Syncing StoreKit status=\(status) willAutoRenew=\(willAutoRenew.map(String.init) ?? "nil") for \(syncProductId) to backend", category: .migration)
+                await self.syncStorekitStatusToBackend(productId: syncProductId, status: status, willAutoRenew: willAutoRenew)
             }
         }
 
@@ -526,11 +527,11 @@ public final class ZSMigrationManager: ObservableObject {
 
         // ── Step 2: Update the backend with the real StoreKit status ──
         if let transactionId = checkoutTransactionId, let status = storekitStatus {
-            ZSLogger.info("[MigrationManager] Updating backend storekit_status=\(status) on transaction=\(transactionId)...", category: .migration)
+            ZSLogger.info("[MigrationManager] Updating backend storekit_status=\(status) willAutoRenew=\(willAutoRenew) on transaction=\(transactionId)...", category: .migration)
             do {
                 let backend = try makeBackend()
-                try await backend.updateStorekitStatus(transactionId: transactionId, storekitStatus: status)
-                ZSLogger.info("[MigrationManager] ✅ Backend updated: storekit_status=\(status) on transaction=\(transactionId)", category: .migration)
+                try await backend.updateStorekitStatus(transactionId: transactionId, storekitStatus: status, willAutoRenew: willAutoRenew)
+                ZSLogger.info("[MigrationManager] ✅ Backend updated: storekit_status=\(status) willAutoRenew=\(willAutoRenew) on transaction=\(transactionId)", category: .migration)
             } catch {
                 ZSLogger.error("[MigrationManager] ❌ Failed to update storekit_status on backend: \(error)", category: .migration)
             }
@@ -603,8 +604,8 @@ public final class ZSMigrationManager: ObservableObject {
     /// Syncs the StoreKit subscription status to the backend.
     /// Fetches transaction history by userId, finds the matching web checkout transaction
     /// for the given product, and updates its storekit_status.
-    private func syncStorekitStatusToBackend(productId: String?, status: Int) async {
-        ZSLogger.info("[MigrationManager] syncStorekitStatusToBackend — userId=\(userId), productId=\(productId ?? "nil"), status=\(status)", category: .migration)
+    private func syncStorekitStatusToBackend(productId: String?, status: Int, willAutoRenew: Bool? = nil) async {
+        ZSLogger.info("[MigrationManager] syncStorekitStatusToBackend — userId=\(userId), productId=\(productId ?? "nil"), status=\(status), willAutoRenew=\(willAutoRenew.map(String.init) ?? "nil")", category: .migration)
         do {
             let backend = try makeBackend()
             let transactions = try await backend.getTransactionHistory(userId: userId)
@@ -616,10 +617,10 @@ public final class ZSMigrationManager: ObservableObject {
             }
 
             if let txn = matchingTxn {
-                ZSLogger.info("[MigrationManager] Found matching transaction: id=\(txn.id), productId=\(txn.productId), currentStorekitStatus=\(txn.storekitStatus.map(String.init) ?? "nil") → updating to \(status)", category: .migration)
-                try await backend.updateStorekitStatus(transactionId: txn.id, storekitStatus: status)
+                ZSLogger.info("[MigrationManager] Found matching transaction: id=\(txn.id), productId=\(txn.productId), currentStorekitStatus=\(txn.storekitStatus.map(String.init) ?? "nil") → updating to status=\(status), willAutoRenew=\(willAutoRenew.map(String.init) ?? "nil")", category: .migration)
+                try await backend.updateStorekitStatus(transactionId: txn.id, storekitStatus: status, willAutoRenew: willAutoRenew)
                 checkoutTransactionId = txn.id
-                ZSLogger.info("[MigrationManager] ✅ Updated storekit_status=\(status) on transaction=\(txn.id)", category: .migration)
+                ZSLogger.info("[MigrationManager] ✅ Updated storekit_status=\(status) willAutoRenew=\(willAutoRenew.map(String.init) ?? "nil") on transaction=\(txn.id)", category: .migration)
             } else {
                 ZSLogger.info("[MigrationManager] No matching web checkout transaction found for productId=\(productId ?? "nil")", category: .migration)
                 for (i, txn) in transactions.enumerated() {

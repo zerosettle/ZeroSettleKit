@@ -229,9 +229,9 @@ internal final class Backend: @unchecked Sendable {
     }
 
     /// Update the StoreKit subscription status on a transaction.
-    func updateStorekitStatus(transactionId: String, storekitStatus: Int) async throws {
+    func updateStorekitStatus(transactionId: String, storekitStatus: Int, willAutoRenew: Bool? = nil) async throws {
         let url = apiURL("iap/transactions/\(transactionId)/storekit-status/")
-        let body = UpdateStorekitStatusRequest(storekitStatus: storekitStatus)
+        let body = UpdateStorekitStatusRequest(storekitStatus: storekitStatus, willAutoRenew: willAutoRenew)
         var request = URLRequest(url: url)
         request.httpMethod = "PATCH"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -684,6 +684,7 @@ internal struct CreatePaymentIntentRequest: Encodable {
 
 internal struct UpdateStorekitStatusRequest: Encodable {
     let storekitStatus: Int
+    let willAutoRenew: Bool?
 }
 
 /// Response from the create_payment_intent endpoint.
