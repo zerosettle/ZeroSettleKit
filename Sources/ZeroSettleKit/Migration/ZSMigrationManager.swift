@@ -151,6 +151,13 @@ public final class ZSMigrationManager: ObservableObject {
                 let appleStatus = await self.fetchAppleSubscriptionStatus(productId: syncProductId) ?? 1
                 ZSLogger.info("[MigrationTip] Syncing Apple status=\(appleStatus == 1 ? "active" : "cancelled") for \(syncProductId) to backend", category: .migration)
                 await self.syncStorekitStatusToBackend(productId: syncProductId, status: appleStatus)
+
+                // If Apple is cancelled and we're in .accepted, transition to .completed
+                if appleStatus == 2 && self.state == .accepted {
+                    self.storekitCancelRequired = false
+                    self.state = .completed
+                    ZSLogger.info("[MigrationTip] COMPLETED: Apple cancelled — .accepted → .completed", category: .migration)
+                }
             }
         }
 
