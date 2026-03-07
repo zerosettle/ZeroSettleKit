@@ -216,11 +216,20 @@ public final class ZSMigrationManager: ObservableObject {
             return
         }
 
-        // ── Check 6: Both StoreKit + web active → need to cancel Apple ──
+        // ── Check 6: Both StoreKit + web active ──
         if !activeWebEntitlements.isEmpty && !activeStoreKitEntitlements.isEmpty {
-            storekitCancelRequired = true
-            state = .accepted
-            ZSLogger.info("[MigrationTip] CANCEL_REQUIRED: both StoreKit and web entitlements active — prompting Apple cancellation", category: .migration)
+            let appleWillRenew = activeStoreKitEntitlements.first?.willRenew ?? true
+            if appleWillRenew {
+                // Apple still renewing → prompt user to cancel
+                storekitCancelRequired = true
+                state = .accepted
+                ZSLogger.info("[MigrationTip] CANCEL_REQUIRED: Apple subscription still renewing — prompting cancellation", category: .migration)
+            } else {
+                // Apple already cancelled → migration complete
+                storekitCancelRequired = false
+                state = .completed
+                ZSLogger.info("[MigrationTip] COMPLETED: Apple subscription already cancelled (willRenew=false)", category: .migration)
+            }
             return
         }
 
