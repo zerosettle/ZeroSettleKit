@@ -130,39 +130,34 @@ public final class ZSMigrationManager: ObservableObject {
 
     // MARK: - Eligibility
 
-    /// Re-evaluates eligibility. Only runs when state is `.ineligible` or `.eligible`
-    /// (mid-flow states are locked to prevent disruption).
+    /// Re-evaluates eligibility as a sequential checklist.
+    /// Each check either returns early (not eligible) or falls through to the next.
+    /// Mid-flow states (.presented, .accepted, .completed, .dismissed) are locked.
     private func evaluateEligibility() {
         // Demo mode: force out of dismissed state so re-evaluation can proceed
         if Self.demoMode && state == .dismissed {
-            ZSLogger.info("[MigrationManager] Demo mode — resetting dismissed state", category: .migration)
             state = .loading
         }
 
         let previousState = state
+        let iap = ZeroSettle.shared
 
-        // Don't re-evaluate during active flow
+        // ── Check 1: Mid-flow lock ──
         guard state == .loading || state == .ineligible || state == .eligible else {
-            ZSLogger.debug("[MigrationManager] evaluateEligibility() skipped — state is .\(state) (mid-flow locked)", category: .migration)
+            ZSLogger.info("[MigrationTip] SKIP: mid-flow locked (state=.\(state))", category: .migration)
             return
         }
 
-        let iap = ZeroSettle.shared
-
-        ZSLogger.info("[MigrationManager] evaluateEligibility() running — currentState=.\(state), isBootstrapped=\(iap.isBootstrapped), isConfigured=\(iap.isConfigured), isPermanentlyDismissed=\(Self.isPermanentlyDismissed), isSandbox=\(iap.isSandbox), demoMode=\(Self.demoMode)", category: .migration)
-
-        // Must be bootstrapped — stay in .loading until bootstrap completes
+        // ── Check 2: SDK bootstrapped ──
         guard iap.isBootstrapped else {
             state = .loading
             offerData = nil
-            ZSLogger.info("[MigrationManager] → .loading — waiting for bootstrap", category: .migration)
+            ZSLogger.info("[MigrationTip] SKIP: SDK not bootstrapped yet", category: .migration)
             return
         }
 
-        // Demo mode: skip dismissal check, entitlement checks, and synthesize a demo offer
+        // ── Check 3: Demo mode (bypasses all real checks) ──
         if Self.demoMode {
-            ZSLogger.info("[MigrationManager] 🎭 Demo mode active — skipping dismissal and entitlement checks", category: .migration)
-
             let prompt = MigrationPrompt(
                 productId: "wizzGoldWeekly",
                 discountPercent: 15,
@@ -170,160 +165,108 @@ public final class ZSMigrationManager: ObservableObject {
                 message: "Switch to direct billing and get 15% off forever. Same features, fewer platform fees, and we pass the savings onto you.",
                 ctaText: "Save 15% Forever"
             )
-
-            let data = MigrationOffer.OfferData(
-                prompt: prompt,
-                freeTrialDays: 7,
-                activeStoreKitProductId: "wizzGoldWeekly",
-                activeStoreKitExpiresAt: nil,
-                activeStoreKitOriginalTransactionId: nil
-            )
-
             state = .eligible
-            offerData = data
-            ZSLogger.info("[MigrationManager] .\(previousState) → .eligible — demo mode (productId=wizzGoldWeekly, discount=15%, freeTrialDays=7)", category: .migration)
+            offerData = MigrationOffer.OfferData(
+                prompt: prompt, freeTrialDays: 7,
+                activeStoreKitProductId: "wizzGoldWeekly",
+                activeStoreKitExpiresAt: nil, activeStoreKitOriginalTransactionId: nil
+            )
+            ZSLogger.info("[MigrationTip] SHOW: demo mode", category: .migration)
             return
         }
 
-        // Must not be permanently dismissed
+        // ── Check 4: Not permanently dismissed ──
         guard !Self.isPermanentlyDismissed else {
-            let changed = state != .dismissed
             state = .dismissed
             offerData = nil
-            ZSLogger.info("[MigrationManager] → .dismissed — permanently dismissed via UserDefaults\(changed ? "" : " (already dismissed)")", category: .migration)
+            ZSLogger.info("[MigrationTip] SKIP: permanently dismissed", category: .migration)
             return
         }
 
-        // ── Full entitlement snapshot ──
-        let entitlementSummary = iap.entitlements.map {
-            "[\($0.productId) source=\($0.source.rawValue) active=\($0.isActive) status=\($0.status.rawString) willRenew=\($0.willRenew) isTrial=\($0.isTrial) origTxnId=\($0.storekitOriginalTransactionId ?? "nil") expires=\($0.expiresAt?.description ?? "nil") cancelledAt=\($0.cancelledAt?.description ?? "nil") purchasedAt=\($0.purchasedAt.description)]"
-        }.joined(separator: "\n  ")
-        ZSLogger.info("[MigrationManager] Entitlements (\(iap.entitlements.count)):\n  \(entitlementSummary.isEmpty ? "(none)" : entitlementSummary)", category: .migration)
-
-        // ── Separate entitlements by source for clarity ──
+        // ── Gather entitlements ──
         let storeKitEntitlements = iap.entitlements.filter { $0.source == .storeKit }
         let activeStoreKitEntitlements = storeKitEntitlements.filter { $0.isActive }
-        let inactiveStoreKitEntitlements = storeKitEntitlements.filter { !$0.isActive }
-        ZSLogger.info("[MigrationManager] StoreKit entitlements: \(storeKitEntitlements.count) total, \(activeStoreKitEntitlements.count) active, \(inactiveStoreKitEntitlements.count) inactive", category: .migration)
-        for ent in storeKitEntitlements {
-            ZSLogger.info("[MigrationManager]   StoreKit entitlement: productId=\(ent.productId), active=\(ent.isActive), status=\(ent.status.rawString), willRenew=\(ent.willRenew), isTrial=\(ent.isTrial), expires=\(ent.expiresAt?.description ?? "nil"), cancelledAt=\(ent.cancelledAt?.description ?? "nil")", category: .migration)
+        let webEntitlements = iap.entitlements.filter { $0.source == .webCheckout }
+        let activeWebEntitlements = webEntitlements.filter { $0.isActive }
+
+        ZSLogger.info("[MigrationTip] Entitlements: storeKit=\(storeKitEntitlements.count) (active=\(activeStoreKitEntitlements.count)), web=\(webEntitlements.count) (active=\(activeWebEntitlements.count))", category: .migration)
+        for ent in iap.entitlements {
+            ZSLogger.info("[MigrationTip]   \(ent.source.rawValue): \(ent.productId) active=\(ent.isActive) status=\(ent.status.rawString) willRenew=\(ent.willRenew) expires=\(ent.expiresAt?.description ?? "nil") origTxnId=\(ent.storekitOriginalTransactionId ?? "nil")", category: .migration)
         }
 
-        // Must have at least one active StoreKit subscription
+        // ── Check 5: Has active StoreKit subscription ──
         guard !activeStoreKitEntitlements.isEmpty else {
             state = .ineligible
             offerData = nil
-            if storeKitEntitlements.isEmpty {
-                ZSLogger.info("[MigrationManager] → .ineligible — no StoreKit entitlements at all (user has never subscribed via App Store)", category: .migration)
-            } else {
-                ZSLogger.info("[MigrationManager] → .ineligible — found \(storeKitEntitlements.count) StoreKit entitlement(s) but none are active: \(inactiveStoreKitEntitlements.map { "\($0.productId)(status=\($0.status.rawString))" })", category: .migration)
-            }
+            ZSLogger.info("[MigrationTip] SKIP: no active StoreKit subscription", category: .migration)
             return
         }
-        ZSLogger.info("[MigrationManager] ✅ Active StoreKit subscription(s) found: \(activeStoreKitEntitlements.map { "\($0.productId)(status=\($0.status.rawString), willRenew=\($0.willRenew))" })", category: .migration)
 
-        // ── Log the product catalog mapping for active subscriptions ──
-        let catalogProducts = iap.products
-        ZSLogger.info("[MigrationManager] Product catalog has \(catalogProducts.count) product(s)", category: .migration)
-        for activeEnt in activeStoreKitEntitlements {
-            if let matchingProduct = catalogProducts.first(where: { $0.id == activeEnt.productId }) {
-                ZSLogger.info("[MigrationManager] Catalog match for active subscription '\(activeEnt.productId)': displayName=\"\(matchingProduct.displayName)\", type=\(matchingProduct.type.rawValue), webPrice=\(matchingProduct.webPrice.map { "\($0.formatted) (\($0.amountCents)¢ \($0.currencyCode))" } ?? "nil"), appStorePrice=\(matchingProduct.appStorePrice.map { "\($0.formatted) (\($0.amountCents)¢ \($0.currencyCode))" } ?? "nil"), storeKitAvailable=\(matchingProduct.storeKitAvailable), storeKitPrice=\(matchingProduct.storeKitPrice.map { "\($0.formatted) (\($0.amountCents)¢ \($0.currencyCode))" } ?? "nil"), syncedToAsc=\(matchingProduct.syncedToAppStoreConnect), savingsPercent=\(matchingProduct.savingsPercent.map(String.init) ?? "nil"), subscriptionGroupId=\(matchingProduct.subscriptionGroupId.map(String.init) ?? "nil")", category: .migration)
-            } else {
-                ZSLogger.info("[MigrationManager] ⚠️ No catalog product found for active StoreKit subscription '\(activeEnt.productId)' — available product IDs: \(catalogProducts.map { $0.id })", category: .migration)
-            }
-        }
-
-        // ── Web entitlement check ──
-        let webEntitlements = iap.entitlements.filter { $0.source == .webCheckout }
-        let activeWebEntitlements = webEntitlements.filter { $0.isActive }
-        ZSLogger.info("[MigrationManager] Web entitlements: \(webEntitlements.count) total, \(activeWebEntitlements.count) active", category: .migration)
-        for ent in webEntitlements {
-            ZSLogger.info("[MigrationManager]   Web entitlement: productId=\(ent.productId), active=\(ent.isActive), status=\(ent.status.rawString), expires=\(ent.expiresAt?.description ?? "nil")", category: .migration)
-        }
-
-        if !activeWebEntitlements.isEmpty && !activeStoreKitEntitlements.isEmpty {
-            // User has both active StoreKit + active web entitlements.
-            // StoreKit SDK says Apple billing is still active → show cancel prompt.
-            ZSLogger.info("[MigrationManager] ⚠️ Both active StoreKit AND web entitlements detected — Apple billing still active", category: .migration)
-            ZSLogger.info("[MigrationManager]   Active StoreKit: \(activeStoreKitEntitlements.map { "\($0.productId)(expires=\($0.expiresAt?.description ?? "nil"), origTxnId=\($0.storekitOriginalTransactionId ?? "nil"))" })", category: .migration)
-            ZSLogger.info("[MigrationManager]   Active Web: \(activeWebEntitlements.map { "\($0.productId)(expires=\($0.expiresAt?.description ?? "nil"))" })", category: .migration)
-            storekitCancelRequired = true
-            state = .accepted
-            ZSLogger.info("[MigrationManager] → .accepted — StoreKit subscription still active, showing 'Cancel Apple Billing' prompt", category: .migration)
-
-            // Update the backend transaction's storekit_status to reflect Apple is still active.
-            // Look up by external_user_id + product, then update storekit_status=1 (subscribed).
-            let skProductId = activeStoreKitEntitlements.first?.productId
+        // ── Sync Apple subscription status to backend (every evaluation) ──
+        if let skProductId = activeStoreKitEntitlements.first?.productId {
             Task { [weak self] in
                 guard let self else { return }
-                await self.syncStorekitStatusToBackend(productId: skProductId, status: 1)
+                if let status = await self.fetchStorekitSubscriptionStatus(productId: skProductId) {
+                    ZSLogger.info("[MigrationTip] Syncing StoreKit status=\(status) for \(skProductId) to backend", category: .migration)
+                    await self.syncStorekitStatusToBackend(productId: skProductId, status: status)
+                }
             }
+        }
+
+        // ── Check 6: Both StoreKit + web active → need to cancel Apple ──
+        if !activeWebEntitlements.isEmpty && !activeStoreKitEntitlements.isEmpty {
+            storekitCancelRequired = true
+            state = .accepted
+            ZSLogger.info("[MigrationTip] CANCEL_REQUIRED: both StoreKit and web entitlements active — prompting Apple cancellation", category: .migration)
             return
         }
 
+        // ── Check 7: Web-only active → already migrated, no tip needed ──
         guard activeWebEntitlements.isEmpty else {
             state = .ineligible
             offerData = nil
-            ZSLogger.info("[MigrationManager] → .ineligible — active web entitlement(s) but no active StoreKit subscription (Apple billing already cancelled or never existed)", category: .migration)
-
-            // StoreKit is no longer active — update backend to reflect cancellation (status=2 expired)
-            let skProductId = storeKitEntitlements.first?.productId ?? activeWebEntitlements.first?.productId
-            Task { [weak self] in
-                guard let self else { return }
-                await self.syncStorekitStatusToBackend(productId: skProductId, status: 2)
-            }
+            ZSLogger.info("[MigrationTip] SKIP: active web entitlement exists, no active StoreKit (already migrated)", category: .migration)
             return
         }
 
-        // ── Resolve migration prompt ──
-        let backendMigration = iap.remoteConfig?.migration
-        ZSLogger.info("[MigrationManager] remoteConfig.migration=\(backendMigration != nil ? "present(productId=\(backendMigration!.productId), eligibleProductIds=\(backendMigration!.eligibleProductIds), discount=\(backendMigration!.discountPercent)%, title=\"\(backendMigration!.title)\", message=\"\(backendMigration!.message)\", ctaText=\"\(backendMigration!.ctaText)\")" : "nil"), isSandbox=\(iap.isSandbox)", category: .migration)
-
-        guard let resolved = resolveMigrationPrompt(
-            activeStoreKitEntitlements: activeStoreKitEntitlements
-        ) else {
+        // ── Check 8: Migration prompt resolved from backend or sandbox ──
+        guard let resolved = resolveMigrationPrompt(activeStoreKitEntitlements: activeStoreKitEntitlements) else {
             state = .ineligible
             offerData = nil
-            ZSLogger.info("[MigrationManager] → .ineligible — no migration prompt resolved (backend migration=\(backendMigration != nil ? "present, eligible=\(backendMigration!.eligibleProductIds)" : "nil"), activeProducts=\(activeStoreKitEntitlements.map { $0.productId }), isSandbox=\(iap.isSandbox))", category: .migration)
+            let migration = iap.remoteConfig?.migration
+            ZSLogger.info("[MigrationTip] SKIP: no migration prompt (config=\(migration != nil ? "present" : "nil"), eligible=\(migration?.eligibleProductIds ?? []), active=\(activeStoreKitEntitlements.map { $0.productId }), sandbox=\(iap.isSandbox))", category: .migration)
             return
         }
 
         let prompt = resolved.prompt
         let matchedEntitlement = resolved.matchedEntitlement
 
-        // ── Log the Stripe product mapping for the migration target product ──
-        ZSLogger.info("[MigrationManager] Migration prompt resolved — matched StoreKit product '\(matchedEntitlement.productId)' from eligible list \(prompt.eligibleProductIds), discount=\(prompt.discountPercent)%, title=\"\(prompt.title)\", ctaText=\"\(prompt.ctaText)\"", category: .migration)
-        if let targetProduct = catalogProducts.first(where: { $0.id == prompt.productId }) {
-            ZSLogger.info("[MigrationManager] Stripe product mapping for migration target '\(prompt.productId)': displayName=\"\(targetProduct.displayName)\", type=\(targetProduct.type.rawValue), webPrice=\(targetProduct.webPrice.map { "\($0.formatted) (\($0.amountCents)¢ \($0.currencyCode))" } ?? "nil"), appStorePrice=\(targetProduct.appStorePrice.map { "\($0.formatted) (\($0.amountCents)¢ \($0.currencyCode))" } ?? "nil"), storeKitAvailable=\(targetProduct.storeKitAvailable), syncedToAsc=\(targetProduct.syncedToAppStoreConnect), subscriptionGroupId=\(targetProduct.subscriptionGroupId.map(String.init) ?? "nil")", category: .migration)
-            if let webPrice = targetProduct.webPrice, let skPrice = targetProduct.storeKitPrice {
-                let priceDiff = skPrice.amountCents - webPrice.amountCents
-                ZSLogger.info("[MigrationManager] Price comparison: StoreKit=\(skPrice.formatted) vs Web=\(webPrice.formatted), savings=\(priceDiff)¢ (\(targetProduct.savingsPercent.map { "\($0)%" } ?? "N/A"))", category: .migration)
-            }
-        } else {
-            ZSLogger.info("[MigrationManager] ⚠️ Migration target product '\(prompt.productId)' not found in catalog — available product IDs: \(catalogProducts.map { $0.id })", category: .migration)
+        // ── Check 9: Target product exists in catalog ──
+        let catalogProducts = iap.products
+        guard let targetProduct = catalogProducts.first(where: { $0.id == prompt.productId }) else {
             state = .ineligible
             offerData = nil
+            ZSLogger.info("[MigrationTip] SKIP: migration target '\(prompt.productId)' not in catalog (available: \(catalogProducts.map { $0.id }))", category: .migration)
             return
         }
 
-        // Use backend-provided free trial days (approximate remaining StoreKit period).
-        // The precise trial_end is resolved server-side at checkout time via Apple's API.
-        let freeTrialDays = prompt.freeTrialDays
-        ZSLogger.info("Using freeTrialDays=\(freeTrialDays) from migration config", category: .migration)
-
+        // ── All checks passed → eligible ──
         let data = MigrationOffer.OfferData(
             prompt: prompt,
-            freeTrialDays: freeTrialDays,
+            freeTrialDays: prompt.freeTrialDays,
             activeStoreKitProductId: matchedEntitlement.productId,
             activeStoreKitExpiresAt: matchedEntitlement.expiresAt,
             activeStoreKitOriginalTransactionId: matchedEntitlement.storekitOriginalTransactionId
         )
-
         state = .eligible
         offerData = data
 
-        let promptSource = iap.remoteConfig?.migration != nil ? "backend" : "sandbox"
-        ZSLogger.info("[MigrationManager] .\(previousState) → .eligible — matchedStoreKitProductId=\(matchedEntitlement.productId), migrationTargetProductId=\(prompt.productId), eligibleProductIds=\(prompt.eligibleProductIds), discount=\(prompt.discountPercent)%, freeTrialDays=\(freeTrialDays), promptSource=\(promptSource), title=\"\(prompt.title)\"", category: .migration)
+        let source = iap.remoteConfig?.migration != nil ? "backend" : "sandbox"
+        if let webPrice = targetProduct.webPrice, let skPrice = targetProduct.storeKitPrice {
+            ZSLogger.info("[MigrationTip] SHOW: \(matchedEntitlement.productId) → \(prompt.productId), discount=\(prompt.discountPercent)%, freeTrialDays=\(prompt.freeTrialDays), price: \(skPrice.formatted) → \(webPrice.formatted), source=\(source)", category: .migration)
+        } else {
+            ZSLogger.info("[MigrationTip] SHOW: \(matchedEntitlement.productId) → \(prompt.productId), discount=\(prompt.discountPercent)%, freeTrialDays=\(prompt.freeTrialDays), source=\(source)", category: .migration)
+        }
     }
 
     /// Resolves the migration prompt from backend config or synthesizes one in sandbox mode.
