@@ -74,7 +74,7 @@ internal final class Backend: @unchecked Sendable {
         if let configResponse = response.config {
             // Log raw migration response for debugging
             if let migrationRaw = configResponse.migration {
-                ZSLogger.info("Raw migration response from server: shouldShow=\(migrationRaw.shouldShow), eligibleProductIds=\(migrationRaw.eligibleProductIds as Any), discountPercent=\(migrationRaw.discountPercent as Any), title=\(migrationRaw.title as Any), message=\(migrationRaw.message as Any)", category: .network)
+                ZSLogger.info("Raw migration response from server: shouldShow=\(migrationRaw.shouldShow), eligibleProductIds=\(migrationRaw.eligibleProductIds as Any), discountPercent=\(migrationRaw.discountPercent as Any), rolloutPercent=\(migrationRaw.rolloutPercent as Any), title=\(migrationRaw.title as Any), message=\(migrationRaw.message as Any)", category: .network)
             } else {
                 ZSLogger.info("Server returned nil migration config", category: .network)
             }
@@ -148,7 +148,7 @@ internal final class Backend: @unchecked Sendable {
                         rolloutPercent: migrationResponse.rolloutPercent,
                         perProductPrompts: perProductData
                     )
-                    ZSLogger.info("Migration prompt created: eligibleProductIds=\(eligible), discountPercent=\(discountPercent), subscriptionWindow=\(migrationResponse.minSubscriptionDays ?? 0)-\(migrationResponse.maxSubscriptionDays.map(String.init) ?? "∞")d, title=\(title)", category: .network)
+                    ZSLogger.info("Migration prompt created: eligibleProductIds=\(eligible), discountPercent=\(discountPercent), rolloutPercent=\(migrationResponse.rolloutPercent as Any), subscriptionWindow=\(migrationResponse.minSubscriptionDays ?? 0)-\(migrationResponse.maxSubscriptionDays.map(String.init) ?? "∞")d, title=\(title)", category: .network)
                 } else {
                     migration = nil
                     ZSLogger.info("Migration prompt nil: shouldShow=\(migrationResponse.shouldShow), missing fields: discountPercent=\(migrationResponse.discountPercent == nil), title=\(migrationResponse.title == nil), message=\(migrationResponse.message == nil)", category: .network)

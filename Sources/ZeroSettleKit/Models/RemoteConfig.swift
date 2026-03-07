@@ -144,6 +144,11 @@ public struct MigrationPrompt: Codable, Sendable, Equatable {
     /// The CTA button text to display in the migration prompt
     public let ctaText: String
 
+    /// Rollout percentage (0-100). When less than 100, only a deterministic subset
+    /// of users (based on hashed userId) will see the migration prompt.
+    /// Defaults to 100 (all users) when not provided by the backend.
+    public let rolloutPercent: Int?
+
     /// Per-product prompt data keyed by product ID.
     /// When present, provides product-specific discount and text overrides.
     public let perProductPrompts: [String: PerProductData]?
@@ -163,7 +168,7 @@ public struct MigrationPrompt: Codable, Sendable, Equatable {
         }
     }
 
-    public init(productId: String, eligibleProductIds: [String] = [], discountPercent: Int, minSubscriptionDays: Int = 0, maxSubscriptionDays: Int? = nil, freeTrialDays: Int = 0, title: String, message: String, ctaText: String, perProductPrompts: [String: PerProductData]? = nil) {
+    public init(productId: String, eligibleProductIds: [String] = [], discountPercent: Int, minSubscriptionDays: Int = 0, maxSubscriptionDays: Int? = nil, freeTrialDays: Int = 0, title: String, message: String, ctaText: String, rolloutPercent: Int? = nil, perProductPrompts: [String: PerProductData]? = nil) {
         self.productId = productId
         self.eligibleProductIds = eligibleProductIds
         self.discountPercent = discountPercent
@@ -173,6 +178,7 @@ public struct MigrationPrompt: Codable, Sendable, Equatable {
         self.title = title
         self.message = message
         self.ctaText = ctaText
+        self.rolloutPercent = rolloutPercent
         self.perProductPrompts = perProductPrompts
     }
 
@@ -187,6 +193,7 @@ public struct MigrationPrompt: Codable, Sendable, Equatable {
         title = try container.decode(String.self, forKey: .title)
         message = try container.decode(String.self, forKey: .message)
         ctaText = try container.decodeIfPresent(String.self, forKey: .ctaText) ?? "Switch Now"
+        rolloutPercent = try container.decodeIfPresent(Int.self, forKey: .rolloutPercent)
         perProductPrompts = try container.decodeIfPresent([String: PerProductData].self, forKey: .perProductPrompts)
     }
 }

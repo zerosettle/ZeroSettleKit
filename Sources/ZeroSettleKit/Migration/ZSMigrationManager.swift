@@ -11,6 +11,7 @@
 import Foundation
 import SwiftUI
 import StoreKit
+import CryptoKit
 
 #if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
@@ -276,6 +277,22 @@ public final class ZSMigrationManager: ObservableObject {
         let prompt = resolved.prompt
         let matchedEntitlement = resolved.matchedEntitlement
 
+        // ── Check 9.5: Rollout ──
+        let rolloutPercent = prompt.rolloutPercent ?? 0
+        ZSLogger.info("[MigrationTip] rolloutPercent from prompt: raw=\(prompt.rolloutPercent as Any), resolved=\(rolloutPercent)", category: .migration)
+        let digest = SHA256.hash(data: Data(userId.utf8))
+        var bucket = 0
+        for byte in digest {
+            bucket = (bucket &* 256 &+ Int(byte)) % 100
+        }
+        guard bucket < rolloutPercent else {
+            state = .ineligible
+            offerData = nil
+            ZSLogger.info("[MigrationTip] SKIP: outside rollout (bucket=\(bucket), rollout=\(rolloutPercent)%)", category: .migration)
+            return
+        }
+        ZSLogger.info("[MigrationTip] Rollout check passed (bucket=\(bucket), rollout=\(rolloutPercent)%)", category: .migration)
+
         // ── Check 10: Target product exists in catalog ──
         let catalogProducts = iap.products
         guard let targetProduct = catalogProducts.first(where: { $0.id == prompt.productId }) else {
@@ -361,6 +378,7 @@ public final class ZSMigrationManager: ObservableObject {
                     title: perProduct.title,
                     message: perProduct.message,
                     ctaText: perProduct.ctaText,
+                    rolloutPercent: backendPrompt.rolloutPercent,
                     perProductPrompts: backendPrompt.perProductPrompts
                 )
             } else {
@@ -374,6 +392,7 @@ public final class ZSMigrationManager: ObservableObject {
                     title: backendPrompt.title,
                     message: backendPrompt.message,
                     ctaText: backendPrompt.ctaText,
+                    rolloutPercent: backendPrompt.rolloutPercent,
                     perProductPrompts: backendPrompt.perProductPrompts
                 )
             }
