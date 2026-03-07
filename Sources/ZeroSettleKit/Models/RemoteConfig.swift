@@ -124,6 +124,9 @@ public struct MigrationPrompt: Codable, Sendable, Equatable {
     /// The discount percentage offered (e.g., 20 for 20% off)
     public let discountPercent: Int
 
+    /// Minimum user lifetime value (USD) to show the prompt. 0 = no minimum.
+    public let minUserLtv: Int
+
     /// Approximate number of free trial days for the migration checkout.
     /// Provided by the backend based on the remaining StoreKit subscription period.
     /// Defaults to 0 if the backend doesn't provide this field.
@@ -157,15 +160,29 @@ public struct MigrationPrompt: Codable, Sendable, Equatable {
         }
     }
 
-    public init(productId: String, eligibleProductIds: [String] = [], discountPercent: Int, freeTrialDays: Int = 0, title: String, message: String, ctaText: String, perProductPrompts: [String: PerProductData]? = nil) {
+    public init(productId: String, eligibleProductIds: [String] = [], discountPercent: Int, minUserLtv: Int = 0, freeTrialDays: Int = 0, title: String, message: String, ctaText: String, perProductPrompts: [String: PerProductData]? = nil) {
         self.productId = productId
         self.eligibleProductIds = eligibleProductIds
         self.discountPercent = discountPercent
+        self.minUserLtv = minUserLtv
         self.freeTrialDays = freeTrialDays
         self.title = title
         self.message = message
         self.ctaText = ctaText
         self.perProductPrompts = perProductPrompts
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        productId = try container.decode(String.self, forKey: .productId)
+        eligibleProductIds = try container.decodeIfPresent([String].self, forKey: .eligibleProductIds) ?? []
+        discountPercent = try container.decode(Int.self, forKey: .discountPercent)
+        minUserLtv = try container.decodeIfPresent(Int.self, forKey: .minUserLtv) ?? 0
+        freeTrialDays = try container.decodeIfPresent(Int.self, forKey: .freeTrialDays) ?? 0
+        title = try container.decode(String.self, forKey: .title)
+        message = try container.decode(String.self, forKey: .message)
+        ctaText = try container.decodeIfPresent(String.self, forKey: .ctaText) ?? "Switch Now"
+        perProductPrompts = try container.decodeIfPresent([String: PerProductData].self, forKey: .perProductPrompts)
     }
 }
 
