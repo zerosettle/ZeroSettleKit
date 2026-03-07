@@ -431,7 +431,7 @@ public final class ZSMigrationManager: ObservableObject {
 
             isLoading = false
             let url = URL(string: paymentIntent.checkoutUrl)
-            ZSLogger.info("[MigrationManager] Payment intent created — checkoutUrl=\(paymentIntent.checkoutUrl)", category: .migration)
+            ZSLogger.info("[MigrationManager] Migration checkout created — transactionId=\(paymentIntent.transactionId), checkoutUrl=\(paymentIntent.checkoutUrl), storekitSubscriptionEnd=\(offerData.activeStoreKitExpiresAt?.description ?? "nil")", category: .migration)
             return url
         } catch {
             checkoutError = error
