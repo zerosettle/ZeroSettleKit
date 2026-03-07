@@ -148,9 +148,11 @@ public final class ZSMigrationManager: ObservableObject {
         if let syncProductId {
             Task { [weak self] in
                 guard let self else { return }
-                let appleStatus = await self.fetchAppleSubscriptionStatus(productId: syncProductId) ?? 1
+                let result = await self.fetchAppleSubscriptionStatus(productId: syncProductId)
+                let appleStatus = result?.status ?? 1
+                let expirationDate = result?.expirationDate
                 ZSLogger.info("[MigrationTip] Syncing Apple status=\(appleStatus == 1 ? "active" : "cancelled") for \(syncProductId) to backend", category: .migration)
-                await self.syncStorekitStatusToBackend(productId: syncProductId, status: appleStatus)
+                await self.syncStorekitStatusToBackend(productId: syncProductId, status: appleStatus, expirationDate: expirationDate)
 
                 // If Apple is cancelled and we're in .accepted, transition to .completed
                 if appleStatus == 2 && self.state == .accepted {
@@ -534,15 +536,17 @@ public final class ZSMigrationManager: ObservableObject {
         ZSLogger.info("[MigrationManager] Checking StoreKit subscription status for product=\(productId ?? "nil"), checkoutTransactionId=\(checkoutTransactionId ?? "nil")", category: .migration)
 
         // Re-fetch Apple subscription status directly from StoreKit
-        let appleStatus = await fetchAppleSubscriptionStatus(productId: productId) ?? 1
-        ZSLogger.info("[MigrationManager] Apple status=\(appleStatus == 1 ? "active" : "cancelled")", category: .migration)
+        let result = await fetchAppleSubscriptionStatus(productId: productId)
+        let appleStatus = result?.status ?? 1
+        let expirationDate = result?.expirationDate
+        ZSLogger.info("[MigrationManager] Apple status=\(appleStatus == 1 ? "active" : "cancelled"), expirationDate=\(expirationDate?.description ?? "nil")", category: .migration)
 
         // ── Step 2: Update the backend ──
         if let transactionId = checkoutTransactionId {
             ZSLogger.info("[MigrationManager] Updating backend storekit_status=\(appleStatus) on transaction=\(transactionId)...", category: .migration)
             do {
                 let backend = try makeBackend()
-                try await backend.updateStorekitStatus(transactionId: transactionId, storekitStatus: appleStatus)
+                try await backend.updateStorekitStatus(transactionId: transactionId, storekitStatus: appleStatus, storekitSubscriptionEnd: expirationDate)
                 ZSLogger.info("[MigrationManager] ✅ Backend updated: storekit_status=\(appleStatus == 1 ? "active" : "cancelled") on transaction=\(transactionId)", category: .migration)
             } catch {
                 ZSLogger.error("[MigrationManager] ❌ Failed to update storekit_status on backend: \(error)", category: .migration)
@@ -564,9 +568,9 @@ public final class ZSMigrationManager: ObservableObject {
     }
 
     /// Query StoreKit for the Apple subscription status.
-    /// Returns 1 (active) or 2 (cancelled), or nil if unknown.
+    /// Returns a tuple of (status, expirationDate) where status is 1 (active) or 2 (cancelled), or nil if unknown.
     /// Active = subscribed + willAutoRenew. Everything else = cancelled.
-    private func fetchAppleSubscriptionStatus(productId: String?) async -> Int? {
+    private func fetchAppleSubscriptionStatus(productId: String?) async -> (status: Int, expirationDate: Date?)? {
         guard let productId else {
             ZSLogger.info("[MigrationManager] fetchAppleSubscriptionStatus — productId is nil", category: .migration)
             return nil
@@ -589,16 +593,21 @@ public final class ZSMigrationManager: ObservableObject {
             willAutoRenew = renewalInfo.willAutoRenew
         }
 
+        var expirationDate: Date? = nil
+        if case .verified(let transaction) = status.transaction {
+            expirationDate = transaction.expirationDate
+        }
+
         let isActive = status.state == .subscribed && willAutoRenew
-        ZSLogger.info("[MigrationManager] Apple subscription: state=\(status.state), willAutoRenew=\(willAutoRenew) → \(isActive ? "active" : "cancelled")", category: .migration)
-        return isActive ? 1 : 2
+        ZSLogger.info("[MigrationManager] Apple subscription: state=\(status.state), willAutoRenew=\(willAutoRenew), expirationDate=\(expirationDate?.description ?? "nil") → \(isActive ? "active" : "cancelled")", category: .migration)
+        return (isActive ? 1 : 2, expirationDate)
     }
 
     /// Syncs the StoreKit subscription status to the backend.
     /// Fetches transaction history by userId, finds the matching web checkout transaction
     /// for the given product, and updates its storekit_status.
-    private func syncStorekitStatusToBackend(productId: String?, status: Int) async {
-        ZSLogger.info("[MigrationManager] syncStorekitStatusToBackend — userId=\(userId), productId=\(productId ?? "nil"), status=\(status == 1 ? "active" : "cancelled")", category: .migration)
+    private func syncStorekitStatusToBackend(productId: String?, status: Int, expirationDate: Date? = nil) async {
+        ZSLogger.info("[MigrationManager] syncStorekitStatusToBackend — userId=\(userId), productId=\(productId ?? "nil"), status=\(status == 1 ? "active" : "cancelled"), expirationDate=\(expirationDate?.description ?? "nil")", category: .migration)
         do {
             let backend = try makeBackend()
             let transactions = try await backend.getTransactionHistory(userId: userId)
@@ -610,7 +619,7 @@ public final class ZSMigrationManager: ObservableObject {
 
             if let txn = matchingTxn {
                 ZSLogger.info("[MigrationManager] Found transaction=\(txn.id), updating Apple status to \(status == 1 ? "active" : "cancelled")", category: .migration)
-                try await backend.updateStorekitStatus(transactionId: txn.id, storekitStatus: status)
+                try await backend.updateStorekitStatus(transactionId: txn.id, storekitStatus: status, storekitSubscriptionEnd: expirationDate)
                 checkoutTransactionId = txn.id
                 ZSLogger.info("[MigrationManager] ✅ Updated Apple status=\(status == 1 ? "active" : "cancelled") on transaction=\(txn.id)", category: .migration)
             } else {
