@@ -511,7 +511,7 @@ public final class ZSMigrationManager: ObservableObject {
             }
             try await AppStore.showManageSubscriptions(in: windowScene)
             state = .completed
-            ZSLogger.info("[MigrationManager] .accepted → .completed — subscription management sheet dismissed", category: .migration)
+            ZSLogger.info("[MigrationManager] .accepted → .completed — subscription management sheet dismissed (product=\(offerData?.activeStoreKitProductId ?? "nil"), storekitExpiresAt=\(offerData?.activeStoreKitExpiresAt.map { "\($0)" } ?? "nil"))", category: .migration)
         } catch {
             ZSLogger.error("[MigrationManager] Failed to open subscription management: \(error)", category: .migration)
         }
