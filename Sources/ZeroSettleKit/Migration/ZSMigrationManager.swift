@@ -142,6 +142,19 @@ public final class ZSMigrationManager: ObservableObject {
         let previousState = state
         let iap = ZeroSettle.shared
 
+        // ── Always sync Apple subscription status to backend ──
+        let syncProductId = iap.entitlements.first(where: { $0.source == .storeKit })?.productId
+            ?? iap.entitlements.first(where: { $0.source == .webCheckout })?.productId
+        if let syncProductId {
+            Task { [weak self] in
+                guard let self else { return }
+                let info = await self.fetchStorekitSubscriptionInfo(productId: syncProductId)
+                let status = info?.status ?? 1
+                ZSLogger.info("[MigrationTip] Syncing StoreKit status=\(status) willAutoRenew=\(info?.willAutoRenew ?? true) for \(syncProductId) to backend", category: .migration)
+                await self.syncStorekitStatusToBackend(productId: syncProductId, status: status)
+            }
+        }
+
         // ── Check 1: Mid-flow lock ──
         guard state == .loading || state == .ineligible || state == .eligible else {
             ZSLogger.info("[MigrationTip] SKIP: mid-flow locked (state=.\(state))", category: .migration)
@@ -200,17 +213,6 @@ public final class ZSMigrationManager: ObservableObject {
             offerData = nil
             ZSLogger.info("[MigrationTip] SKIP: no active StoreKit subscription", category: .migration)
             return
-        }
-
-        // ── Sync Apple subscription status to backend (every evaluation) ──
-        if let skProductId = activeStoreKitEntitlements.first?.productId {
-            Task { [weak self] in
-                guard let self else { return }
-                if let status = await self.fetchStorekitSubscriptionStatus(productId: skProductId) {
-                    ZSLogger.info("[MigrationTip] Syncing StoreKit status=\(status) for \(skProductId) to backend", category: .migration)
-                    await self.syncStorekitStatusToBackend(productId: skProductId, status: status)
-                }
-            }
         }
 
         // ── Check 6: Both StoreKit + web active → need to cancel Apple ──
@@ -517,24 +519,14 @@ public final class ZSMigrationManager: ObservableObject {
         ZSLogger.info("[MigrationManager] Checking StoreKit subscription status for product=\(productId ?? "nil"), checkoutTransactionId=\(checkoutTransactionId ?? "nil")", category: .migration)
 
         // Re-fetch subscription status directly from StoreKit (not cached entitlements)
-        let storekitStatus = await fetchStorekitSubscriptionStatus(productId: productId)
-        let statusLabel: String = {
-            switch storekitStatus {
-            case 1: return "subscribed (will renew)"
-            case 2: return "expired"
-            case 3: return "billingRetry"
-            case 4: return "gracePeriod"
-            case 5: return "revoked"
-            case 6: return "cancelled (won't renew)"
-            case .none: return "unknown/nil"
-            default: return "unexpected(\(storekitStatus!))"
-            }
-        }()
-        ZSLogger.info("[MigrationManager] StoreKit local status: \(storekitStatus.map(String.init) ?? "nil") (\(statusLabel))", category: .migration)
+        let info = await fetchStorekitSubscriptionInfo(productId: productId)
+        let storekitStatus = info?.status
+        let willAutoRenew = info?.willAutoRenew ?? true
+        ZSLogger.info("[MigrationManager] StoreKit status=\(storekitStatus.map(String.init) ?? "nil"), willAutoRenew=\(willAutoRenew)", category: .migration)
 
         // ── Step 2: Update the backend with the real StoreKit status ──
         if let transactionId = checkoutTransactionId, let status = storekitStatus {
-            ZSLogger.info("[MigrationManager] Updating backend storekit_status=\(status) (\(statusLabel)) on transaction=\(transactionId)...", category: .migration)
+            ZSLogger.info("[MigrationManager] Updating backend storekit_status=\(status) on transaction=\(transactionId)...", category: .migration)
             do {
                 let backend = try makeBackend()
                 try await backend.updateStorekitStatus(transactionId: transactionId, storekitStatus: status)
@@ -546,9 +538,11 @@ public final class ZSMigrationManager: ObservableObject {
             ZSLogger.info("[MigrationManager] ⚠️ Skipping backend update — checkoutTransactionId=\(checkoutTransactionId ?? "nil"), storekitStatus=\(storekitStatus.map(String.init) ?? "nil")", category: .migration)
         }
 
-        // ── Step 3: Decide state based on local StoreKit status ──
-        let stillActive = storekitStatus == nil || storekitStatus == 1 || storekitStatus == 4
-        ZSLogger.info("[MigrationManager] Decision: storekitStatus=\(storekitStatus.map(String.init) ?? "nil") → stillActive=\(stillActive)", category: .migration)
+        // ── Step 3: Decide state based on willAutoRenew ──
+        // A cancelled sub is still .subscribed (status=1) until expiry.
+        // willAutoRenew=false means the user cancelled — that's what we check.
+        let stillActive = willAutoRenew && (storekitStatus == nil || storekitStatus == 1 || storekitStatus == 4)
+        ZSLogger.info("[MigrationManager] Decision: status=\(storekitStatus.map(String.init) ?? "nil"), willAutoRenew=\(willAutoRenew) → stillActive=\(stillActive)", category: .migration)
 
         if stillActive {
             storekitCancelRequired = true
@@ -556,18 +550,19 @@ public final class ZSMigrationManager: ObservableObject {
         } else {
             storekitCancelRequired = false
             state = .completed
-            ZSLogger.info("[MigrationManager] 🎉 .accepted → .completed — Apple subscription cancelled! (status=\(storekitStatus.map(String.init) ?? "nil"), \(statusLabel))", category: .migration)
+            ZSLogger.info("[MigrationManager] .accepted → .completed — Apple subscription cancelled (status=\(storekitStatus.map(String.init) ?? "nil"), willAutoRenew=\(willAutoRenew))", category: .migration)
         }
         ZSLogger.info("[MigrationManager] ── Post-dismiss subscription check END — state=.\(state), storekitCancelRequired=\(storekitCancelRequired) ──", category: .migration)
     }
 
-    /// Query StoreKit for the current subscription renewal state of a product.
+    /// Query StoreKit for the current subscription state of a product.
     ///
-    /// Returns: 1=subscribed (will renew), 2=expired, 3=billingRetry, 4=gracePeriod,
-    ///          5=revoked, 6=cancelled (subscribed but won't renew), nil=unknown
-    private func fetchStorekitSubscriptionStatus(productId: String?) async -> Int? {
+    /// Returns Apple's 5 official RenewalState values:
+    /// 1=subscribed, 2=expired, 3=billingRetry, 4=gracePeriod, 5=revoked, nil=unknown
+    /// Also returns willAutoRenew (false = user cancelled, sub active until expiry).
+    private func fetchStorekitSubscriptionInfo(productId: String?) async -> (status: Int, willAutoRenew: Bool)? {
         guard let productId else {
-            ZSLogger.info("[MigrationManager] fetchStorekitSubscriptionStatus — productId is nil", category: .migration)
+            ZSLogger.info("[MigrationManager] fetchStorekitSubscriptionInfo — productId is nil", category: .migration)
             return nil
         }
 
@@ -583,24 +578,26 @@ public final class ZSMigrationManager: ObservableObject {
             return nil
         }
 
-        // Check willAutoRenew from RenewalInfo — a "cancelled" subscription is still
-        // .subscribed but has willAutoRenew=false
         var willAutoRenew = true
         if case .verified(let renewalInfo) = status.renewalInfo {
             willAutoRenew = renewalInfo.willAutoRenew
             ZSLogger.info("[MigrationManager] RenewalInfo: willAutoRenew=\(willAutoRenew), state=\(status.state)", category: .migration)
         }
 
-        switch status.state {
-        case .subscribed:
-            // Subscribed but auto-renew off = user cancelled
-            return willAutoRenew ? 1 : 6
-        case .expired: return 2
-        case .inBillingRetryPeriod: return 3
-        case .inGracePeriod: return 4
-        case .revoked: return 5
-        default: return nil
-        }
+        // Map to Apple's 5 official RenewalState values
+        let statusCode: Int? = {
+            switch status.state {
+            case .subscribed: return 1
+            case .expired: return 2
+            case .inBillingRetryPeriod: return 3
+            case .inGracePeriod: return 4
+            case .revoked: return 5
+            default: return nil
+            }
+        }()
+
+        guard let statusCode else { return nil }
+        return (status: statusCode, willAutoRenew: willAutoRenew)
     }
 
     /// Syncs the StoreKit subscription status to the backend.
