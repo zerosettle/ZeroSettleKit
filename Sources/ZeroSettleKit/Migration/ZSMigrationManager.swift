@@ -151,8 +151,10 @@ public final class ZSMigrationManager: ObservableObject {
             Task { [weak self] in
                 guard let self else { return }
                 // Try server-side first (real-time), fall back to on-device StoreKit
-                let result = await self.fetchAppleSubscriptionStatusFromServer(originalTransactionId: syncOrigTxnId)
-                    ?? await self.fetchAppleSubscriptionStatus(productId: syncProductId)
+                var result = await self.fetchAppleSubscriptionStatusFromServer(originalTransactionId: syncOrigTxnId)
+                if result == nil {
+                    result = await self.fetchAppleSubscriptionStatus(productId: syncProductId)
+                }
                 let appleStatus = result?.status ?? 1
                 let expirationDate = result?.expirationDate
                 ZSLogger.info("[MigrationTip] Syncing Apple status=\(appleStatus == 1 ? "active" : "cancelled") for \(syncProductId) to backend", category: .migration)
@@ -539,8 +541,10 @@ public final class ZSMigrationManager: ObservableObject {
         let txnId = checkoutTransactionId
 
         // Try server-side first (real-time), fall back to on-device StoreKit
-        let result = await fetchAppleSubscriptionStatusFromServer(originalTransactionId: origTxnId)
-            ?? await fetchAppleSubscriptionStatus(productId: productId)
+        var result = await fetchAppleSubscriptionStatusFromServer(originalTransactionId: origTxnId)
+        if result == nil {
+            result = await fetchAppleSubscriptionStatus(productId: productId)
+        }
         let appleStatus = result?.status ?? 1
         let expirationDate = result?.expirationDate
         ZSLogger.info("[MigrationManager] Post-dismiss verification: Apple status=\(appleStatus == 1 ? "active" : "cancelled") for product=\(productId ?? "nil")", category: .migration)
