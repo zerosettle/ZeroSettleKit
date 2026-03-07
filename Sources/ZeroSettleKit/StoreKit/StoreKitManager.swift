@@ -300,7 +300,8 @@ internal final class StoreKitManager: @unchecked Sendable {
             source: .storeKit,
             isActive: isActive,
             expiresAt: expiresAt,
-            purchasedAt: transaction.purchaseDate
+            purchasedAt: transaction.purchaseDate,
+            storekitOriginalTransactionId: String(transaction.originalID)
         )
     }
 }

@@ -108,6 +108,10 @@ public struct Entitlement: Identifiable, Sendable, Codable, Equatable {
     /// When the purchase was made
     public let purchasedAt: Date
 
+    /// The original StoreKit transaction ID that groups all renewals of a subscription.
+    /// Only present for StoreKit-sourced entitlements.
+    public let storekitOriginalTransactionId: String?
+
     /// Whether this entitlement is currently paused.
     public var isPaused: Bool {
         status == .paused
@@ -129,6 +133,7 @@ public struct Entitlement: Identifiable, Sendable, Codable, Equatable {
         case id, productId, source, isActive, status
         case pausedAt, pauseResumesAt, expiresAt, purchasedAt
         case willRenew, isTrial, trialEndsAt, cancelledAt
+        case storekitOriginalTransactionId
     }
 
     public init(
@@ -144,7 +149,8 @@ public struct Entitlement: Identifiable, Sendable, Codable, Equatable {
         isTrial: Bool = false,
         trialEndsAt: Date? = nil,
         cancelledAt: Date? = nil,
-        purchasedAt: Date
+        purchasedAt: Date,
+        storekitOriginalTransactionId: String? = nil
     ) {
         self.id = id
         self.productId = productId
@@ -159,6 +165,7 @@ public struct Entitlement: Identifiable, Sendable, Codable, Equatable {
         self.trialEndsAt = trialEndsAt
         self.cancelledAt = cancelledAt
         self.purchasedAt = purchasedAt
+        self.storekitOriginalTransactionId = storekitOriginalTransactionId
     }
 
     public init(from decoder: Decoder) throws {
@@ -181,6 +188,7 @@ public struct Entitlement: Identifiable, Sendable, Codable, Equatable {
         trialEndsAt = try container.decodeIfPresent(Date.self, forKey: .trialEndsAt)
         cancelledAt = try container.decodeIfPresent(Date.self, forKey: .cancelledAt)
         purchasedAt = try container.decode(Date.self, forKey: .purchasedAt)
+        storekitOriginalTransactionId = try container.decodeIfPresent(String.self, forKey: .storekitOriginalTransactionId)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -198,5 +206,6 @@ public struct Entitlement: Identifiable, Sendable, Codable, Equatable {
         try container.encodeIfPresent(trialEndsAt, forKey: .trialEndsAt)
         try container.encodeIfPresent(cancelledAt, forKey: .cancelledAt)
         try container.encode(purchasedAt, forKey: .purchasedAt)
+        try container.encodeIfPresent(storekitOriginalTransactionId, forKey: .storekitOriginalTransactionId)
     }
 }

@@ -168,7 +168,8 @@ public final class ZSMigrationManager: ObservableObject {
                 prompt: prompt,
                 freeTrialDays: 7,
                 activeStoreKitProductId: "wizzGoldWeekly",
-                activeStoreKitExpiresAt: nil
+                activeStoreKitExpiresAt: nil,
+                activeStoreKitOriginalTransactionId: nil
             )
 
             state = .eligible
@@ -280,7 +281,8 @@ public final class ZSMigrationManager: ObservableObject {
             prompt: prompt,
             freeTrialDays: freeTrialDays,
             activeStoreKitProductId: matchedEntitlement.productId,
-            activeStoreKitExpiresAt: matchedEntitlement.expiresAt
+            activeStoreKitExpiresAt: matchedEntitlement.expiresAt,
+            activeStoreKitOriginalTransactionId: matchedEntitlement.storekitOriginalTransactionId
         )
 
         state = .eligible
@@ -426,12 +428,13 @@ public final class ZSMigrationManager: ObservableObject {
                 userId: userId,
                 freeTrialDays: offerData.freeTrialDays,
                 stripeCustomerId: stripeCustomerId,
-                storekitSubscriptionEnd: offerData.activeStoreKitExpiresAt
+                storekitSubscriptionEnd: offerData.activeStoreKitExpiresAt,
+                storekitOriginalTransactionId: offerData.activeStoreKitOriginalTransactionId
             )
 
             isLoading = false
             let url = URL(string: paymentIntent.checkoutUrl)
-            ZSLogger.info("[MigrationManager] Migration checkout created — transactionId=\(paymentIntent.transactionId), checkoutUrl=\(paymentIntent.checkoutUrl), storekitSubscriptionEnd=\(offerData.activeStoreKitExpiresAt?.description ?? "nil")", category: .migration)
+            ZSLogger.info("[MigrationManager] Migration checkout created — transactionId=\(paymentIntent.transactionId), checkoutUrl=\(paymentIntent.checkoutUrl), storekitSubscriptionEnd=\(offerData.activeStoreKitExpiresAt?.description ?? "nil"), originalTransactionId=\(offerData.activeStoreKitOriginalTransactionId ?? "nil")", category: .migration)
             return url
         } catch {
             checkoutError = error

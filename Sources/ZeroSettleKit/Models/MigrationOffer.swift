@@ -45,5 +45,7 @@ public enum MigrationOffer {
         public let activeStoreKitProductId: String
         /// The expiration date of the user's active StoreKit subscription, if known.
         public let activeStoreKitExpiresAt: Date?
+        /// The original StoreKit transaction ID for the active subscription.
+        public let activeStoreKitOriginalTransactionId: String?
     }
 }
