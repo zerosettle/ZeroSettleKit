@@ -118,6 +118,9 @@ public enum ZeroSettleError: Error, LocalizedError {
     /// A StoreKit transaction failed verification.
     case storeKitVerificationFailed(underlyingError: Error)
 
+    /// The userId provided was empty or whitespace-only.
+    case invalidUserId
+
     public var errorDescription: String? {
         switch self {
         case .notConfigured:
@@ -159,6 +162,8 @@ public enum ZeroSettleError: Error, LocalizedError {
             return "Purchase is pending approval."
         case .storeKitVerificationFailed(let underlyingError):
             return "StoreKit verification failed: \(underlyingError.localizedDescription)"
+        case .invalidUserId:
+            return "Invalid userId: must be a non-empty string."
         }
     }
 }
@@ -503,6 +508,11 @@ public final class ZeroSettle: ObservableObject {
     /// - Returns: A ``ProductCatalog`` containing products and remote configuration
     @discardableResult
     public func bootstrap(userId: String) async throws -> ProductCatalog {
+        guard !userId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            ZSLogger.error("bootstrap() called with empty userId — this is a no-op. Pass a valid user identifier.", category: .entitlements)
+            throw ZeroSettleError.invalidUserId
+        }
+
         // 1. Sync StoreKit transactions to the backend so the Identity and
         //    Entitlement records exist before we check migration eligibility.
         if let storeKitManager {
@@ -971,6 +981,11 @@ public final class ZeroSettle: ObservableObject {
     @discardableResult
     public func restoreEntitlements(userId: String) async throws -> [Entitlement] {
         ZSLogger.info("Called with userId=\"\(userId)\"", category: .entitlements)
+
+        guard !userId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            ZSLogger.error("restoreEntitlements() called with empty userId — this is a no-op. Pass a valid user identifier.", category: .entitlements)
+            throw ZeroSettleError.invalidUserId
+        }
 
         guard let backend else {
             ZSLogger.error("SDK not configured, throwing notConfigured", category: .entitlements)
