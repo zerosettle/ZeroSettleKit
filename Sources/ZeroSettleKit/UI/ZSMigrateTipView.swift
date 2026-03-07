@@ -356,16 +356,18 @@ public struct MigrationTipView: View {
 
     /// Loading spinner shown while checking if Apple subscription was cancelled.
     private var checkingCancellationView: some View {
-        VStack(spacing: 12) {
-            ProgressView()
-                .tint(.white)
-                .controlSize(.regular)
-            Text("Checking subscription status...")
-                .font(bodyFont ?? .subheadline)
-                .foregroundColor(.white.opacity(0.8))
+        VStack(spacing: 0) {
+            headerView(
+                icon: {
+                    ProgressView()
+                        .tint(.white)
+                        .controlSize(.regular)
+                },
+                title: "Checking status...",
+                message: "Verifying your subscription was cancelled.",
+                showCloseButton: false
+            )
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 24)
         .background(backgroundColor)
         .cornerRadius(16)
         .overlay(
