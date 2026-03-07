@@ -470,7 +470,11 @@ public struct MigrationTipView: View {
         withAnimation(.easeInOut(duration: 0.3)) {
             checkingCancellation = false
         }
-        confettiTrigger += 1
+        // Delay confetti trigger so the congratulations view is rendered first —
+        // the confetti cannon's .onChange(of: trigger) only fires if the view exists.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            confettiTrigger += 1
+        }
 
         onEvent?(.migrationCompleted)
 
