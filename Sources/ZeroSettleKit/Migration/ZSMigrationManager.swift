@@ -48,6 +48,13 @@ public final class ZSMigrationManager: ObservableObject {
     /// Whether a network operation (checkout creation) is in progress.
     @Published public private(set) var isLoading: Bool = false
 
+    /// Whether the user still needs to cancel their Apple subscription.
+    /// `true` after subscription management was shown but the subscription is still active.
+    @Published public private(set) var storekitCancelRequired: Bool = false
+
+    /// The transaction ID from the checkout, used to update StoreKit status on the backend.
+    private var checkoutTransactionId: String?
+
     // MARK: - Public Properties
 
     /// The user identifier for this migration flow.
@@ -433,6 +440,7 @@ public final class ZSMigrationManager: ObservableObject {
             )
 
             isLoading = false
+            checkoutTransactionId = paymentIntent.transactionId
             let url = URL(string: paymentIntent.checkoutUrl)
             ZSLogger.info("[MigrationManager] Migration checkout created — transactionId=\(paymentIntent.transactionId), checkoutUrl=\(paymentIntent.checkoutUrl), storekitSubscriptionEnd=\(offerData.activeStoreKitExpiresAt?.description ?? "nil"), originalTransactionId=\(offerData.activeStoreKitOriginalTransactionId ?? "nil")", category: .migration)
             return url
@@ -495,10 +503,12 @@ public final class ZSMigrationManager: ObservableObject {
         }
     }
 
-    /// Open the Apple subscription management sheet, then transition to `.completed`.
+    /// Open the Apple subscription management sheet, then check if the user cancelled.
     ///
-    /// After the sheet dismisses, the state moves to `.completed` to indicate the
-    /// full migration flow is done.
+    /// After the sheet dismisses, queries StoreKit for the subscription status and
+    /// updates the backend. If the subscription is still active, stays in `.accepted`
+    /// with ``storekitCancelRequired`` set to `true` so the UI can prompt again.
+    /// If cancelled/expired, transitions to `.completed`.
     public func showAppleSubscriptionManagement() async {
         guard state == .accepted else {
             ZSLogger.info("[MigrationManager] showAppleSubscriptionManagement() ignored — state is .\(state), expected .accepted", category: .migration)
@@ -513,10 +523,67 @@ public final class ZSMigrationManager: ObservableObject {
                 return
             }
             try await AppStore.showManageSubscriptions(in: windowScene)
-            state = .completed
-            ZSLogger.info("[MigrationManager] .accepted → .completed — subscription management sheet dismissed (product=\(offerData?.activeStoreKitProductId ?? "nil"), storekitExpiresAt=\(offerData?.activeStoreKitExpiresAt.map { "\($0)" } ?? "nil"))", category: .migration)
         } catch {
             ZSLogger.error("[MigrationManager] Failed to open subscription management: \(error)", category: .migration)
+            return
+        }
+
+        // Check the StoreKit subscription status after the management sheet was dismissed
+        let productId = offerData?.activeStoreKitProductId
+        ZSLogger.info("[MigrationManager] Subscription management sheet dismissed — checking StoreKit status for product=\(productId ?? "nil")", category: .migration)
+
+        let storekitStatus = await fetchStorekitSubscriptionStatus(productId: productId)
+        ZSLogger.info("[MigrationManager] StoreKit subscription status: \(storekitStatus.map(String.init) ?? "nil") (1=Active, 2=Expired, 3=BillingRetry, 4=GracePeriod, 5=Revoked)", category: .migration)
+
+        // Update the backend with the current StoreKit status
+        if let transactionId = checkoutTransactionId, let status = storekitStatus {
+            do {
+                let backend = try makeBackend()
+                try await backend.updateStorekitStatus(transactionId: transactionId, storekitStatus: status)
+                ZSLogger.info("[MigrationManager] Updated storekit_status=\(status) on transaction=\(transactionId)", category: .migration)
+            } catch {
+                ZSLogger.error("[MigrationManager] Failed to update storekit_status on backend: \(error)", category: .migration)
+            }
+        }
+
+        // Determine if the subscription was cancelled (not actively renewing)
+        let stillActive = storekitStatus == 1 || storekitStatus == 4  // subscribed or grace period
+        if stillActive {
+            // Stay in .accepted — UI should keep showing cancel prompt
+            storekitCancelRequired = true
+            ZSLogger.info("[MigrationManager] Apple subscription still active — storekitCancelRequired=true, staying in .accepted", category: .migration)
+        } else {
+            storekitCancelRequired = false
+            state = .completed
+            ZSLogger.info("[MigrationManager] .accepted → .completed — Apple subscription no longer active (status=\(storekitStatus.map(String.init) ?? "nil"))", category: .migration)
+        }
+    }
+
+    /// Query StoreKit for the current subscription renewal state of a product.
+    ///
+    /// Returns: 1=subscribed, 2=expired, 3=billingRetry, 4=gracePeriod, 5=revoked, nil=unknown
+    private func fetchStorekitSubscriptionStatus(productId: String?) async -> Int? {
+        guard let productId else { return nil }
+
+        guard let product = try? await Product.products(for: [productId]).first,
+              let subscription = product.subscription else {
+            ZSLogger.info("[MigrationManager] No subscription info found for product=\(productId)", category: .migration)
+            return nil
+        }
+
+        guard let statuses = try? await subscription.status,
+              let status = statuses.first(where: { $0.state != .revoked }) ?? statuses.first else {
+            ZSLogger.info("[MigrationManager] No subscription status entries for product=\(productId)", category: .migration)
+            return nil
+        }
+
+        switch status.state {
+        case .subscribed: return 1
+        case .expired: return 2
+        case .inBillingRetryPeriod: return 3
+        case .inGracePeriod: return 4
+        case .revoked: return 5
+        default: return nil
         }
     }
 

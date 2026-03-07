@@ -228,6 +228,22 @@ internal final class Backend: @unchecked Sendable {
         }
     }
 
+    /// Update the StoreKit subscription status on a transaction.
+    func updateStorekitStatus(transactionId: String, storekitStatus: Int) async throws {
+        let url = apiURL("iap/transactions/\(transactionId)/storekit-status/")
+        let body = UpdateStorekitStatusRequest(storekitStatus: storekitStatus)
+        var request = URLRequest(url: url)
+        request.httpMethod = "PATCH"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authHeaders.forEach { request.setValue($1, forHTTPHeaderField: $0) }
+        request.httpBody = try encoder.encode(body)
+        do {
+            try await httpClient.executeVoid(request)
+        } catch {
+            throw Backend.wrapError(error)
+        }
+    }
+
     // MARK: - Transaction Verification
 
     /// Poll the backend to verify a transaction has completed.
@@ -664,6 +680,10 @@ internal struct CreatePaymentIntentRequest: Encodable {
     let storekitSubscriptionEnd: Date?
     let storekitOriginalTransactionId: String?
     let platform: String = "ios"
+}
+
+internal struct UpdateStorekitStatusRequest: Encodable {
+    let storekitStatus: Int
 }
 
 /// Response from the create_payment_intent endpoint.
