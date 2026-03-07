@@ -203,11 +203,37 @@ internal final class StoreKitManager: @unchecked Sendable {
 
         for await result in SKTransaction.currentEntitlements {
             guard case .verified(let transaction) = result else { continue }
-            let entitlement = entitlementFromTransaction(transaction)
+
+            // Transaction.originalID can return 0 in Xcode StoreKit testing.
+            // Fall back to RenewalInfo.originalTransactionID which is more reliable.
+            var originalTxnId = transaction.originalID
+            if originalTxnId == 0 {
+                if let renewalOrigId = await fetchOriginalTransactionId(for: transaction.productID) {
+                    originalTxnId = renewalOrigId
+                } else {
+                    originalTxnId = transaction.id
+                }
+            }
+
+            let entitlement = entitlementFromTransaction(transaction, originalTransactionId: originalTxnId)
             entitlements.append(entitlement)
         }
 
         return entitlements
+    }
+
+    /// Fetches the original transaction ID from a subscription's RenewalInfo.
+    private func fetchOriginalTransactionId(for productId: String) async -> UInt64? {
+        guard let product = try? await Product.products(for: [productId]).first,
+              let subscription = product.subscription,
+              let statuses = try? await subscription.status,
+              let status = statuses.first(where: { $0.state == .subscribed }) ?? statuses.first,
+              case .verified(let renewalInfo) = status.renewalInfo else {
+            return nil
+        }
+        let origId = renewalInfo.originalTransactionID
+        ZSLogger.debug("RenewalInfo.originalTransactionID=\(origId) for product=\(productId)", category: .entitlements)
+        return origId
     }
 
     // MARK: - Private
@@ -278,7 +304,7 @@ internal final class StoreKitManager: @unchecked Sendable {
         }
     }
 
-    private func entitlementFromTransaction(_ transaction: SKTransaction) -> Entitlement {
+    private func entitlementFromTransaction(_ transaction: SKTransaction, originalTransactionId: UInt64? = nil) -> Entitlement {
         let isActive: Bool
         let expiresAt: Date?
 
@@ -294,6 +320,8 @@ internal final class StoreKitManager: @unchecked Sendable {
             expiresAt = nil
         }
 
+        let origId = originalTransactionId ?? (transaction.originalID != 0 ? transaction.originalID : transaction.id)
+
         return Entitlement(
             id: "storekit_\(transaction.id)",
             productId: transaction.productID,
@@ -301,7 +329,7 @@ internal final class StoreKitManager: @unchecked Sendable {
             isActive: isActive,
             expiresAt: expiresAt,
             purchasedAt: transaction.purchaseDate,
-            storekitOriginalTransactionId: String(transaction.originalID)
+            storekitOriginalTransactionId: String(origId)
         )
     }
 }

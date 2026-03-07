@@ -52,6 +52,9 @@ public struct CheckoutTransaction: Identifiable, Sendable, Codable, Equatable {
     /// Currency code, e.g. "usd" (populated in transaction history responses).
     public let currency: String?
 
+    /// StoreKit subscription status from the backend (1=subscribed, 2=expired, 3=billingRetry, 4=gracePeriod, 5=revoked).
+    public let storekitStatus: Int?
+
     public init(
         id: String,
         productId: String,
@@ -61,7 +64,8 @@ public struct CheckoutTransaction: Identifiable, Sendable, Codable, Equatable {
         expiresAt: Date? = nil,
         productName: String? = nil,
         amountCents: Int? = nil,
-        currency: String? = nil
+        currency: String? = nil,
+        storekitStatus: Int? = nil
     ) {
         self.id = id
         self.productId = productId
@@ -72,5 +76,6 @@ public struct CheckoutTransaction: Identifiable, Sendable, Codable, Equatable {
         self.productName = productName
         self.amountCents = amountCents
         self.currency = currency
+        self.storekitStatus = storekitStatus
     }
 }

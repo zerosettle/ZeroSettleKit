@@ -422,6 +422,12 @@ public struct MigrationTipView: View {
         await manager.showAppleSubscriptionManagement()
         onEvent?(.appleSubscriptionManagementOpened)
 
+        // Only show congratulations if the subscription was actually cancelled
+        // (manager transitions to .completed). If still active, manager stays
+        // in .accepted with storekitCancelRequired=true — the UI will keep
+        // showing the cancel prompt.
+        guard manager.state == .completed else { return }
+
         // Show congratulations state with confetti.
         // The trigger increment must be deferred so the congratulationsCardView
         // renders first and the confettiCannon observes the 0→1 change.
