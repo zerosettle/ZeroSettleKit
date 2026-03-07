@@ -60,11 +60,18 @@ internal final class Backend: @unchecked Sendable {
 
         let response: ProductsResponse
         do {
-            response = try await httpClient.get(
-                url,
-                headers: authHeaders,
-                responseType: ProductsResponse.self
-            )
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            authHeaders.forEach { request.setValue($1, forHTTPHeaderField: $0) }
+            let (data, _) = try await URLSession.shared.data(for: request)
+            // Log raw migration JSON before decoding to trace rolloutPercent
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let config = json["config"] as? [String: Any],
+               let migration = config["migration"] as? [String: Any] {
+                ZSLogger.info("Raw migration JSON keys: \(migration.keys.sorted())", category: .network)
+                ZSLogger.info("Raw migration JSON rollout_percent=\(migration["rollout_percent"] as Any)", category: .network)
+            }
+            response = try decoder.decode(ProductsResponse.self, from: data)
         } catch {
             throw Backend.wrapError(error)
         }
