@@ -266,30 +266,7 @@ public final class ZSMigrationManager: ObservableObject {
         let prompt = resolved.prompt
         let matchedEntitlement = resolved.matchedEntitlement
 
-        // ── Check 9: Subscription tenure within subscription window ──
-        let tenureDays: Int
-        if let originalDate = matchedEntitlement.originalPurchaseDate {
-            tenureDays = Calendar.current.dateComponents([.day], from: originalDate, to: Date()).day ?? 0
-        } else {
-            // Fall back to purchasedAt (current period) if originalPurchaseDate unavailable
-            tenureDays = Calendar.current.dateComponents([.day], from: matchedEntitlement.purchasedAt, to: Date()).day ?? 0
-        }
-        ZSLogger.info("[MigrationTip] Subscription tenure: \(tenureDays) days (original=\(matchedEntitlement.originalPurchaseDate?.description ?? "nil"), window=\(prompt.minSubscriptionDays)-\(prompt.maxSubscriptionDays.map(String.init) ?? "∞")d)", category: .migration)
-
-        if tenureDays < prompt.minSubscriptionDays {
-            state = .ineligible
-            offerData = nil
-            ZSLogger.info("[MigrationTip] SKIP: subscription tenure \(tenureDays)d < minSubscriptionDays \(prompt.minSubscriptionDays)d", category: .migration)
-            return
-        }
-        if let maxDays = prompt.maxSubscriptionDays, tenureDays > maxDays {
-            state = .ineligible
-            offerData = nil
-            ZSLogger.info("[MigrationTip] SKIP: subscription tenure \(tenureDays)d > maxSubscriptionDays \(maxDays)d", category: .migration)
-            return
-        }
-
-        // ── Check 10: Target product exists in catalog ──
+        // ── Check 9: Target product exists in catalog ──
         let catalogProducts = iap.products
         guard let targetProduct = catalogProducts.first(where: { $0.id == prompt.productId }) else {
             state = .ineligible
@@ -298,7 +275,33 @@ public final class ZSMigrationManager: ObservableObject {
             return
         }
 
-        // ── All checks passed → eligible ──
+        // ── Check 10: Subscription tenure from StoreKit ──
+        let productId = matchedEntitlement.productId
+        Task { [weak self] in
+            guard let self else { return }
+            let tenureDays = await self.calculateStoreKitTenure(for: productId)
+            ZSLogger.info("[MigrationTip] StoreKit tenure: \(tenureDays) days (window: \(prompt.minSubscriptionDays)-\(prompt.maxSubscriptionDays.map(String.init) ?? "∞")d)", category: .migration)
+
+            if tenureDays < prompt.minSubscriptionDays {
+                self.state = .ineligible
+                self.offerData = nil
+                ZSLogger.info("[MigrationTip] SKIP: tenure \(tenureDays)d < min \(prompt.minSubscriptionDays)d", category: .migration)
+                return
+            }
+            if let maxDays = prompt.maxSubscriptionDays, tenureDays > maxDays {
+                self.state = .ineligible
+                self.offerData = nil
+                ZSLogger.info("[MigrationTip] SKIP: tenure \(tenureDays)d > max \(maxDays)d", category: .migration)
+                return
+            }
+
+            self.applyEligible(prompt: prompt, matchedEntitlement: matchedEntitlement, targetProduct: targetProduct)
+        }
+    }
+
+    /// Sets state to `.eligible` with the resolved offer data.
+    private func applyEligible(prompt: MigrationPrompt, matchedEntitlement: Entitlement, targetProduct: ZSProduct) {
+        let iap = ZeroSettle.shared
         let data = MigrationOffer.OfferData(
             prompt: prompt,
             freeTrialDays: prompt.freeTrialDays,
@@ -687,6 +690,26 @@ public final class ZSMigrationManager: ObservableObject {
         offerData = nil
         Self.isPermanentlyDismissed = true
         ZSLogger.info("[MigrationManager] .\(previous) → .dismissed — persisted to UserDefaults", category: .migration)
+    }
+
+    // MARK: - StoreKit Tenure
+
+    /// Calculates the user's subscription tenure in days for a product by finding
+    /// the earliest `originalPurchaseDate` across all verified StoreKit transactions.
+    private func calculateStoreKitTenure(for productId: String) async -> Int {
+        var earliest: Date?
+        for await result in SKTransaction.all {
+            guard case .verified(let transaction) = result,
+                  transaction.productID == productId else { continue }
+            let date = transaction.originalPurchaseDate
+            if earliest == nil || date < earliest! {
+                earliest = date
+            }
+        }
+        guard let earliest else { return 0 }
+        let days = Calendar.current.dateComponents([.day], from: earliest, to: Date()).day ?? 0
+        ZSLogger.info("[MigrationManager] StoreKit tenure for \(productId): \(days) days (earliest: \(earliest))", category: .migration)
+        return days
     }
 
     // MARK: - Backend Helper
