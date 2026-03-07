@@ -155,14 +155,14 @@ public struct MigrationTipView: View {
                 offerCardView
 
             case .accepted:
+                acceptedCardView
+
+            case .completed:
                 if showCongratulations {
                     congratulationsCardView
                 } else {
-                    acceptedCardView
+                    EmptyView()
                 }
-
-            case .completed:
-                EmptyView()
             }
         }
         .onChange(of: manager.state) { _, newState in
