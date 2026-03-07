@@ -145,6 +145,7 @@ internal final class Backend: @unchecked Sendable {
                         title: title,
                         message: message,
                         ctaText: migrationResponse.ctaText ?? "Switch Now",
+                        rolloutPercent: migrationResponse.rolloutPercent,
                         perProductPrompts: perProductData
                     )
                     ZSLogger.info("Migration prompt created: eligibleProductIds=\(eligible), discountPercent=\(discountPercent), subscriptionWindow=\(migrationResponse.minSubscriptionDays ?? 0)-\(migrationResponse.maxSubscriptionDays.map(String.init) ?? "∞")d, title=\(title)", category: .network)
@@ -668,6 +669,7 @@ private struct MigrationPromptResponse: Decodable {
     let title: String?
     let message: String?
     let ctaText: String?
+    let rolloutPercent: Int?
     let perProductPrompts: [String: PerProductPromptResponse]?
 }
 
