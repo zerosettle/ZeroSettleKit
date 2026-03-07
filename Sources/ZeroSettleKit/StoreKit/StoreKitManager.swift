@@ -383,7 +383,8 @@ internal final class StoreKitManager: @unchecked Sendable {
             willRenew: willRenew,
             cancelledAt: cancelledAt,
             purchasedAt: transaction.purchaseDate,
-            storekitOriginalTransactionId: String(origId)
+            storekitOriginalTransactionId: String(origId),
+            originalPurchaseDate: transaction.originalPurchaseDate
         )
     }
 }

@@ -112,6 +112,10 @@ public struct Entitlement: Identifiable, Sendable, Codable, Equatable {
     /// Only present for StoreKit-sourced entitlements.
     public let storekitOriginalTransactionId: String?
 
+    /// The date of the original subscription purchase (first transaction in the group).
+    /// Only present for StoreKit-sourced subscription entitlements.
+    public let originalPurchaseDate: Date?
+
     /// Whether this entitlement is currently paused.
     public var isPaused: Bool {
         status == .paused
@@ -134,6 +138,7 @@ public struct Entitlement: Identifiable, Sendable, Codable, Equatable {
         case pausedAt, pauseResumesAt, expiresAt, purchasedAt
         case willRenew, isTrial, trialEndsAt, cancelledAt
         case storekitOriginalTransactionId
+        case originalPurchaseDate
     }
 
     public init(
@@ -150,7 +155,8 @@ public struct Entitlement: Identifiable, Sendable, Codable, Equatable {
         trialEndsAt: Date? = nil,
         cancelledAt: Date? = nil,
         purchasedAt: Date,
-        storekitOriginalTransactionId: String? = nil
+        storekitOriginalTransactionId: String? = nil,
+        originalPurchaseDate: Date? = nil
     ) {
         self.id = id
         self.productId = productId
@@ -166,6 +172,7 @@ public struct Entitlement: Identifiable, Sendable, Codable, Equatable {
         self.cancelledAt = cancelledAt
         self.purchasedAt = purchasedAt
         self.storekitOriginalTransactionId = storekitOriginalTransactionId
+        self.originalPurchaseDate = originalPurchaseDate
     }
 
     public init(from decoder: Decoder) throws {
@@ -189,6 +196,7 @@ public struct Entitlement: Identifiable, Sendable, Codable, Equatable {
         cancelledAt = try container.decodeIfPresent(Date.self, forKey: .cancelledAt)
         purchasedAt = try container.decode(Date.self, forKey: .purchasedAt)
         storekitOriginalTransactionId = try container.decodeIfPresent(String.self, forKey: .storekitOriginalTransactionId)
+        originalPurchaseDate = try container.decodeIfPresent(Date.self, forKey: .originalPurchaseDate)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -207,5 +215,6 @@ public struct Entitlement: Identifiable, Sendable, Codable, Equatable {
         try container.encodeIfPresent(cancelledAt, forKey: .cancelledAt)
         try container.encode(purchasedAt, forKey: .purchasedAt)
         try container.encodeIfPresent(storekitOriginalTransactionId, forKey: .storekitOriginalTransactionId)
+        try container.encodeIfPresent(originalPurchaseDate, forKey: .originalPurchaseDate)
     }
 }

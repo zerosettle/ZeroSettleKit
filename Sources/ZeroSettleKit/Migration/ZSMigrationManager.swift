@@ -218,7 +218,7 @@ public final class ZSMigrationManager: ObservableObject {
 
         ZSLogger.info("[MigrationTip] Entitlements: storeKit=\(storeKitEntitlements.count) (active=\(activeStoreKitEntitlements.count)), web=\(webEntitlements.count) (active=\(activeWebEntitlements.count))", category: .migration)
         for ent in iap.entitlements {
-            ZSLogger.info("[MigrationTip]   \(ent.source.rawValue): \(ent.productId) active=\(ent.isActive) status=\(ent.status.rawString) willRenew=\(ent.willRenew) expires=\(ent.expiresAt?.description ?? "nil") origTxnId=\(ent.storekitOriginalTransactionId ?? "nil")", category: .migration)
+            ZSLogger.info("[MigrationTip]   \(ent.source.rawValue): \(ent.productId) active=\(ent.isActive) status=\(ent.status.rawString) willRenew=\(ent.willRenew) expires=\(ent.expiresAt?.description ?? "nil") origTxnId=\(ent.storekitOriginalTransactionId ?? "nil") originalPurchase=\(ent.originalPurchaseDate?.description ?? "nil")", category: .migration)
         }
 
         // ── Check 5: Has active StoreKit subscription ──
@@ -266,7 +266,26 @@ public final class ZSMigrationManager: ObservableObject {
         let prompt = resolved.prompt
         let matchedEntitlement = resolved.matchedEntitlement
 
-        // ── Check 9: Target product exists in catalog ──
+        // ── Check 9: Subscription tenure meets minimum LTV days ──
+        if prompt.minUserLtv > 0 {
+            let tenureDays: Int
+            if let originalDate = matchedEntitlement.originalPurchaseDate {
+                tenureDays = Calendar.current.dateComponents([.day], from: originalDate, to: Date()).day ?? 0
+            } else {
+                // Fall back to purchasedAt (current period) if originalPurchaseDate unavailable
+                tenureDays = Calendar.current.dateComponents([.day], from: matchedEntitlement.purchasedAt, to: Date()).day ?? 0
+            }
+            ZSLogger.info("[MigrationTip] Subscription tenure: \(tenureDays) days (original=\(matchedEntitlement.originalPurchaseDate?.description ?? "nil"), minLtv=\(prompt.minUserLtv))", category: .migration)
+
+            if tenureDays < prompt.minUserLtv {
+                state = .ineligible
+                offerData = nil
+                ZSLogger.info("[MigrationTip] SKIP: subscription tenure \(tenureDays)d < minUserLtv \(prompt.minUserLtv)d", category: .migration)
+                return
+            }
+        }
+
+        // ── Check 10: Target product exists in catalog ──
         let catalogProducts = iap.products
         guard let targetProduct = catalogProducts.first(where: { $0.id == prompt.productId }) else {
             state = .ineligible
