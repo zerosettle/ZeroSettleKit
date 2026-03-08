@@ -137,6 +137,16 @@ private enum WebKitWarmup {
     }
 }
 
+/// Returns the StoreKit subscription end date if the given product matches
+/// the active migration offer. Used to tell the backend to create a trial subscription.
+@MainActor
+private func migrationEndDate(for productId: String) -> Date? {
+    guard let manager = ZeroSettle.shared.migrationManager,
+          let offer = manager.offerData,
+          offer.prompt.productId == productId else { return nil }
+    return offer.storekitSubscriptionEnd
+}
+
 // MARK: - Checkout Preloader
 
 /// Manages off-screen WKWebView creation and preloading.
@@ -148,10 +158,28 @@ private final class CheckoutPreloader: ObservableObject {
     @Published private(set) var isReady = false
     private(set) var measuredContentHeight: CGFloat = 0
     let messageRouter = MessageRouter()
+
+    /// Each call to `loadAndWait` increments this token. Closures captured
+    /// from a previous load cycle compare their token to detect staleness
+    /// and avoid resuming a continuation that belongs to a newer cycle.
+    private var loadToken: UInt = 0
     private var continuation: CheckedContinuation<Void, Never>?
+
+    private var loadedURL: URL?
 
     @MainActor
     func loadAndWait(url: URL) async {
+        // Reuse the existing WebView if it already loaded this URL
+        if let wv = webView, isReady, loadedURL == url {
+            return
+        }
+
+        // Cancel any in-flight load by resuming its continuation
+        cancelCurrentLoad()
+
+        loadToken &+= 1
+        let myToken = loadToken
+
         let config = WKWebViewConfiguration()
         config.processPool = WebKitWarmup.processPool
         config.allowsInlineMediaPlayback = true
@@ -178,39 +206,66 @@ private final class CheckoutPreloader: ObservableObject {
         let request = URLRequest(url: url)
         wv.load(request)
 
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            self.continuation = cont
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                self.continuation = cont
 
-            messageRouter.onMessage = { [weak self] message in
-                guard let self = self else { return }
+                messageRouter.onMessage = { [weak self] message in
+                    guard let self = self, self.loadToken == myToken else { return }
 
-                guard message.name == "checkoutComplete",
-                      let body = message.body as? [String: Any],
-                      let action = body["action"] as? String else { return }
+                    guard message.name == "checkoutComplete",
+                          let body = message.body as? [String: Any],
+                          let action = body["action"] as? String else { return }
 
-                guard action == "ready" else { return }
+                    guard action == "ready" else { return }
 
-                self.webView?.evaluateJavaScript(setupMeasureJS + "\n" + measureContentJS) { [weak self] result, _ in
-                    guard let self = self else { return }
-                    DispatchQueue.main.async {
-                        if let height = parseJSHeight(result) {
-                            self.measuredContentHeight = height
+                    self.webView?.evaluateJavaScript(setupMeasureJS + "\n" + measureContentJS) { [weak self] result, _ in
+                        guard let self = self, self.loadToken == myToken else { return }
+                        DispatchQueue.main.async {
+                            if let height = parseJSHeight(result) {
+                                self.measuredContentHeight = height
+                            }
+                            self.isReady = true
+                            self.loadedURL = url
+                            self.continuation?.resume()
+                            self.continuation = nil
                         }
-                        self.isReady = true
-                        self.continuation?.resume()
-                        self.continuation = nil
                     }
                 }
+
+                // Fallback: if the JS "ready" signal never fires (e.g. page error),
+                // show the sheet anyway after 8 seconds rather than hanging forever.
+                Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: 8_000_000_000)
+                    guard let self, self.loadToken == myToken, self.continuation != nil else { return }
+                    ZSLogger.error("Preloader timed out waiting for JS ready signal — presenting sheet anyway", category: .checkout)
+                    self.isReady = true
+                    self.loadedURL = url
+                    self.continuation?.resume()
+                    self.continuation = nil
+                }
+            }
+        } onCancel: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self, self.loadToken == myToken else { return }
+                self.cancelCurrentLoad()
             }
         }
     }
 
-    func reset() {
-        webView = nil
-        isReady = false
-        measuredContentHeight = 0
+    /// Resume and nil the current continuation (if any), clear WebView state.
+    private func cancelCurrentLoad() {
         continuation?.resume()
         continuation = nil
+        messageRouter.onMessage = nil
+    }
+
+    func reset() {
+        cancelCurrentLoad()
+        webView = nil
+        isReady = false
+        loadedURL = nil
+        measuredContentHeight = 0
     }
 }
 
@@ -445,6 +500,11 @@ extension CheckoutSheet where Header == EmptyView {
         // Only webview checkout uses PaymentIntents — safari/safariVC use checkout sessions
         guard ZeroSettle.shared.checkoutType == .webView else { return nil }
 
+        // Skip products without web checkout enabled (no Stripe price mapping)
+        if let product = ZeroSettle.shared.product(for: productId), product.webPrice == nil {
+            return nil
+        }
+
         guard let config = ZeroSettle.shared.currentConfig,
               let baseURL = ZeroSettle.shared.effectiveBaseURL else {
             return nil
@@ -458,15 +518,15 @@ extension CheckoutSheet where Header == EmptyView {
 
         do {
             let backend = Backend(baseURL: baseURL, publishableKey: pk)
-            let paymentIntent = try await backend.createPaymentIntent(productId: productId, userId: userId, freeTrialDays: freeTrialDays)
-            guard let url = URL(string: paymentIntent.checkoutUrl) else {
+            let checkout = try await backend.initiateCheckout(productId: productId, userId: userId, freeTrialDays: freeTrialDays, storekitSubscriptionEnd: migrationEndDate(for: productId))
+            guard let url = URL(string: checkout.checkoutUrl) else {
                 return nil
             }
 
             // Cache for re-use
             CheckoutCache.shared.set(
                 productId: productId, userId: userId, publishableKey: pk,
-                checkoutURL: url, transactionId: paymentIntent.transactionId
+                checkoutURL: url, transactionId: checkout.transactionId
             )
 
             // Fire-and-forget prefetch to prime DNS, TLS, and URL cache
@@ -475,7 +535,7 @@ extension CheckoutSheet where Header == EmptyView {
                 _ = try? await URLSession.shared.data(from: url)
             }
 
-            return (url, paymentIntent.transactionId)
+            return (url, checkout.transactionId)
         } catch {
             return nil
         }
@@ -544,7 +604,7 @@ extension CheckoutSheet {
             if dismissible {
                 Button {
                     dismiss()
-                    onComplete(.failure(PaymentSheetError.cancelled))
+                    onComplete(.failure(ZeroSettleError.cancelled))
                 } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 14, weight: .bold))
@@ -576,7 +636,7 @@ extension CheckoutSheet {
                 self.checkoutURL = url
                 self.transactionId = prefetchedTransactionId
             } else {
-                await createPaymentIntent()
+                await initiateCheckout()
             }
         }
     }
@@ -610,13 +670,13 @@ extension CheckoutSheet {
             Button("Try Again") {
                 loadError = nil
                 Task {
-                    await createPaymentIntent()
+                    await initiateCheckout()
                 }
             }
             .buttonStyle(.borderedProminent)
             Button("Cancel") {
                 dismiss()
-                onComplete(.failure(PaymentSheetError.cancelled))
+                onComplete(.failure(ZeroSettleError.cancelled))
             }
             .foregroundStyle(.secondary)
             Spacer()
@@ -627,7 +687,7 @@ extension CheckoutSheet {
 
     // MARK: - Actions
 
-    private func createPaymentIntent() async {
+    private func initiateCheckout() async {
         guard let config = ZeroSettle.shared.currentConfig,
               let baseURL = ZeroSettle.shared.effectiveBaseURL else {
             await MainActor.run {
@@ -638,10 +698,10 @@ extension CheckoutSheet {
 
         do {
             let backend = Backend(baseURL: baseURL, publishableKey: config.publishableKey)
-            let paymentIntent = try await backend.createPaymentIntent(productId: product.id, userId: userId, freeTrialDays: freeTrialDays)
+            let checkout = try await backend.initiateCheckout(productId: product.id, userId: userId, freeTrialDays: freeTrialDays, storekitSubscriptionEnd: migrationEndDate(for: product.id))
             await MainActor.run {
-                self.transactionId = paymentIntent.transactionId
-                self.checkoutURL = URL(string: paymentIntent.checkoutUrl)
+                self.transactionId = checkout.transactionId
+                self.checkoutURL = URL(string: checkout.checkoutUrl)
             }
         } catch {
             await MainActor.run {
@@ -665,12 +725,16 @@ extension CheckoutSheet {
 
         case .cancelled:
             dismiss()
-            onComplete(.failure(PaymentSheetError.cancelled))
+            onComplete(.failure(ZeroSettleError.cancelled))
 
         case .error(let message):
             dismiss()
-            let kind: PaymentFailureDetail.Kind
             let lowered = message.lowercased()
+            if lowered.contains("cancel") {
+                onComplete(.failure(ZeroSettleError.cancelled))
+                return
+            }
+            let kind: PaymentFailureDetail.Kind
             if lowered.contains("declined") || lowered.contains("card_declined") || lowered.contains("insufficient_funds") {
                 kind = .cardDeclined
             } else if lowered.contains("network") || lowered.contains("timeout") || lowered.contains("offline") {
@@ -790,8 +854,7 @@ private struct PaymentWebView: UIViewRepresentable {
         webView.scrollView.backgroundColor = .clear
         context.coordinator.webView = webView
 
-        var request = URLRequest(url: url)
-        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        let request = URLRequest(url: url)
         webView.load(request)
 
         return webView
@@ -1205,6 +1268,7 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
         guard !products.isEmpty else { return }
 
         // 1. Preload PaymentIntents for all products concurrently
+        // (preload() skips products without web checkout enabled)
         await withTaskGroup(of: Void.self) { group in
             for product in products {
                 group.addTask {
@@ -1388,6 +1452,7 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
         guard !products.isEmpty else { return }
 
         // 1. Preload PaymentIntents for all products concurrently
+        // (preload() skips products without web checkout enabled)
         await withTaskGroup(of: Void.self) { group in
             for product in products {
                 group.addTask {

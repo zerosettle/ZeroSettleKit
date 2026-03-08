@@ -58,9 +58,21 @@ internal final class WebCheckoutFlow: NSObject {
     func beginCheckout(productId: String, userId: String? = nil) async throws -> CheckoutSession {
         ZSLogger.info("Creating checkout session for product: \(productId)", category: .checkout)
 
-        let session = try await backend.createCheckoutSession(
+        let response = try await backend.initiateCheckout(
             productId: productId,
-            userId: userId
+            userId: userId,
+            freeTrialDays: 0,
+            checkoutMode: CheckoutConstants.CheckoutMode.browser
+        )
+
+        guard let checkoutUrl = URL(string: response.checkoutUrl) else {
+            throw ZeroSettleError.checkoutFailed(reason: .other("Invalid checkout URL"))
+        }
+
+        let session = CheckoutSession(
+            sessionId: response.transactionId,
+            checkoutUrl: checkoutUrl,
+            transactionId: response.transactionId
         )
 
         ZSLogger.info("Checkout session created, transaction: \(session.transactionId ?? "none")", category: .checkout)

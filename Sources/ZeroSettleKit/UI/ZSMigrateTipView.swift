@@ -55,7 +55,7 @@ public struct MigrationTipView: View {
     @State private var hasApplePay = false
 
     private var renewalDateString: String? {
-        guard let date = manager.offerData?.activeStoreKitExpiresAt else { return nil }
+        guard let date = manager.offerData?.storekitSubscriptionEnd else { return nil }
         let formatter = DateFormatter()
         formatter.dateFormat = "MMM d"
         return formatter.string(from: date)
@@ -509,8 +509,8 @@ public struct MigrationTipView: View {
     private func startWebViewCheckout() {
         Task {
             if let baseURL = ZeroSettle.shared.effectiveBaseURL {
-                let paymentIntentsURL = baseURL.appendingPathComponent("iap/payment-intents/")
-                ZSLogger.info("[MigrateTipView] Stripe payment intents URL: \(paymentIntentsURL.absoluteString)", category: .migration)
+                let checkoutURL = baseURL.appendingPathComponent("iap/payment-intents/")
+                ZSLogger.info("[MigrateTipView] Checkout endpoint: \(checkoutURL.absoluteString)", category: .migration)
             }
             let url = await manager.startCheckout()
             if let url {
@@ -535,7 +535,8 @@ public struct MigrationTipView: View {
                 await manager.markCheckoutSucceeded()
                 onEvent?(.checkoutCompleted)
             } catch {
-                // Stay in presented state; user can retry
+                // Reset so the CTA button reappears for retry
+                ctaTapped = false
             }
         }
     }

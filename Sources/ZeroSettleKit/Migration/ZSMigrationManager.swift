@@ -196,8 +196,9 @@ public final class ZSMigrationManager: ObservableObject {
 
         // ── Check 4: Demo mode (bypasses all real checks) ──
         if Self.demoMode {
+            let demoProductId = iap.products.first?.id ?? "com.example.subscription"
             let prompt = MigrationPrompt(
-                productId: "wizzGoldWeekly",
+                productId: demoProductId,
                 discountPercent: 15,
                 title: "Switch & Save",
                 message: "Switch to direct billing and get 15% off forever. Same features, fewer platform fees, and we pass the savings onto you.",
@@ -205,9 +206,11 @@ public final class ZSMigrationManager: ObservableObject {
             )
             state = .eligible
             offerData = MigrationOffer.OfferData(
-                prompt: prompt, freeTrialDays: 7,
-                activeStoreKitProductId: "wizzGoldWeekly",
-                activeStoreKitExpiresAt: nil, activeStoreKitOriginalTransactionId: nil
+                prompt: prompt,
+                freeTrialDays: 7,
+                activeStoreKitProductId: demoProductId,
+                storekitSubscriptionEnd: Date().addingTimeInterval(7 * 86400),
+                activeStoreKitOriginalTransactionId: nil
             )
             ZSLogger.info("[MigrationTip] SHOW: demo mode", category: .migration)
             return
@@ -222,12 +225,16 @@ public final class ZSMigrationManager: ObservableObject {
         }
 
         // ── Gather entitlements ──
+        let subscriptionProductIds = Set(iap.products.filter {
+            $0.type == .autoRenewableSubscription || $0.type == .nonRenewingSubscription
+        }.map { $0.id })
         let storeKitEntitlements = iap.entitlements.filter { $0.source == .storeKit }
         let activeStoreKitEntitlements = storeKitEntitlements.filter { $0.isActive }
         let webEntitlements = iap.entitlements.filter { $0.source == .webCheckout }
-        let activeWebEntitlements = webEntitlements.filter { $0.isActive }
+        // Only consider web *subscriptions* — consumable purchases (streak savers, etc.) are irrelevant for migration
+        let activeWebSubscriptions = webEntitlements.filter { $0.isActive && subscriptionProductIds.contains($0.productId) }
 
-        ZSLogger.info("[MigrationTip] Entitlements: storeKit=\(storeKitEntitlements.count) (active=\(activeStoreKitEntitlements.count)), web=\(webEntitlements.count) (active=\(activeWebEntitlements.count))", category: .migration)
+        ZSLogger.info("[MigrationTip] Entitlements: storeKit=\(storeKitEntitlements.count) (active=\(activeStoreKitEntitlements.count)), web=\(webEntitlements.count) (activeSubscriptions=\(activeWebSubscriptions.count))", category: .migration)
         for ent in iap.entitlements {
             ZSLogger.info("[MigrationTip]   \(ent.source.rawValue): \(ent.productId) active=\(ent.isActive) status=\(ent.status.rawString) willRenew=\(ent.willRenew) expires=\(ent.expiresAt?.description ?? "nil") origTxnId=\(ent.storekitOriginalTransactionId ?? "nil") originalPurchase=\(ent.originalPurchaseDate?.description ?? "nil")", category: .migration)
         }
@@ -240,8 +247,8 @@ public final class ZSMigrationManager: ObservableObject {
             return
         }
 
-        // ── Check 7: Both StoreKit + web active ──
-        if !activeWebEntitlements.isEmpty && !activeStoreKitEntitlements.isEmpty {
+        // ── Check 7: Both StoreKit + web subscription active ──
+        if !activeWebSubscriptions.isEmpty && !activeStoreKitEntitlements.isEmpty {
             let appleWillRenew = activeStoreKitEntitlements.first?.willRenew ?? true
             if appleWillRenew {
                 // Apple still renewing → prompt user to cancel
@@ -256,12 +263,24 @@ public final class ZSMigrationManager: ObservableObject {
             }
             return
         }
+        ZSLogger.info("[MigrationManager] Active StoreKit subscription(s) found: \(activeStoreKitEntitlements.map { "\($0.productId)(status=\($0.status.rawString), willRenew=\($0.willRenew))" })", category: .migration)
 
-        // ── Check 8: Web-only active → already migrated, no tip needed ──
-        guard activeWebEntitlements.isEmpty else {
+        // ── Log the product catalog mapping for active subscriptions ──
+        let catalogProducts = iap.products
+        ZSLogger.info("[MigrationManager] Product catalog has \(catalogProducts.count) product(s)", category: .migration)
+        for activeEnt in activeStoreKitEntitlements {
+            if let matchingProduct = catalogProducts.first(where: { $0.id == activeEnt.productId }) {
+                ZSLogger.info("[MigrationManager] Catalog match for active subscription '\(activeEnt.productId)': displayName=\"\(matchingProduct.displayName)\", type=\(matchingProduct.type.rawValue), webPrice=\(matchingProduct.webPrice.map { "\($0.formatted) (\($0.amountCents)¢ \($0.currencyCode))" } ?? "nil"), appStorePrice=\(matchingProduct.appStorePrice.map { "\($0.formatted) (\($0.amountCents)¢ \($0.currencyCode))" } ?? "nil"), storeKitAvailable=\(matchingProduct.storeKitAvailable), storeKitPrice=\(matchingProduct.storeKitPrice.map { "\($0.formatted) (\($0.amountCents)¢ \($0.currencyCode))" } ?? "nil"), syncedToAsc=\(matchingProduct.syncedToAppStoreConnect), savingsPercent=\(matchingProduct.savingsPercent.map(String.init) ?? "nil"), subscriptionGroupId=\(matchingProduct.subscriptionGroupId.map(String.init) ?? "nil")", category: .migration)
+            } else {
+                ZSLogger.info("[MigrationManager] No catalog product found for active StoreKit subscription '\(activeEnt.productId)' — available product IDs: \(catalogProducts.map { $0.id })", category: .migration)
+            }
+        }
+
+        // ── Check 8: Web subscription check (uses activeWebSubscriptions from above) ──
+        guard activeWebSubscriptions.isEmpty else {
             state = .ineligible
             offerData = nil
-            ZSLogger.info("[MigrationTip] SKIP: active web entitlement exists, no active StoreKit (already migrated)", category: .migration)
+            ZSLogger.info("[MigrationManager] → .ineligible — user already has active web subscription(s): \(activeWebSubscriptions.map { "\($0.productId)(status=\($0.status.rawString), expires=\($0.expiresAt?.description ?? "nil"))" })", category: .migration)
             return
         }
 
@@ -294,7 +313,6 @@ public final class ZSMigrationManager: ObservableObject {
         ZSLogger.info("[MigrationTip] Rollout check passed (bucket=\(bucket), rollout=\(rolloutPercent)%)", category: .migration)
 
         // ── Check 10: Target product exists in catalog ──
-        let catalogProducts = iap.products
         guard let targetProduct = catalogProducts.first(where: { $0.id == prompt.productId }) else {
             state = .ineligible
             offerData = nil
@@ -333,7 +351,7 @@ public final class ZSMigrationManager: ObservableObject {
             prompt: prompt,
             freeTrialDays: prompt.freeTrialDays,
             activeStoreKitProductId: matchedEntitlement.productId,
-            activeStoreKitExpiresAt: matchedEntitlement.expiresAt,
+            storekitSubscriptionEnd: matchedEntitlement.expiresAt,
             activeStoreKitOriginalTransactionId: matchedEntitlement.storekitOriginalTransactionId
         )
         state = .eligible
@@ -466,7 +484,7 @@ public final class ZSMigrationManager: ObservableObject {
         checkoutError = nil
         isLoading = true
 
-        ZSLogger.info("[MigrationManager] Creating payment intent: productId=\(offerData.prompt.productId), userId=\(userId), stripeCustomerId=\(stripeCustomerId ?? "nil"), freeTrialDays=\(offerData.freeTrialDays), activeStoreKitProductId=\(offerData.activeStoreKitProductId), activeStoreKitExpiresAt=\(offerData.activeStoreKitExpiresAt?.description ?? "nil"), discount=\(offerData.prompt.discountPercent)%", category: .migration)
+        ZSLogger.info("[MigrationManager] Creating payment intent: productId=\(offerData.prompt.productId), userId=\(userId), stripeCustomerId=\(stripeCustomerId ?? "nil"), freeTrialDays=\(offerData.freeTrialDays), activeStoreKitProductId=\(offerData.activeStoreKitProductId), storekitSubscriptionEnd=\(offerData.storekitSubscriptionEnd?.description ?? "nil"), discount=\(offerData.prompt.discountPercent)%", category: .migration)
 
         // Log the Stripe product mapping being used for checkout
         let catalogProducts = ZeroSettle.shared.products
@@ -480,29 +498,29 @@ public final class ZSMigrationManager: ObservableObject {
             let backend = try makeBackend()
 
             if let baseURL = ZeroSettle.shared.effectiveBaseURL {
-                let paymentIntentsURL = baseURL.appendingPathComponent("iap/payment-intents/")
-                ZSLogger.info("[MigrationManager] Stripe payment intents URL: \(paymentIntentsURL.absoluteString)", category: .migration)
+                let checkoutURL = baseURL.appendingPathComponent("iap/payment-intents/")
+                ZSLogger.info("[MigrationManager] Checkout endpoint: \(checkoutURL.absoluteString)", category: .migration)
             }
 
-            let paymentIntent = try await backend.createPaymentIntent(
+            let checkout = try await backend.initiateCheckout(
                 productId: offerData.prompt.productId,
                 userId: userId,
                 freeTrialDays: offerData.freeTrialDays,
                 stripeCustomerId: stripeCustomerId,
-                storekitSubscriptionEnd: offerData.activeStoreKitExpiresAt,
+                storekitSubscriptionEnd: offerData.storekitSubscriptionEnd,
                 storekitOriginalTransactionId: offerData.activeStoreKitOriginalTransactionId
             )
 
             isLoading = false
-            checkoutTransactionId = paymentIntent.transactionId
-            let url = URL(string: paymentIntent.checkoutUrl)
-            ZSLogger.info("[MigrationManager] Migration checkout created — transactionId=\(paymentIntent.transactionId), checkoutUrl=\(paymentIntent.checkoutUrl), storekitSubscriptionEnd=\(offerData.activeStoreKitExpiresAt?.description ?? "nil"), originalTransactionId=\(offerData.activeStoreKitOriginalTransactionId ?? "nil")", category: .migration)
+            checkoutTransactionId = checkout.transactionId
+            let url = URL(string: checkout.checkoutUrl)
+            ZSLogger.info("[MigrationManager] Migration checkout created — transactionId=\(checkout.transactionId), checkoutUrl=\(checkout.checkoutUrl), storekitSubscriptionEnd=\(offerData.storekitSubscriptionEnd?.description ?? "nil"), originalTransactionId=\(offerData.activeStoreKitOriginalTransactionId ?? "nil")", category: .migration)
 
             // Default Apple subscription to active — "guilty until proven innocent".
             // Updated with real status after manage subscription sheet dismisses.
             do {
-                try await backend.updateStorekitStatus(transactionId: paymentIntent.transactionId, storekitStatus: 1)
-                ZSLogger.info("[MigrationManager] Set default storekit_status=1 (active) on transaction=\(paymentIntent.transactionId)", category: .migration)
+                try await backend.updateStorekitStatus(transactionId: checkout.transactionId, storekitStatus: 1)
+                ZSLogger.info("[MigrationManager] Set default storekit_status=1 (active) on transaction=\(checkout.transactionId)", category: .migration)
             } catch {
                 ZSLogger.error("[MigrationManager] Failed to set default storekit_status: \(error)", category: .migration)
             }
@@ -511,7 +529,7 @@ public final class ZSMigrationManager: ObservableObject {
         } catch {
             checkoutError = error
             isLoading = false
-            ZSLogger.error("[MigrationManager] Payment intent failed: \(error)", category: .migration)
+            ZSLogger.error("[MigrationManager] Checkout initiation failed: \(error)", category: .migration)
 
             // If the product doesn't exist on the backend, the migration offer is invalid —
             // hide the view by transitioning to .ineligible.

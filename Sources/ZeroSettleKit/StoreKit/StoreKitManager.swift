@@ -7,6 +7,9 @@
 
 import Foundation
 import StoreKit
+#if canImport(UIKit)
+import UIKit
+#endif
 
 #if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
@@ -152,7 +155,16 @@ internal final class StoreKitManager: @unchecked Sendable {
     /// - Parameter product: The StoreKit product to purchase
     /// - Returns: The verified transaction
     func purchase(_ product: StoreKit.Product) async throws -> SKTransaction {
-        let result = try await product.purchase()
+        let result: StoreKit.Product.PurchaseResult
+        #if canImport(UIKit)
+        if let scene = await activeScene() {
+            result = try await product.purchase(confirmIn: scene)
+        } else {
+            result = try await product.purchase()
+        }
+        #else
+        result = try await product.purchase()
+        #endif
 
         switch result {
         case .success(let verification):
@@ -387,4 +399,13 @@ internal final class StoreKitManager: @unchecked Sendable {
             originalPurchaseDate: transaction.originalPurchaseDate
         )
     }
+
+    #if canImport(UIKit)
+    @MainActor
+    private func activeScene() -> UIWindowScene? {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }
+    }
+    #endif
 }

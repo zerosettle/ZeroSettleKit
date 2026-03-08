@@ -62,7 +62,7 @@ extension NativePay {
     internal final class Flow: NSObject {
         private let backend: Backend
         private var paymentContinuation: CheckedContinuation<NativePay.Result, Error>?
-        private var currentResponse: PaymentIntentResponse?
+        private var currentResponse: CheckoutResponse?
         private var apiClient: STPAPIClient?
 
         init(backend: Backend) {
@@ -81,10 +81,11 @@ extension NativePay {
             userId: String?,
             merchantId: String
         ) async throws -> NativePay.Result {
-            // 1. Create PaymentIntent on backend (reuses existing endpoint)
-            let response = try await backend.createPaymentIntent(
+            // 1. Initiate checkout on backend
+            let response = try await backend.initiateCheckout(
                 productId: productId, userId: userId, freeTrialDays: 0
             )
+
             self.currentResponse = response
 
             // 2. Configure a dedicated Stripe API client

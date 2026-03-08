@@ -727,15 +727,16 @@ public final class ZeroSettle: ObservableObject {
 
             ZSLogger.info("Checkout browser dismissed for \(productId), transaction: \(session.transactionId ?? "none")", category: .checkout)
 
-            // Brief yield to allow any pending universal link callback Task to process.
-            // The foreground notification fires before scene(_:continue:), so
-            // processCheckoutCallback may still be queued when we reach this point.
-            try? await Task.sleep(nanoseconds: 500_000_000)
+            // Brief pause to allow the universal link callback to process.
+            // The foreground notification fires before scene(_:continue:),
+            // which dispatches processCheckoutCallback in a separate Task on
+            // @MainActor. A single Task.yield() is insufficient — it doesn't
+            // guarantee the callback Task has been scheduled and executed.
+            try? await Task.sleep(nanoseconds: 300_000_000)
 
             // If the universal link callback already fired, pendingCheckout is false
             // and processCheckoutCallback already handled delegate/entitlements.
-            // Just fetch the transaction to return it.
-            guard pendingCheckout else {
+            if !pendingCheckout {
                 ZSLogger.debug("Callback already processed via universal link", category: .checkout)
                 if let transactionId = session.transactionId {
                     let transaction = try await backend.getTransaction(transactionId: transactionId)
@@ -744,44 +745,29 @@ public final class ZeroSettle: ObservableObject {
                 throw ZeroSettleError.cancelled
             }
 
-            // Universal link didn't fire — verify via polling
-            guard let transactionId = session.transactionId else {
-                pendingCheckout = false
-
-                delegate?.zeroSettleCheckoutDidCancel(productId: productId)
-                throw ZeroSettleError.cancelled
-            }
-
-            do {
-                let transaction = try await backend.verifyTransaction(transactionId: transactionId)
-
-                // If the universal link callback already processed this checkout
-                // (during the polling delay), skip the delegate call to avoid duplicates.
-                guard pendingCheckout else {
-                    ZSLogger.debug("Transaction \(transactionId) verified, but callback already handled it", category: .checkout)
+            // No callback — verify the transaction with the backend before
+            // assuming the user abandoned. The Stripe webhook may still be
+            // processing, so verifyTransaction polls until confirmed.
+            // This is the primary completion path for Safari / SafariVC
+            // checkouts (universal links are unreliable in practice).
+            if let transactionId = session.transactionId {
+                ZSLogger.debug("No callback — verifying transaction \(transactionId) with backend", category: .checkout)
+                do {
+                    let transaction = try await backend.verifyTransaction(transactionId: transactionId)
+                    ZSLogger.info("Transaction \(transactionId) confirmed via backend verification", category: .checkout)
+                    pendingCheckout = false
+                    delegate?.zeroSettleCheckoutDidComplete(transaction: transaction)
+                    await refreshEntitlementsAfterCheckout(transaction: transaction)
                     return transaction
-                }
-                pendingCheckout = false
-
-                ZSLogger.info("Transaction \(transactionId) verified via polling", category: .checkout)
-                delegate?.zeroSettleCheckoutDidComplete(transaction: transaction)
-                await refreshEntitlementsAfterCheckout(transaction: transaction)
-                return transaction
-            } catch let sheetError as PaymentSheetError {
-                pendingCheckout = false
-
-                switch sheetError {
-                case .cancelled:
-                    delegate?.zeroSettleCheckoutDidCancel(productId: productId)
-                    throw ZeroSettleError.cancelled
-                case .verificationFailed(let message):
-                    delegate?.zeroSettleCheckoutDidFail(productId: productId, error: sheetError)
-                    throw ZeroSettleError.transactionVerificationFailed(message)
-                default:
-                    delegate?.zeroSettleCheckoutDidFail(productId: productId, error: sheetError)
-                    throw ZeroSettleError.checkoutFailed(reason: .other(sheetError.localizedDescription ?? "Unknown error"))
+                } catch {
+                    ZSLogger.debug("Transaction \(transactionId) not completed: \(error)", category: .checkout)
                 }
             }
+
+            // User truly abandoned — no callback and transaction not completed.
+            pendingCheckout = false
+            delegate?.zeroSettleCheckoutDidCancel(productId: productId)
+            throw ZeroSettleError.cancelled
         } catch let error as ZeroSettleError {
             pendingCheckout = false
             throw error

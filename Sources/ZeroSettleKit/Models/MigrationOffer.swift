@@ -43,8 +43,8 @@ public enum MigrationOffer {
         public let freeTrialDays: Int
         /// The product ID of the user's active StoreKit subscription.
         public let activeStoreKitProductId: String
-        /// The expiration date of the user's active StoreKit subscription, if known.
-        public let activeStoreKitExpiresAt: Date?
+        /// Exact expiration date of the StoreKit subscription (sent to backend as trial_end).
+        public let storekitSubscriptionEnd: Date?
         /// The original StoreKit transaction ID for the active subscription.
         public let activeStoreKitOriginalTransactionId: String?
     }

@@ -22,4 +22,10 @@ internal enum CheckoutConstants {
 
     /// Path prefix for checkout callback URLs.
     static let callbackPathPrefix = "/checkout/callback"
+
+    /// Checkout mode sent to the backend to select which checkout page to serve.
+    enum CheckoutMode {
+        static let native = "native"
+        static let browser = "browser"
+    }
 }

@@ -203,19 +203,45 @@ internal final class Backend: @unchecked Sendable {
         )
     }
 
-    // MARK: - Payment Intents (for native checkout)
+    // MARK: - Checkout
 
-    /// Create a Stripe PaymentIntent for native checkout (Apple Pay / Card in WebView).
-    /// Returns data needed for the Payment Request API and card entry form.
-    func createPaymentIntent(productId: String, userId: String? = nil, freeTrialDays: Int, stripeCustomerId: String? = nil, storekitSubscriptionEnd: Date? = nil, storekitOriginalTransactionId: String? = nil) async throws -> PaymentIntentResponse {
+    /// Initiate a checkout for the given product.
+    /// The backend creates the Transaction, PaymentIntent/SetupIntent, and returns a `checkoutUrl`.
+    func initiateCheckout(productId: String, userId: String? = nil, freeTrialDays: Int, stripeCustomerId: String? = nil, storekitSubscriptionEnd: Date? = nil, storekitOriginalTransactionId: String? = nil, checkoutMode: String? = nil) async throws -> CheckoutResponse {
         let url = apiURL("iap/payment-intents/")
-        let body = CreatePaymentIntentRequest(productId: productId, userId: userId, freeTrialDays: freeTrialDays, stripeCustomerId: stripeCustomerId, storekitSubscriptionEnd: storekitSubscriptionEnd, storekitOriginalTransactionId: storekitOriginalTransactionId)
+        let iso8601End: String? = storekitSubscriptionEnd.map {
+            ISO8601DateFormatter().string(from: $0)
+        }
+        // Auto-detect the active StoreKit subscription's originalTransactionId
+        // when not explicitly provided.  Scoped to the same subscription group
+        // as the product being purchased so multi-group apps resolve correctly.
+        // The backend uses this to query Apple's App Store Server API for the
+        // real expiry and apply a migration trial automatically.
+        var resolvedOriginalTxnId = storekitOriginalTransactionId
+        if resolvedOriginalTxnId == nil {
+            resolvedOriginalTxnId = await MainActor.run {
+                guard let targetProduct = ZeroSettle.shared.product(for: productId),
+                      let groupId = targetProduct.subscriptionGroupId else { return nil }
+                let groupProductIds = Set(ZeroSettle.shared.products
+                    .filter { $0.subscriptionGroupId == groupId }
+                    .map { $0.id })
+                return ZeroSettle.shared.entitlements
+                    .first(where: {
+                        $0.source == .storeKit &&
+                        $0.isActive &&
+                        $0.storekitOriginalTransactionId != nil &&
+                        groupProductIds.contains($0.productId)
+                    })?
+                    .storekitOriginalTransactionId
+            }
+        }
+        let body = InitiateCheckoutRequest(productId: productId, userId: userId, freeTrialDays: freeTrialDays, stripeCustomerId: stripeCustomerId, storekitSubscriptionEnd: iso8601End, storekitOriginalTransactionId: resolvedOriginalTxnId, checkoutMode: checkoutMode)
         do {
             return try await httpClient.post(
                 url,
                 body: body,
                 headers: authHeaders,
-                responseType: PaymentIntentResponse.self
+                responseType: CheckoutResponse.self
             )
         } catch {
             throw Backend.wrapError(error)
@@ -257,12 +283,10 @@ internal final class Backend: @unchecked Sendable {
     // MARK: - Transaction Verification
 
     /// Poll the backend to verify a transaction has completed.
-    /// Used by both `CheckoutSheet` (webview path) and `ZeroSettle.purchase()` (safari paths).
     ///
     /// Waits an initial 1.5s for webhook processing, then polls `getTransaction()`
     /// up to `maxAttempts` times. Returns the transaction on `.completed` or
-    /// `.processing` (final attempt), throws `PaymentSheetError.cancelled` on
-    /// pending/failed, and `PaymentSheetError.verificationFailed` on timeout.
+    /// `.processing` (final attempt), throws on pending/failed or timeout.
     func verifyTransaction(
         transactionId: String,
         maxAttempts: Int = 6,
@@ -703,13 +727,14 @@ internal struct CreateCheckoutSessionRequest: Encodable {
     let platform: String = "ios"
 }
 
-internal struct CreatePaymentIntentRequest: Encodable {
+internal struct InitiateCheckoutRequest: Encodable {
     let productId: String
     let userId: String?
     let freeTrialDays: Int
     let stripeCustomerId: String?
-    let storekitSubscriptionEnd: Date?
+    let storekitSubscriptionEnd: String?
     let storekitOriginalTransactionId: String?
+    let checkoutMode: String?
     let platform: String = "ios"
 }
 
@@ -718,9 +743,9 @@ internal struct UpdateStorekitStatusRequest: Encodable {
     let storekitSubscriptionEnd: Date?
 }
 
-/// Response from the create_payment_intent endpoint.
-/// Contains everything needed to render the native checkout WebView or native Apple Pay sheet.
-internal struct PaymentIntentResponse: Decodable {
+/// Response from the checkout initiation endpoint.
+/// Contains the checkout URL and metadata for rendering the payment UI.
+internal struct CheckoutResponse: Decodable {
     let clientSecret: String
     let transactionId: String
     let amount: Int
