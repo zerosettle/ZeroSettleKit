@@ -1467,7 +1467,9 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
         //    Stripe JS, DNS, TLS, and assets are warm in WKWebView's cache.
         //    Don't set preloadedURL/transactionId here — the user hasn't selected
         //    a product yet. preloadAll() will set them for the correct product.
-        guard !Task.isCancelled, let first = products.first else { return }
+        //    If a product was already selected (e.g., user tapped while preloading),
+        //    skip this to avoid overwriting the WebView that preloadAll() loaded.
+        guard !Task.isCancelled, let first = products.first, presentedProduct == nil else { return }
         let pk = ZeroSettle.shared.currentConfig?.publishableKey ?? ""
         if let result = CheckoutCache.shared.get(productId: first.id, userId: userId, publishableKey: pk) {
             await preloader.loadAndWait(url: result.checkoutURL)

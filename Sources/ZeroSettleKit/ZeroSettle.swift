@@ -597,7 +597,12 @@ public final class ZeroSettle: ObservableObject {
             // 2. Try to fetch ALL products from StoreKit (let StoreKit tell us what exists)
             let allProductIds = products.map { $0.id }
 
-            // 3. Fetch StoreKit products (if StoreKit sync enabled)
+            // 3. Clean up expired unfinished transactions before purchasing
+            if let storeKitManager {
+                await storeKitManager.finishExpiredTransactions()
+            }
+
+            // 4. Fetch StoreKit products (if StoreKit sync enabled)
             if let storeKitManager, !allProductIds.isEmpty {
                 let skProducts = await storeKitManager.fetchProducts(for: allProductIds)
 

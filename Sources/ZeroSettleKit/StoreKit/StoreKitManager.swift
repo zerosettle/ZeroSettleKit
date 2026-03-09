@@ -185,6 +185,30 @@ internal final class StoreKitManager: @unchecked Sendable {
         }
     }
 
+    // MARK: - Unfinished Transaction Cleanup
+
+    /// Finishes any unfinished StoreKit transactions for expired subscriptions.
+    ///
+    /// In sandbox, subscriptions auto-renew rapidly and each renewal creates a
+    /// transaction. If the app didn't `finish()` them (e.g. backend sync failed),
+    /// they accumulate and block new purchases — StoreKit returns the stale
+    /// transaction instead of presenting the purchase dialog.
+    func finishExpiredTransactions() async {
+        let now = Date()
+        var finished = 0
+        for await result in SKTransaction.unfinished {
+            guard case .verified(let transaction) = result else { continue }
+            if let expiration = transaction.expirationDate, expiration < now {
+                await transaction.finish()
+                finished += 1
+                ZSLogger.info("Finished expired unfinished transaction: \(transaction.productID) (id: \(transaction.id), expired: \(expiration))", category: .entitlements)
+            }
+        }
+        if finished > 0 {
+            ZSLogger.info("Cleaned up \(finished) expired unfinished transaction(s)", category: .entitlements)
+        }
+    }
+
     // MARK: - Transaction Sync
 
     /// Sync all current StoreKit entitlements to the backend.
