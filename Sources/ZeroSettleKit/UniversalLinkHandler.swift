@@ -13,7 +13,8 @@ internal import ZeroSettleCore
 
 // MARK: - View Modifier
 
-/// A view modifier that handles ZeroSettle checkout callbacks via universal links.
+/// A view modifier that handles ZeroSettle checkout callbacks via universal links
+/// and hosts the shared WebView preloader pool in the view hierarchy.
 ///
 /// ZeroSettle uses **universal links only** — no custom URL schemes.
 /// The developer must add the Associated Domains entitlement for this to work:
@@ -22,8 +23,17 @@ internal import ZeroSettleCore
 ///
 /// Apply this to your root view to enable automatic checkout callback handling.
 internal struct ZeroSettleHandlerModifier: ViewModifier {
+    @ObservedObject private var pool = CheckoutPreloaderPool.shared
+
     public func body(content: Content) -> some View {
         content
+            // Host the shared WebView pool so pre-rendered WKWebViews
+            // are in the view hierarchy and can load/render content.
+            .background(
+                PoolPreloaderHost(webViews: pool.webViews)
+                    .frame(width: 1, height: 1)
+                    .allowsHitTesting(false)
+            )
             // Primary path: universal links fire via NSUserActivity.
             .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
                 guard let url = activity.webpageURL else {

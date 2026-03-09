@@ -36,9 +36,6 @@ public enum ZSLogger {
         type: OSLogType = .default
     ) {
         os_log("%{public}@", log: logger(for: category), type: type, message)
-        #if DEBUG
-        print("[ZeroSettle/\(category.rawValue)] \(message)")
-        #endif
     }
 
     public static func debug(_ message: String, category: Category = .general) {

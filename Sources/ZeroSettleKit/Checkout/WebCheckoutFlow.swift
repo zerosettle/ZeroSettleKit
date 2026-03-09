@@ -58,6 +58,8 @@ internal final class WebCheckoutFlow: NSObject {
     func beginCheckout(productId: String, userId: String? = nil) async throws -> CheckoutSession {
         ZSLogger.info("Creating checkout session for product: \(productId)", category: .checkout)
 
+        // WebCheckoutFlow uses checkoutMode=browser which produces a different
+        // checkout URL path than cached PIs (native mode). Always call the server.
         let response = try await backend.initiateCheckout(
             productId: productId,
             userId: userId,

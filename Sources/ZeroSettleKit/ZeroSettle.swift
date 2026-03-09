@@ -213,14 +213,29 @@ public final class ZeroSettle: ObservableObject {
         /// If nil, the SDK uses the merchant ID from the backend config (managed mode default).
         public let appleMerchantId: String?
 
+        /// Whether to automatically preload checkout sessions for all products
+        /// after ``ZeroSettle/bootstrap(userId:)`` completes.
+        /// When `true` (the default), the first checkout opens instantly with no network delay.
+        public let preloadCheckout: Bool
+
+        /// Maximum number of WKWebViews to pre-render in the background pool.
+        /// Each WebView costs ~3-7 MB of memory. Set to `nil` (the default) for
+        /// no limit (all products), or a positive `Int` to cap the pool size.
+        /// Set to `0` to disable WebView pre-rendering entirely (PI caching still works).
+        public let maxPreloadedWebViews: Int?
+
         public init(
             publishableKey: String,
             syncStoreKitTransactions: Bool = true,
-            appleMerchantId: String? = nil
+            appleMerchantId: String? = nil,
+            preloadCheckout: Bool = true,
+            maxPreloadedWebViews: Int? = nil
         ) {
             self.publishableKey = publishableKey
             self.syncStoreKitTransactions = syncStoreKitTransactions
             self.appleMerchantId = appleMerchantId
+            self.preloadCheckout = preloadCheckout
+            self.maxPreloadedWebViews = maxPreloadedWebViews
         }
 
         internal var backendURL: URL {
@@ -422,9 +437,7 @@ public final class ZeroSettle: ObservableObject {
 
     // MARK: - Initialization
 
-    private init() {
-        ZSLogger.info("ZeroSettle initialized", category: .general)
-    }
+    private init() {}
 
     // MARK: - Configuration
 
@@ -450,7 +463,7 @@ public final class ZeroSettle: ObservableObject {
     public func configure(_ config: Configuration) {
         // Clear cached checkout URLs from the previous environment to prevent
         // stale sandbox PIs being served after switching to live (or vice versa).
-        CheckoutCache.shared.clearAll()
+        Task { await CheckoutResponseCache.shared.clearAll() }
 
         self.config = config
 
@@ -480,15 +493,7 @@ public final class ZeroSettle: ObservableObject {
         isConfigured = true
 
         let mode = config.publishableKey.hasPrefix("zs_pk_test_") ? "sandbox" : "live"
-        let syncStatus = config.syncStoreKitTransactions ? "enabled" : "disabled"
-        let merchantStatus = config.appleMerchantId ?? "none (webview fallback)"
-        let nativePayStatus: String
-#if NativePay
-        nativePayStatus = "compiled in"
-#else
-        nativePayStatus = "not compiled (add NativePay trait to Package.swift)"
-#endif
-        ZSLogger.info("ZeroSettle configured: mode=\(mode), storeKitSync=\(syncStatus), appleMerchantId=\(merchantStatus), nativePay=\(nativePayStatus)", category: .general)
+        ZSLogger.info("ZeroSettle configured (mode=\(mode))", category: .general)
     }
 
     // MARK: - Bootstrap
@@ -540,6 +545,11 @@ public final class ZeroSettle: ObservableObject {
         //    now that isBootstrapped is true. Otherwise create one with full data.
         _ = migrationManager(for: userId)
 
+        // 5. Pre-create PaymentIntents so the first checkout opens instantly.
+        if currentConfig?.preloadCheckout != false {
+            Task { await CheckoutSheet<EmptyView>.warmUpAll(userId: userId) }
+        }
+
         return catalog
     }
 
@@ -583,12 +593,9 @@ public final class ZeroSettle: ObservableObject {
             // 1. Fetch from ZeroSettle backend (includes config when userId is provided)
             let catalog = try await backend.fetchProducts(userId: userId)
             var products = catalog.products
-            ZSLogger.info("Fetched \(products.count) products from backend", category: .general)
 
-            // Store remote config for computed properties (checkoutType, isWebCheckoutEnabled)
             if let config = catalog.config {
                 remoteConfig = config
-                ZSLogger.info("Remote config received: checkoutType=\(config.checkout.sheetType.rawValue), jurisdictions=\(config.checkout.jurisdictions.count), migration=\(config.migration != nil)", category: .general)
             }
 
             // Detect jurisdiction from App Store storefront
@@ -616,7 +623,9 @@ public final class ZeroSettle: ObservableObject {
                 }
 
                 let matched = products.filter { $0.storeKitAvailable }.count
-                ZSLogger.info("Reconciled \(matched)/\(products.count) products with StoreKit", category: .general)
+                if matched < products.count {
+                    ZSLogger.info("\(products.count - matched) product(s) not found in StoreKit", category: .general)
+                }
             }
 
             self.products = products
@@ -971,41 +980,30 @@ public final class ZeroSettle: ObservableObject {
     /// - Returns: The merged entitlements from all sources
     @discardableResult
     public func restoreEntitlements(userId: String) async throws -> [Entitlement] {
-        ZSLogger.info("Called with userId=\"\(userId)\"", category: .entitlements)
-
         guard !userId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            ZSLogger.error("restoreEntitlements() called with empty userId — this is a no-op. Pass a valid user identifier.", category: .entitlements)
+            ZSLogger.error("restoreEntitlements() called with empty userId", category: .entitlements)
             throw ZeroSettleError.invalidUserId
         }
 
         guard let backend else {
-            ZSLogger.error("SDK not configured, throwing notConfigured", category: .entitlements)
+            ZSLogger.error("restoreEntitlements() — SDK not configured", category: .entitlements)
             throw ZeroSettleError.notConfigured
         }
 
-        // Update StoreKit manager with user ID
         storeKitManager?.setUserId(userId)
 
         var allEntitlements: [Entitlement] = []
 
-        // Fetch StoreKit entitlements first (these always succeed locally)
         if let storeKitManager {
             let storeKitEntitlements = await storeKitManager.getCurrentEntitlements()
             allEntitlements.append(contentsOf: storeKitEntitlements)
-            ZSLogger.info("Restored \(storeKitEntitlements.count) StoreKit entitlements for userId=\"\(userId)\": \(storeKitEntitlements.map { "[\($0.productId) active=\($0.isActive)]" })", category: .entitlements)
-        } else {
-            ZSLogger.info("No StoreKit manager configured, skipping StoreKit entitlements", category: .entitlements)
         }
 
-        // Fetch web checkout entitlements from ZeroSettle backend
         do {
-            ZSLogger.info("Fetching web entitlements from backend for userId=\"\(userId)\"...", category: .entitlements)
             let webEntitlements = try await backend.getEntitlements(userId: userId)
             allEntitlements.append(contentsOf: webEntitlements)
-            ZSLogger.info("Restored \(webEntitlements.count) web entitlements for userId=\"\(userId)\": \(webEntitlements.map { "[\($0.productId) active=\($0.isActive)]" })", category: .entitlements)
         } catch {
-            ZSLogger.error("Failed to fetch web entitlements for userId=\"\(userId)\": \(error)", category: .entitlements)
-            // Update with partial (StoreKit-only) entitlements before throwing
+            ZSLogger.error("Failed to fetch web entitlements: \(error)", category: .entitlements)
             updateEntitlements(allEntitlements)
             throw ZeroSettleError.restoreEntitlementsFailed(
                 partialEntitlements: allEntitlements,
@@ -1014,7 +1012,7 @@ public final class ZeroSettle: ObservableObject {
         }
 
         updateEntitlements(allEntitlements)
-        ZSLogger.info("Final entitlements for userId=\"\(userId)\": \(allEntitlements.map { "[\($0.productId) source=\($0.source) active=\($0.isActive)]" })", category: .entitlements)
+        ZSLogger.debug("Restored \(allEntitlements.count) entitlement(s) for userId=\"\(userId)\"", category: .entitlements)
 
         return allEntitlements
     }
@@ -1452,7 +1450,6 @@ public final class ZeroSettle: ObservableObject {
         do {
             let config = try await backend.fetchCancelFlow(userId: userId)
             cancelFlowConfig = config
-            ZSLogger.info("Cancel flow config loaded: enabled=\(config.enabled), questions=\(config.questions.count)", category: .cancelFlow)
         } catch {
             ZSLogger.error("Failed to load cancel flow config during bootstrap: \(error)", category: .cancelFlow)
         }
@@ -1466,7 +1463,6 @@ public final class ZeroSettle: ObservableObject {
             if let storefront = await Storefront.current {
                 let jurisdiction = Jurisdiction.from(storefrontCountryCode: storefront.countryCode)
                 detectedJurisdiction = jurisdiction
-                ZSLogger.info("Detected jurisdiction: \(jurisdiction.rawValue) (storefront: \(storefront.countryCode))", category: .general)
                 return
             }
         }

@@ -99,7 +99,7 @@ private func parseJSHeight(_ result: Any?) -> CGFloat? {
 
 /// Proxy WKScriptMessageHandler that forwards messages to a mutable closure.
 /// Lets us redirect WebView messages between preloader and sheet phases.
-private final class MessageRouter: NSObject, WKScriptMessageHandler {
+internal final class MessageRouter: NSObject, WKScriptMessageHandler {
     var onMessage: ((WKScriptMessage) -> Void)?
 
     func userContentController(
@@ -153,7 +153,7 @@ private func migrationEndDate(for productId: String) -> Date? {
 /// Creates the WebView, loads the checkout URL, and waits for the
 /// JavaScript "ready" signal before resolving.
 @MainActor
-private final class CheckoutPreloader: ObservableObject {
+internal final class CheckoutPreloader: ObservableObject {
     @Published var webView: WKWebView?
     @Published private(set) var isReady = false
     private(set) var measuredContentHeight: CGFloat = 0
@@ -269,12 +269,101 @@ private final class CheckoutPreloader: ObservableObject {
     }
 }
 
-// MARK: - Preloader Host
+// MARK: - Preloader Pool
 
-/// Invisible view that hosts the preloader's WKWebView in the hierarchy.
-/// WKWebView must be in a window to load and render content.
-private struct PreloaderHost: UIViewRepresentable {
-    let webView: WKWebView?
+/// Manages multiple off-screen WKWebViews, one per product.
+/// All WebViews share a single WKProcessPool so the incremental cost is
+/// ~3-7 MB per product (DOM + Stripe JS state), not a full subprocess.
+///
+/// Use `CheckoutPreloaderPool.shared` — the single instance is hosted in the
+/// view hierarchy by `ZeroSettleHandlerModifier` (`.zeroSettleHandler()`).
+@MainActor
+internal final class CheckoutPreloaderPool: ObservableObject {
+    static let shared = CheckoutPreloaderPool()
+
+    private var preloaders: [String: CheckoutPreloader] = [:]
+
+    /// All active WebViews — `PoolPreloaderHost` keeps these in the view hierarchy
+    /// so WKWebView can load and render off-screen.
+    @Published var webViews: [WKWebView] = []
+
+    /// Returns the preloader for a product, creating one if needed.
+    func preloader(for productId: String) -> CheckoutPreloader {
+        if let existing = preloaders[productId] { return existing }
+        let p = CheckoutPreloader()
+        preloaders[productId] = p
+        return p
+    }
+
+    /// Load checkout pages for all products in parallel.
+    /// Each `loadAndWait` creates a WKWebView, starts loading, then suspends.
+    /// WebKit processes the loads concurrently in the shared process pool.
+    ///
+    /// Respects `maxPreloadedWebViews` from the SDK configuration. When the limit
+    /// is set, only the first N entries are loaded.
+    func loadAll(entries: [(productId: String, url: URL)]) async {
+        let limit = ZeroSettle.shared.currentConfig?.maxPreloadedWebViews
+        let capped: [(productId: String, url: URL)]
+        if let limit, limit > 0 {
+            capped = Array(entries.prefix(limit))
+            if entries.count > limit {
+                ZSLogger.debug("[Pool] Capped WebView preloading to \(limit) (of \(entries.count) products)", category: .checkout)
+            }
+        } else {
+            capped = entries
+        }
+
+        await withTaskGroup(of: Void.self) { group in
+            for (productId, url) in capped {
+                let p = preloader(for: productId)
+                group.addTask { await p.loadAndWait(url: url) }
+            }
+        }
+        refreshWebViews()
+    }
+
+    /// Populate the pool from cached PI responses for the given products.
+    /// Only loads for checkout types that use inline WebViews (webView/nativePay).
+    /// Skips entirely when `maxPreloadedWebViews` is 0.
+    func loadFromCache(products: [ZSProduct], userId: String?) async {
+        let checkoutType = ZeroSettle.shared.checkoutType
+        guard checkoutType == .webView || checkoutType == .nativePay else { return }
+        guard ZeroSettle.shared.currentConfig?.maxPreloadedWebViews != 0 else { return }
+
+        let pk = ZeroSettle.shared.currentConfig?.publishableKey ?? ""
+        var entries: [(productId: String, url: URL)] = []
+        for product in products {
+            if let result = await CheckoutResponseCache.shared.getURLAndTransactionId(
+                productId: product.id, userId: userId, publishableKey: pk
+            ) {
+                entries.append((product.id, result.checkoutURL))
+            }
+        }
+        guard !entries.isEmpty else { return }
+        await loadAll(entries: entries)
+    }
+
+    /// Reset and remove the preloader for a specific product (e.g., after purchase).
+    func reset(for productId: String) {
+        preloaders[productId]?.reset()
+        preloaders.removeValue(forKey: productId)
+        refreshWebViews()
+    }
+
+    func resetAll() {
+        preloaders.values.forEach { $0.reset() }
+        preloaders.removeAll()
+        refreshWebViews()
+    }
+
+    private func refreshWebViews() {
+        webViews = preloaders.values.compactMap(\.webView)
+    }
+}
+
+/// Invisible view that hosts multiple WKWebViews in the hierarchy.
+internal struct PoolPreloaderHost: UIViewRepresentable {
+    let webViews: [WKWebView]
 
     func makeUIView(context: Context) -> UIView {
         let container = UIView()
@@ -283,72 +372,14 @@ private struct PreloaderHost: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: UIView, context: Context) {
-        for subview in uiView.subviews where subview !== webView {
+        let current = Set(webViews.map { ObjectIdentifier($0) })
+        for subview in uiView.subviews where !current.contains(ObjectIdentifier(subview)) {
             subview.removeFromSuperview()
         }
-        if let wv = webView, wv.superview == nil {
+        for wv in webViews where wv.superview == nil {
             wv.frame = CGRect(x: 0, y: 0, width: 393, height: 600)
             uiView.addSubview(wv)
         }
-    }
-}
-
-// MARK: - Checkout Cache
-
-/// Caches PaymentIntent results (checkout URL + transaction ID) so re-opens
-/// skip the network call entirely. Thread-safe via NSLock.
-internal final class CheckoutCache: @unchecked Sendable {
-    static let shared = CheckoutCache()
-
-    private struct Entry {
-        let checkoutURL: URL
-        let transactionId: String
-        let timestamp: Date
-    }
-
-    private var entries: [String: Entry] = [:]
-    private let lock = NSLock()
-    private let ttl: TimeInterval = 300 // 5 minutes
-
-    private init() {}
-
-    /// Cache key includes the publishable key so entries from one environment
-    /// (sandbox vs live) are never served after an environment switch.
-    private func cacheKey(productId: String, userId: String?, publishableKey: String) -> String {
-        return "\(publishableKey):\(productId):\(userId ?? "")"
-    }
-
-    func get(productId: String, userId: String?, publishableKey: String = "") -> (checkoutURL: URL, transactionId: String)? {
-        lock.lock()
-        defer { lock.unlock() }
-        let key = cacheKey(productId: productId, userId: userId, publishableKey: publishableKey)
-        guard let entry = entries[key],
-              Date().timeIntervalSince(entry.timestamp) < ttl else {
-            entries.removeValue(forKey: key)
-            return nil
-        }
-        return (entry.checkoutURL, entry.transactionId)
-    }
-
-    func set(productId: String, userId: String?, publishableKey: String = "", checkoutURL: URL, transactionId: String) {
-        lock.lock()
-        defer { lock.unlock() }
-        let key = cacheKey(productId: productId, userId: userId, publishableKey: publishableKey)
-        entries[key] = Entry(checkoutURL: checkoutURL, transactionId: transactionId, timestamp: Date())
-    }
-
-    func invalidate(productId: String, userId: String?, publishableKey: String = "") {
-        lock.lock()
-        defer { lock.unlock() }
-        entries.removeValue(forKey: cacheKey(productId: productId, userId: userId, publishableKey: publishableKey))
-    }
-
-    /// Remove all cached entries. Called on SDK reconfiguration to prevent
-    /// stale entries from a different environment being served.
-    func clearAll() {
-        lock.lock()
-        defer { lock.unlock() }
-        entries.removeAll()
     }
 }
 
@@ -489,18 +520,15 @@ extension CheckoutSheet where Header == EmptyView {
         )
     }
 
-    /// Pre-create a PaymentIntent and return the checkout URL.
+    /// Pre-create a PaymentIntent and cache the full response.
     /// Results are cached for 5 minutes so repeated opens skip the API call.
-    /// Returns `nil` immediately for non-webview checkout types (no API call needed).
+    /// Concurrent preloads for the same product are coalesced — only one
+    /// server request is made, and all callers share the result.
     public static func preload(
         productId: String,
         userId: String? = nil,
         freeTrialDays: Int = 0
     ) async -> (checkoutURL: URL, transactionId: String)? {
-        // Only webview checkout uses PaymentIntents — safari/safariVC use checkout sessions
-        guard ZeroSettle.shared.checkoutType == .webView else { return nil }
-
-        // Skip products without web checkout enabled (no Stripe price mapping)
         if let product = ZeroSettle.shared.product(for: productId), product.webPrice == nil {
             return nil
         }
@@ -510,46 +538,70 @@ extension CheckoutSheet where Header == EmptyView {
             return nil
         }
 
-        // Check cache first
         let pk = config.publishableKey
-        if let cached = CheckoutCache.shared.get(productId: productId, userId: userId, publishableKey: pk) {
-            return cached
+
+        let response = await CheckoutResponseCache.shared.fetchOrJoin(
+            productId: productId, userId: userId, publishableKey: pk
+        ) {
+            let backend = Backend(baseURL: baseURL, publishableKey: pk)
+            return try? await backend.initiateCheckout(
+                productId: productId, userId: userId,
+                freeTrialDays: freeTrialDays,
+                storekitSubscriptionEnd: migrationEndDate(for: productId)
+            )
         }
 
-        do {
-            let backend = Backend(baseURL: baseURL, publishableKey: pk)
-            let checkout = try await backend.initiateCheckout(productId: productId, userId: userId, freeTrialDays: freeTrialDays, storekitSubscriptionEnd: migrationEndDate(for: productId))
-            guard let url = URL(string: checkout.checkoutUrl) else {
-                return nil
-            }
+        guard let response, let url = URL(string: response.checkoutUrl) else {
+            return nil
+        }
 
-            // Cache for re-use
-            CheckoutCache.shared.set(
-                productId: productId, userId: userId, publishableKey: pk,
-                checkoutURL: url, transactionId: checkout.transactionId
-            )
-
-            // Fire-and-forget prefetch to prime DNS, TLS, and URL cache
-            // without blocking the preload return path
+        // Fire-and-forget prefetch to prime DNS, TLS, and URL cache
+        if ZeroSettle.shared.checkoutType == .webView {
             Task.detached(priority: .utility) {
                 _ = try? await URLSession.shared.data(from: url)
             }
+        }
 
-            return (url, checkout.transactionId)
-        } catch {
-            return nil
+        return (url, response.transactionId)
+    }
+
+    /// Pre-caches the PaymentIntent for a single product so the sheet opens faster later.
+    public static func warmUp(productId: String, userId: String? = nil, freeTrialDays: Int = 0) async {
+        _ = await preload(productId: productId, userId: userId, freeTrialDays: freeTrialDays)
+    }
+
+    /// Pre-caches PaymentIntents for multiple products in parallel.
+    ///
+    /// Use this when you need to preload from a different view than where the
+    /// `.checkoutSheet` modifier lives (e.g., at app launch for your top products).
+    /// The `.checkoutSheet(preload: .all)` modifier handles this automatically for
+    /// the full catalog.
+    ///
+    ///     .task {
+    ///         let topProducts = products.prefix(10).map(\.id)
+    ///         await CheckoutSheet.warmUp(productIds: topProducts, userId: "user_123")
+    ///     }
+    public static func warmUp(productIds: [String], userId: String? = nil, freeTrialDays: Int = 0) async {
+        guard !productIds.isEmpty else { return }
+        await withTaskGroup(of: Void.self) { group in
+            for productId in productIds {
+                group.addTask {
+                    _ = await preload(productId: productId, userId: userId, freeTrialDays: freeTrialDays)
+                }
+            }
         }
     }
 
-    /// Pre-caches the PaymentIntent for a product so the sheet opens faster later.
-    /// Call this when your product list loads to eliminate first-open delay.
+    /// Pre-caches PaymentIntents for the entire product catalog in parallel,
+    /// then pre-renders WKWebViews for instant checkout (webView/nativePay types only).
     ///
-    ///     .task {
-    ///         let products = try await iap.fetchProducts()
-    ///         await CheckoutSheet.warmUp(productId: products[0].id, userId: "user_123")
-    ///     }
-    public static func warmUp(productId: String, userId: String? = nil, freeTrialDays: Int = 0) async {
-        _ = await preload(productId: productId, userId: userId, freeTrialDays: freeTrialDays)
+    /// Convenience for ``warmUp(productIds:userId:freeTrialDays:)`` with all products.
+    public static func warmUpAll(userId: String? = nil, freeTrialDays: Int = 0) async {
+        let products = await ZeroSettle.shared.products
+        guard !products.isEmpty else { return }
+        ZSLogger.info("[Checkout] Preloading \(products.count) product(s)", category: .checkout)
+        await warmUp(productIds: products.map(\.id), userId: userId, freeTrialDays: freeTrialDays)
+        await CheckoutPreloaderPool.shared.loadFromCache(products: products, userId: userId)
     }
 }
 
@@ -636,6 +688,7 @@ extension CheckoutSheet {
                 self.checkoutURL = url
                 self.transactionId = prefetchedTransactionId
             } else {
+                ZSLogger.info("[Checkout] Cache miss for \(product.id) — calling initiateCheckout()", category: .checkout)
                 await initiateCheckout()
             }
         }
@@ -1080,8 +1133,7 @@ private func activeWindowScene() -> UIWindowScene? {
 // MARK: - Window-Level Sheet Bridge
 
 /// Lightweight bridge for the modifier path. Unlike `UIKitSheetBridge`, this:
-/// - Accepts an external `CheckoutPreloader` (doesn't create its own)
-/// - Has NO `PreloaderHost` (the modifier's PreloaderHost already hosts the WebView)
+/// - Accepts an external `CheckoutPreloader` from the shared pool
 /// - Does NO preloading (modifier already preloaded)
 /// - Presents the sheet immediately (`@State var showSheet = true`)
 private struct WindowLevelSheetBridge<SheetHeader: View>: View {
@@ -1142,7 +1194,7 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
     let header: () -> Header
     let onComplete: (Result<CheckoutTransaction, Error>) -> Void
 
-    @StateObject private var preloader = CheckoutPreloader()
+    private let pool = CheckoutPreloaderPool.shared
     @State private var showSheet = false
     @State private var preloadedURL: URL?
     @State private var preloadedTransactionId: String?
@@ -1150,11 +1202,6 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .background(
-                PreloaderHost(webView: preloader.webView)
-                    .frame(width: 1, height: 1)
-                    .allowsHitTesting(false)
-            )
             .task {
                 WebKitWarmup.warmIfNeeded()
                 if let preload {
@@ -1166,7 +1213,6 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
                     await preloadAll()
                 } else {
                     showSheet = false
-                    preloader.reset()
                 }
             }
             .task(id: showSheet) {
@@ -1175,6 +1221,8 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
                     showSheet = false
                     return
                 }
+
+                let preloader = pool.preloader(for: product.id)
 
                 let bridge = WindowLevelSheetBridge(
                     product: product,
@@ -1187,11 +1235,13 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
                     header: header,
                     onComplete: { result in
                         if case .success = result {
-                            CheckoutCache.shared.invalidate(
+                            Task {
+                                await CheckoutResponseCache.shared.invalidate(
                                 productId: product.id,
                                 userId: userId,
                                 publishableKey: ZeroSettle.shared.currentConfig?.publishableKey ?? ""
-                            )
+                            ) }
+                            pool.reset(for: product.id)
                             preloadedURL = nil
                             preloadedTransactionId = nil
                         }
@@ -1201,7 +1251,6 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
                         overlayWindow?.isHidden = true
                         overlayWindow = nil
                         isPresented = false
-                        preloader.reset()
                         showSheet = false
                     }
                 )
@@ -1248,7 +1297,8 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
         preloadedURL = result.checkoutURL
         preloadedTransactionId = result.transactionId
 
-        // Skip WKWebView load if preloadProducts() already rendered it
+        // Use shared pool — skip if warmUpAll() already rendered this product's WebView
+        let preloader = pool.preloader(for: product.id)
         if !preloader.isReady {
             await preloader.loadAndWait(url: result.checkoutURL)
         }
@@ -1267,27 +1317,23 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
         }
         guard !products.isEmpty else { return }
 
-        // 1. Preload PaymentIntents for all products concurrently
-        // (preload() skips products without web checkout enabled)
-        await withTaskGroup(of: Void.self) { group in
-            for product in products {
-                group.addTask {
-                    _ = await CheckoutSheet<EmptyView>.preload(
-                        productId: product.id, userId: userId, freeTrialDays: freeTrialDays
-                    )
-                }
-            }
-        }
+        await CheckoutSheet<EmptyView>.warmUp(
+            productIds: products.map(\.id), userId: userId, freeTrialDays: freeTrialDays
+        )
 
-        // 2. Load the bound product's checkout page into the WKWebView so it's
-        //    fully rendered before the user ever taps. The PreloaderHost keeps
-        //    the WebView in the view hierarchy so it can load and render.
+        // Pre-render the bound product's WebView via the shared pool.
         guard !Task.isCancelled else { return }
+        let checkoutType = ZeroSettle.shared.checkoutType
+        guard checkoutType == .webView || checkoutType == .nativePay else { return }
+
         let pk = ZeroSettle.shared.currentConfig?.publishableKey ?? ""
-        if let result = CheckoutCache.shared.get(productId: product.id, userId: userId, publishableKey: pk) {
+        if let result = await CheckoutResponseCache.shared.getURLAndTransactionId(productId: product.id, userId: userId, publishableKey: pk) {
             preloadedURL = result.checkoutURL
             preloadedTransactionId = result.transactionId
-            await preloader.loadAndWait(url: result.checkoutURL)
+            let preloader = pool.preloader(for: product.id)
+            if !preloader.isReady {
+                await preloader.loadAndWait(url: result.checkoutURL)
+            }
         }
     }
 }
@@ -1296,11 +1342,6 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
 
 /// Presents the payment sheet driven by an optional `ZSProduct?` binding.
 /// When `item` becomes non-nil the sheet presents; on dismiss it's set back to `nil`.
-///
-/// Unlike `CheckoutSheetModifier`, this modifier owns its own preloader directly
-/// so the `@StateObject` survives across item nil/non-nil transitions. This means
-/// the preloader object isn't recreated on each open, and cached PaymentIntent data
-/// is preserved for instant re-opens.
 private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
     @Binding var item: ZSProduct?
     let userId: String?
@@ -1311,21 +1352,15 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
     let onPresent: (() -> Void)?
     let onComplete: (Result<CheckoutTransaction, Error>) -> Void
 
-    @StateObject private var preloader = CheckoutPreloader()
+    private let pool = CheckoutPreloaderPool.shared
     @State private var showSheet = false
     @State private var preloadedURL: URL?
     @State private var preloadedTransactionId: String?
-    @State private var preloaderProductId: String?
     @State private var presentedProduct: ZSProduct?
     @State private var overlayWindow: UIWindow?
 
     func body(content: Content) -> some View {
         content
-            .background(
-                PreloaderHost(webView: preloader.webView)
-                    .frame(width: 1, height: 1)
-                    .allowsHitTesting(false)
-            )
             .task {
                 WebKitWarmup.warmIfNeeded()
                 if let preload {
@@ -1351,10 +1386,8 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
 
                 onPresent?()
 
-                // Evaluate header here — in the original view hierarchy — so @State
-                // references from the call site resolve correctly before crossing
-                // into the overlay UIWindow.
                 let builtHeader = header()
+                let preloader = pool.preloader(for: product.id)
 
                 let bridge = WindowLevelSheetBridge(
                     product: product,
@@ -1367,14 +1400,15 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
                     header: { builtHeader },
                     onComplete: { result in
                         if case .success = result {
-                            CheckoutCache.shared.invalidate(
+                            Task {
+                                await CheckoutResponseCache.shared.invalidate(
                                 productId: product.id,
                                 userId: userId,
                                 publishableKey: ZeroSettle.shared.currentConfig?.publishableKey ?? ""
-                            )
+                            ) }
+                            pool.reset(for: product.id)
                             preloadedURL = nil
                             preloadedTransactionId = nil
-                            preloaderProductId = nil
                         }
                         onComplete(result)
                     },
@@ -1382,8 +1416,6 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
                         overlayWindow?.isHidden = true
                         overlayWindow = nil
                         item = nil
-                        preloader.reset()
-                        preloaderProductId = nil
                         showSheet = false
                     }
                 )
@@ -1417,7 +1449,6 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
             return
         }
 
-        // Webview path — preload PaymentIntent + WebView, then present sheet
         guard let result = await CheckoutSheet<EmptyView>.preload(
             productId: product.id, userId: userId, freeTrialDays: freeTrialDays
         ) else {
@@ -1430,11 +1461,9 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
         preloadedURL = result.checkoutURL
         preloadedTransactionId = result.transactionId
 
-        // Only skip WebView load if preloader already has THIS product's page loaded
-        if preloaderProductId != product.id || !preloader.isReady {
-            preloader.reset()
+        let preloader = pool.preloader(for: product.id)
+        if !preloader.isReady {
             await preloader.loadAndWait(url: result.checkoutURL)
-            preloaderProductId = product.id
         }
 
         guard !Task.isCancelled else { return }
@@ -1451,30 +1480,12 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
         }
         guard !products.isEmpty else { return }
 
-        // 1. Preload PaymentIntents for all products concurrently
-        // (preload() skips products without web checkout enabled)
-        await withTaskGroup(of: Void.self) { group in
-            for product in products {
-                group.addTask {
-                    _ = await CheckoutSheet<EmptyView>.preload(
-                        productId: product.id, userId: userId, freeTrialDays: freeTrialDays
-                    )
-                }
-            }
-        }
+        await CheckoutSheet<EmptyView>.warmUp(
+            productIds: products.map(\.id), userId: userId, freeTrialDays: freeTrialDays
+        )
 
-        // 2. Load the first product's checkout page into the WKWebView so
-        //    Stripe JS, DNS, TLS, and assets are warm in WKWebView's cache.
-        //    Don't set preloadedURL/transactionId here — the user hasn't selected
-        //    a product yet. preloadAll() will set them for the correct product.
-        //    If a product was already selected (e.g., user tapped while preloading),
-        //    skip this to avoid overwriting the WebView that preloadAll() loaded.
-        guard !Task.isCancelled, let first = products.first, presentedProduct == nil else { return }
-        let pk = ZeroSettle.shared.currentConfig?.publishableKey ?? ""
-        if let result = CheckoutCache.shared.get(productId: first.id, userId: userId, publishableKey: pk) {
-            await preloader.loadAndWait(url: result.checkoutURL)
-            preloaderProductId = first.id
-        }
+        guard !Task.isCancelled, presentedProduct == nil else { return }
+        await pool.loadFromCache(products: products, userId: userId)
     }
 }
 
@@ -1678,18 +1689,13 @@ private struct UIKitSheetBridge<SheetHeader: View>: View {
     let onComplete: (Result<CheckoutTransaction, Error>) -> Void
     let onDismissed: () -> Void
 
-    @StateObject private var preloader = CheckoutPreloader()
+    private let pool = CheckoutPreloaderPool.shared
     @State private var showSheet = false
     @State private var preloadedURL: URL?
     @State private var preloadedTransactionId: String?
 
     var body: some View {
         Color.clear
-            .background(
-                PreloaderHost(webView: preloader.webView)
-                    .frame(width: 1, height: 1)
-                    .allowsHitTesting(false)
-            )
             .task { await preloadAll() }
             .sheet(isPresented: $showSheet, onDismiss: onDismissed) {
                 if let url = preloadedURL {
@@ -1698,13 +1704,14 @@ private struct UIKitSheetBridge<SheetHeader: View>: View {
                         userId: userId,
                         freeTrialDays: freeTrialDays,
                         dismissible: dismissible,
-                        preloader: preloader,
+                        preloader: pool.preloader(for: product.id),
                         checkoutURL: url,
                         transactionId: preloadedTransactionId,
                         header: header
                     ) { result in
                         if case .success = result {
-                            CheckoutCache.shared.invalidate(productId: product.id, userId: userId, publishableKey: ZeroSettle.shared.currentConfig?.publishableKey ?? "")
+                            Task { await CheckoutResponseCache.shared.invalidate(productId: product.id, userId: userId, publishableKey: ZeroSettle.shared.currentConfig?.publishableKey ?? "") }
+                            pool.reset(for: product.id)
                             preloadedURL = nil
                             preloadedTransactionId = nil
                         }
@@ -1742,25 +1749,27 @@ private struct UIKitSheetBridge<SheetHeader: View>: View {
             return
         }
 
-        // Webview path — preload PaymentIntent + WebView, then present sheet
+        // Webview path — use shared pool for pre-rendered WebView
+        let url: URL
         if let checkoutURL {
+            url = checkoutURL
             preloadedURL = checkoutURL
             preloadedTransactionId = transactionId
-            await preloader.loadAndWait(url: checkoutURL)
-            showSheet = true
-            return
-        }
-
-        guard let result = await CheckoutSheet<EmptyView>.preload(
+        } else if let result = await CheckoutSheet<EmptyView>.preload(
             productId: product.id, userId: userId, freeTrialDays: freeTrialDays
-        ) else {
+        ) {
+            url = result.checkoutURL
+            preloadedURL = result.checkoutURL
+            preloadedTransactionId = result.transactionId
+        } else {
             showSheet = true
             return
         }
 
-        preloadedURL = result.checkoutURL
-        preloadedTransactionId = result.transactionId
-        await preloader.loadAndWait(url: result.checkoutURL)
+        let preloader = pool.preloader(for: product.id)
+        if !preloader.isReady {
+            await preloader.loadAndWait(url: url)
+        }
         showSheet = true
     }
 }

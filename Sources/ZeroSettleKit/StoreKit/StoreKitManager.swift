@@ -99,7 +99,6 @@ internal final class StoreKitManager: @unchecked Sendable {
             }
         }
 
-        ZSLogger.info("StoreKit transaction listener started", category: .entitlements)
     }
 
     /// Stop listening for StoreKit transaction updates.
@@ -126,22 +125,18 @@ internal final class StoreKitManager: @unchecked Sendable {
     func fetchProducts(for productIds: [String]) async -> [String: StoreKit.Product] {
         guard !productIds.isEmpty else { return [:] }
 
-        ZSLogger.info("Requesting \(productIds.count) products from StoreKit: \(productIds)", category: .entitlements)
-
         do {
             let products = try await StoreKit.Product.products(for: Set(productIds))
             var productMap: [String: StoreKit.Product] = [:]
             for product in products {
                 productMap[product.id] = product
-                ZSLogger.info("StoreKit found: \(product.id) - \(product.displayName) - \(product.displayPrice)", category: .entitlements)
             }
 
             let missingIds = Set(productIds).subtracting(productMap.keys)
             if !missingIds.isEmpty {
-                ZSLogger.info("StoreKit did NOT find these product IDs: \(Array(missingIds))", category: .entitlements)
+                ZSLogger.info("StoreKit missing product IDs: \(Array(missingIds))", category: .entitlements)
             }
 
-            ZSLogger.info("Fetched \(products.count)/\(productIds.count) StoreKit products", category: .entitlements)
             return productMap
         } catch {
             ZSLogger.error("Failed to fetch StoreKit products: \(error)", category: .entitlements)

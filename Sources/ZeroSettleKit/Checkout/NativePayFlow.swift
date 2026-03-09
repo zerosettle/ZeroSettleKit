@@ -81,10 +81,16 @@ extension NativePay {
             userId: String?,
             merchantId: String
         ) async throws -> NativePay.Result {
-            // 1. Initiate checkout on backend
-            let response = try await backend.initiateCheckout(
-                productId: productId, userId: userId, freeTrialDays: 0
-            )
+            // 1. Initiate checkout — use cached response if available (from preloading)
+            let pk = ZeroSettle.shared.currentConfig?.publishableKey ?? ""
+            let response: CheckoutResponse
+            if let cached = await CheckoutResponseCache.shared.consume(productId: productId, userId: userId, publishableKey: pk) {
+                response = cached
+            } else {
+                response = try await backend.initiateCheckout(
+                    productId: productId, userId: userId, freeTrialDays: 0
+                )
+            }
 
             self.currentResponse = response
 
