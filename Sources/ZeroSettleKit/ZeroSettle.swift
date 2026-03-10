@@ -121,6 +121,16 @@ public enum ZeroSettleError: Error, LocalizedError {
     /// The userId provided was empty or whitespace-only.
     case invalidUserId
 
+    /// Returns `true` if the error represents a user-initiated cancellation,
+    /// regardless of which layer threw it (ZeroSettleKit, StoreKit, or Swift concurrency).
+    public static func isCancellation(_ error: Error) -> Bool {
+        if let zsError = error as? ZeroSettleError, case .cancelled = zsError { return true }
+        if error is CancellationError { return true }
+        if let skError = error as? StoreKitError, case .userCancelled = skError { return true }
+        if let psError = error as? PaymentSheetError, case .cancelled = psError { return true }
+        return false
+    }
+
     public var errorDescription: String? {
         switch self {
         case .notConfigured:
@@ -354,6 +364,13 @@ public final class ZeroSettle: ObservableObject {
     /// Whether the user has an active entitlement for the given product ID.
     public func hasActiveEntitlement(for productId: String) -> Bool {
         activeEntitlements.contains(where: { $0.productId == productId })
+    }
+
+    /// Returns web-checkout entitlements whose IDs are not in the given set.
+    /// Use this to detect new consumable purchases from web checkout that haven't
+    /// been credited yet, avoiding double-counting.
+    public func newConsumableEntitlements(excluding knownIds: Set<String>) -> [Entitlement] {
+        activeEntitlements.filter { $0.source == .webCheckout && !knownIds.contains($0.id) }
     }
 
     /// Resolve the Apple Pay merchant ID: local override > backend default > nil.

@@ -1130,6 +1130,57 @@ private func activeWindowScene() -> UIWindowScene? {
         .first { $0.activationState == .foregroundActive }
 }
 
+// MARK: - Sheet Dismiss Detector (UIKit lifecycle)
+
+/// Detects the START of a sheet dismiss animation via UIKit's `viewWillDisappear`,
+/// which fires before the animation begins — unlike SwiftUI's `onDismiss` which fires after.
+/// Place inside `.sheet()` content as a `.background` to get a callback when dismiss starts.
+private struct SheetDismissDetector: UIViewControllerRepresentable {
+    let onWillDismiss: () -> Void
+
+    func makeUIViewController(context: Context) -> SheetDismissDetectorVC {
+        SheetDismissDetectorVC(onWillDismiss: onWillDismiss)
+    }
+    func updateUIViewController(_ vc: SheetDismissDetectorVC, context: Context) {}
+}
+
+private class SheetDismissDetectorVC: UIViewController {
+    let onWillDismiss: () -> Void
+    private var hasAppeared = false
+
+    init(onWillDismiss: @escaping () -> Void) {
+        self.onWillDismiss = onWillDismiss
+        super.init(nibName: nil, bundle: nil)
+    }
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func loadView() {
+        let v = UIView()
+        v.frame = .zero
+        v.isUserInteractionEnabled = false
+        view = v
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        hasAppeared = true
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        guard hasAppeared else { return }
+        // Only fire when the sheet itself is being dismissed
+        var vc: UIViewController? = parent
+        var depth = 0
+        while let p = vc, depth < 10 {
+            if p.isBeingDismissed { onWillDismiss(); return }
+            vc = p.parent
+            depth += 1
+        }
+    }
+}
+
 // MARK: - Window-Level Sheet Bridge
 
 /// Lightweight bridge for the modifier path. Unlike `UIKitSheetBridge`, this:
@@ -1149,32 +1200,44 @@ private struct WindowLevelSheetBridge<SheetHeader: View>: View {
     let onDismissed: () -> Void
 
     @State private var showSheet = true
+    @State private var scrimVisible = false
 
     var body: some View {
-        Color.clear
+        Color.black.opacity(scrimVisible ? 0.6 : 0)
             .ignoresSafeArea()
-            .sheet(isPresented: $showSheet, onDismiss: onDismissed) {
-                if let url = checkoutURL {
-                    CheckoutSheet(
-                        product: product,
-                        userId: userId,
-                        freeTrialDays: freeTrialDays,
-                        dismissible: dismissible,
-                        preloader: preloader,
-                        checkoutURL: url,
-                        transactionId: transactionId,
-                        header: header,
-                        onComplete: onComplete
-                    )
-                } else {
-                    CheckoutSheet(
-                        product: product,
-                        userId: userId,
-                        freeTrialDays: freeTrialDays,
-                        dismissible: dismissible,
-                        header: header,
-                        onComplete: onComplete
-                    )
+            .animation(.easeOut(duration: 0.35), value: scrimVisible)
+            .onAppear { scrimVisible = true }
+            .sheet(isPresented: $showSheet, onDismiss: {
+                onDismissed()
+            }) {
+                Group {
+                    if let url = checkoutURL {
+                        CheckoutSheet(
+                            product: product,
+                            userId: userId,
+                            freeTrialDays: freeTrialDays,
+                            dismissible: dismissible,
+                            preloader: preloader,
+                            checkoutURL: url,
+                            transactionId: transactionId,
+                            header: header,
+                            onComplete: onComplete
+                        )
+                    } else {
+                        CheckoutSheet(
+                            product: product,
+                            userId: userId,
+                            freeTrialDays: freeTrialDays,
+                            dismissible: dismissible,
+                            header: header,
+                            onComplete: onComplete
+                        )
+                    }
+                }
+                .background {
+                    SheetDismissDetector {
+                        withAnimation(.easeIn(duration: 0.3)) { scrimVisible = false }
+                    }
                 }
             }
     }

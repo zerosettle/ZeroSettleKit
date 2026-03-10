@@ -56,6 +56,13 @@ public struct ZSProduct: Identifiable, Sendable {
     /// Subscription group identifier (non-nil for grouped subscriptions)
     public let subscriptionGroupId: Int?
 
+    /// Free trial duration string (e.g., "1_week", "30"). `nil` when no trial is configured.
+    public let freeTrialDuration: String?
+
+    /// Whether the current user is eligible for the free trial on this product.
+    /// `nil` when no `userId` was provided to `fetchProducts()` or the product has no trial.
+    public let isTrialEligible: Bool?
+
     /// The underlying StoreKit product (populated after reconciliation)
     internal var _storeKitProduct: StoreKit.Product?
 
@@ -72,6 +79,21 @@ public struct ZSProduct: Identifiable, Sendable {
         return appStorePrice
     }
 
+    /// Parsed free trial duration in days. `nil` when no trial is configured or the user is ineligible.
+    public var freeTrialDays: Int? {
+        guard let eligible = isTrialEligible, eligible,
+              let duration = freeTrialDuration else { return nil }
+        return Self.parseFreeTrialDays(duration)
+    }
+
+    /// Human-readable free trial label (e.g. "3-day free trial").
+    /// `nil` when no trial is configured or the user is ineligible.
+    public var freeTrialLabel: String? {
+        guard let eligible = isTrialEligible, eligible,
+              let duration = freeTrialDuration else { return nil }
+        return Self.formatFreeTrialLabel(duration)
+    }
+
     /// The percentage savings of the web price compared to the App Store price.
     /// Returns `nil` if the StoreKit price isn't available or web is more expensive.
     /// Example: StoreKit = $9.99, web = $6.99 → `savingsPercent` = 30
@@ -80,6 +102,62 @@ public struct ZSProduct: Identifiable, Sendable {
         let savings = Double(skPrice.amountCents - webPrice.amountCents) / Double(skPrice.amountCents)
         let percent = Int((savings * 100).rounded())
         return percent > 0 ? percent : nil
+    }
+
+    // MARK: - Free Trial Parsing
+
+    private static func parseFreeTrialDays(_ raw: String) -> Int? {
+        let lowered = raw.lowercased()
+        if lowered.hasPrefix("p") {
+            if let match = lowered.range(of: #"(\d+)d"#, options: .regularExpression) {
+                return Int(lowered[match].dropLast())
+            }
+            if let match = lowered.range(of: #"(\d+)w"#, options: .regularExpression) {
+                return (Int(lowered[match].dropLast()) ?? 0) * 7
+            }
+            if let match = lowered.range(of: #"(\d+)m"#, options: .regularExpression) {
+                return (Int(lowered[match].dropLast()) ?? 0) * 30
+            }
+        }
+        let parts = lowered.split(separator: "_")
+        if parts.count == 2, let num = Int(parts[0]) {
+            let unit = String(parts[1]).replacingOccurrences(of: "s", with: "")
+            switch unit {
+            case "day":   return num
+            case "week":  return num * 7
+            case "month": return num * 30
+            default:      return num
+            }
+        }
+        if let days = Int(raw) { return days }
+        return nil
+    }
+
+    private static func formatFreeTrialLabel(_ raw: String) -> String? {
+        let lowered = raw.lowercased()
+        if lowered.hasPrefix("p") {
+            if let match = lowered.range(of: #"(\d+)d"#, options: .regularExpression) {
+                let days = Int(lowered[match].dropLast()) ?? 0
+                return "\(days)-day free trial"
+            }
+            if let match = lowered.range(of: #"(\d+)w"#, options: .regularExpression) {
+                let weeks = Int(lowered[match].dropLast()) ?? 0
+                return weeks == 1 ? "1-week free trial" : "\(weeks)-week free trial"
+            }
+            if let match = lowered.range(of: #"(\d+)m"#, options: .regularExpression) {
+                let months = Int(lowered[match].dropLast()) ?? 0
+                return months == 1 ? "1-month free trial" : "\(months)-month free trial"
+            }
+        }
+        let parts = lowered.split(separator: "_")
+        if parts.count == 2, let num = Int(parts[0]) {
+            let unit = String(parts[1]).replacingOccurrences(of: "s", with: "")
+            return "\(num)-\(unit) free trial"
+        }
+        if let days = Int(raw) {
+            return "\(days)-day free trial"
+        }
+        return nil
     }
 
     public init(
@@ -92,7 +170,9 @@ public struct ZSProduct: Identifiable, Sendable {
         syncedToAppStoreConnect: Bool = false,
         promotion: Promotion? = nil,
         billingInterval: String? = nil,
-        subscriptionGroupId: Int? = nil
+        subscriptionGroupId: Int? = nil,
+        freeTrialDuration: String? = nil,
+        isTrialEligible: Bool? = nil
     ) {
         self.id = id
         self.displayName = displayName
@@ -104,6 +184,8 @@ public struct ZSProduct: Identifiable, Sendable {
         self.promotion = promotion
         self.billingInterval = billingInterval
         self.subscriptionGroupId = subscriptionGroupId
+        self.freeTrialDuration = freeTrialDuration
+        self.isTrialEligible = isTrialEligible
         self._storeKitProduct = nil
     }
 }
@@ -122,6 +204,8 @@ extension ZSProduct: Codable {
         case promotion
         case billingInterval
         case subscriptionGroupId
+        case freeTrialDuration
+        case isTrialEligible
     }
 
     public init(from decoder: Decoder) throws {
@@ -136,6 +220,8 @@ extension ZSProduct: Codable {
         promotion = try container.decodeIfPresent(Promotion.self, forKey: .promotion)
         billingInterval = try container.decodeIfPresent(String.self, forKey: .billingInterval)
         subscriptionGroupId = try container.decodeIfPresent(Int.self, forKey: .subscriptionGroupId)
+        freeTrialDuration = try container.decodeIfPresent(String.self, forKey: .freeTrialDuration)
+        isTrialEligible = try container.decodeIfPresent(Bool.self, forKey: .isTrialEligible)
         _storeKitProduct = nil
     }
 
@@ -151,6 +237,8 @@ extension ZSProduct: Codable {
         try container.encodeIfPresent(promotion, forKey: .promotion)
         try container.encodeIfPresent(billingInterval, forKey: .billingInterval)
         try container.encodeIfPresent(subscriptionGroupId, forKey: .subscriptionGroupId)
+        try container.encodeIfPresent(freeTrialDuration, forKey: .freeTrialDuration)
+        try container.encodeIfPresent(isTrialEligible, forKey: .isTrialEligible)
     }
 }
 
@@ -168,7 +256,9 @@ extension ZSProduct: Equatable {
         lhs.syncedToAppStoreConnect == rhs.syncedToAppStoreConnect &&
         lhs.promotion == rhs.promotion &&
         lhs.billingInterval == rhs.billingInterval &&
-        lhs.subscriptionGroupId == rhs.subscriptionGroupId
+        lhs.subscriptionGroupId == rhs.subscriptionGroupId &&
+        lhs.freeTrialDuration == rhs.freeTrialDuration &&
+        lhs.isTrialEligible == rhs.isTrialEligible
     }
 }
 
