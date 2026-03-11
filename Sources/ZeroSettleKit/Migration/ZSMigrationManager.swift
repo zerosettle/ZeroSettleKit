@@ -77,6 +77,33 @@ public final class ZSMigrationManager: ObservableObject {
     /// Set this before calling ``ZeroSettle/bootstrap(userId:)`` for best results.
     public static var demoMode: Bool = false
 
+    // MARK: - Region Override
+
+    /// Forces the jurisdiction check to return `.us`, bypassing the real device locale/storefront.
+    ///
+    /// Useful for debugging the migration flow from non-US regions.
+    /// Call ``forceUSARegion()`` to enable or set directly:
+    /// ```swift
+    /// ZSMigrationManager.isUSARegionForced = true
+    /// ```
+    public static var isUSARegionForced: Bool = false
+
+    /// Enables the US region override so the migration tip appears regardless of the device's actual region.
+    ///
+    /// ```swift
+    /// ZSMigrationManager.forceUSARegion()
+    /// ```
+    public static func forceUSARegion() {
+        ZSLogger.info("[MigrationManager] forceUSARegion() called — jurisdiction check will always pass as .us", category: .migration)
+        isUSARegionForced = true
+    }
+
+    /// Disables the US region override, restoring normal jurisdiction detection.
+    public static func resetRegionOverride() {
+        ZSLogger.info("[MigrationManager] resetRegionOverride() called — restoring real jurisdiction detection", category: .migration)
+        isUSARegionForced = false
+    }
+
     // MARK: - Persistence
 
     private static let dismissedKey = "com.zerosettle.migrateTipDismissed"
@@ -177,11 +204,16 @@ public final class ZSMigrationManager: ObservableObject {
         }
 
         // ── Check 3: US-only ──
-        let jurisdiction = iap.detectedJurisdiction ?? .row
+        let jurisdiction = Self.isUSARegionForced ? .us : (iap.detectedJurisdiction ?? .row)
         guard jurisdiction == .us else {
             state = .ineligible
             offerData = nil
             return
+        }
+        if Self.isUSARegionForced {
+            ZSLogger.info("[MigrationTip] Jurisdiction: .us (forced via forceUSARegion()) — eligible region", category: .migration)
+        } else {
+            ZSLogger.info("[MigrationTip] Jurisdiction: \(jurisdiction.rawValue) — eligible region", category: .migration)
         }
 
         // ── Check 4: Demo mode (bypasses all real checks) ──
