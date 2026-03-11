@@ -210,35 +210,40 @@ public final class ZeroSettle: ObservableObject {
     /// Configuration for the ZeroSettle IAP SDK.
     public struct Configuration: Sendable {
         /// Your publishable key from the ZeroSettle dashboard (e.g., "zs_pk_live_abc123").
+        ///
         /// The key prefix determines sandbox vs live mode (`zs_pk_test_` vs `zs_pk_live_`).
         public let publishableKey: String
 
         /// Whether to listen for and forward native StoreKit transactions to ZeroSettle.
-        /// Set to `false` if you use RevenueCat (which handles StoreKit reporting itself).
-        /// Defaults to `true`.
+        ///
+        /// Set to `false` if you use RevenueCat (which handles StoreKit reporting itself). Defaults to `true`.
         public let syncStoreKitTransactions: Bool
 
         /// Apple Pay merchant identifier for native pay checkout.
-        /// Required when using the `NativePay` package trait.
-        /// If nil, the SDK uses the merchant ID from the backend config (managed mode default).
+        ///
+        /// Required when using the `NativePay` package trait. If nil, the SDK uses the merchant ID from the backend
+        /// config (managed mode default).
         public let appleMerchantId: String?
 
-        /// Whether to automatically preload checkout sessions for all products
-        /// after ``ZeroSettle/bootstrap(userId:)`` completes.
-        /// When `true` (the default), the first checkout opens instantly with no network delay.
+        /// Whether to automatically preload checkout sessions for all products after ``ZeroSettle/bootstrap(userId:)``
+        /// completes.
+        ///
+        /// This will preload PaymentIntent and SetupIntent primitives via Stripe, but will not initiate any type of
+        /// transaction until the user goes through the flow. When `true`, the first checkout opens instantly with no
+        /// network delay. Defaults to `false`.
         public let preloadCheckout: Bool
 
         /// Maximum number of WKWebViews to pre-render in the background pool.
-        /// Each WebView costs ~3-7 MB of memory. Set to `nil` (the default) for
-        /// no limit (all products), or a positive `Int` to cap the pool size.
-        /// Set to `0` to disable WebView pre-rendering entirely (PI caching still works).
+        ///
+        /// Each WebView costs ~3-7 MB of memory. Set to `nil` (the default) for no limit (all products), or a positive
+        /// `Int` to cap the pool size. Set to `0` to disable WebView pre-rendering entirely (PI caching still works).
         public let maxPreloadedWebViews: Int?
 
         public init(
             publishableKey: String,
             syncStoreKitTransactions: Bool = true,
             appleMerchantId: String? = nil,
-            preloadCheckout: Bool = true,
+            preloadCheckout: Bool = false,
             maxPreloadedWebViews: Int? = nil
         ) {
             self.publishableKey = publishableKey
@@ -1121,8 +1126,7 @@ public final class ZeroSettle: ObservableObject {
             // Prefer web checkout entitlement when both exist (e.g. after Switch & Save,
             // the StoreKit entitlement is still active but the user is now on web billing).
             let matchingEntitlements = activeEntitlements.filter { $0.productId == productId }
-            let matchingEntitlement = matchingEntitlements.first(where: { $0.source == .webCheckout })
-                ?? matchingEntitlements.first
+            let matchingEntitlement = matchingEntitlements.first(where: { $0.source == .webCheckout }) ?? matchingEntitlements.first
             let isStoreKit = matchingEntitlement?.source == .storeKit
             ZSLogger.info("Result=.cancelled, productId=\(productId), matchingEntitlement=\(matchingEntitlement?.id ?? "nil"), source=\(matchingEntitlement?.source.rawValue ?? "nil"), isStoreKit=\(isStoreKit)", category: .cancelFlow)
 
