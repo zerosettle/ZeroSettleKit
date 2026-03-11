@@ -208,6 +208,7 @@ public final class ZSMigrationManager: ObservableObject {
         guard jurisdiction == .us else {
             state = .ineligible
             offerData = nil
+            ZSLogger.info("[MigrationTip] SKIP: jurisdiction=\(jurisdiction.rawValue), migration is US-only", category: .migration)
             return
         }
         if Self.isUSARegionForced {
@@ -241,6 +242,7 @@ public final class ZSMigrationManager: ObservableObject {
         guard !Self.isPermanentlyDismissed else {
             state = .dismissed
             offerData = nil
+            ZSLogger.info("[MigrationTip] SKIP: permanently dismissed by user", category: .migration)
             return
         }
 
@@ -258,6 +260,7 @@ public final class ZSMigrationManager: ObservableObject {
         guard !activeStoreKitEntitlements.isEmpty else {
             state = .ineligible
             offerData = nil
+            ZSLogger.info("[MigrationTip] SKIP: no active StoreKit subscription", category: .migration)
             return
         }
 
@@ -281,6 +284,7 @@ public final class ZSMigrationManager: ObservableObject {
         guard activeWebSubscriptions.isEmpty else {
             state = .ineligible
             offerData = nil
+            ZSLogger.info("[MigrationTip] SKIP: already has active web subscription", category: .migration)
             return
         }
 
@@ -288,6 +292,7 @@ public final class ZSMigrationManager: ObservableObject {
         guard let resolved = resolveMigrationPrompt(activeStoreKitEntitlements: activeStoreKitEntitlements) else {
             state = .ineligible
             offerData = nil
+            ZSLogger.info("[MigrationTip] SKIP: no migration prompt from backend or sandbox", category: .migration)
             return
         }
 
@@ -304,6 +309,7 @@ public final class ZSMigrationManager: ObservableObject {
         guard bucket < rolloutPercent else {
             state = .ineligible
             offerData = nil
+            ZSLogger.info("[MigrationTip] SKIP: user not in rollout cohort (bucket=\(bucket), rollout=\(rolloutPercent)%)", category: .migration)
             return
         }
 
@@ -311,6 +317,7 @@ public final class ZSMigrationManager: ObservableObject {
         guard let targetProduct = catalogProducts.first(where: { $0.id == prompt.productId }) else {
             state = .ineligible
             offerData = nil
+            ZSLogger.info("[MigrationTip] SKIP: target product \(prompt.productId) not found in catalog", category: .migration)
             return
         }
 
@@ -323,11 +330,13 @@ public final class ZSMigrationManager: ObservableObject {
             if tenureDays < prompt.minSubscriptionDays {
                 self.state = .ineligible
                 self.offerData = nil
+                ZSLogger.info("[MigrationTip] SKIP: tenure \(tenureDays)d < min \(prompt.minSubscriptionDays)d", category: .migration)
                 return
             }
             if let maxDays = prompt.maxSubscriptionDays, tenureDays > maxDays {
                 self.state = .ineligible
                 self.offerData = nil
+                ZSLogger.info("[MigrationTip] SKIP: tenure \(tenureDays)d > max \(maxDays)d", category: .migration)
                 return
             }
 
