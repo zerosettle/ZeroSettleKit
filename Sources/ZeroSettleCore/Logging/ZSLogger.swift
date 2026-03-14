@@ -11,7 +11,7 @@ import os.log
 public enum ZSLogger {
     private static let subsystem = "com.zerosettle.kit"
 
-    public enum Category: String {
+    public enum Category: String, CaseIterable, Sendable {
         case migration = "Migration"
         case checkout = "Checkout"
         case cancelFlow = "CancelFlow"
@@ -21,13 +21,17 @@ public enum ZSLogger {
         case general = "General"
     }
 
-    nonisolated(unsafe) private static var loggers: [Category: OSLog] = [:]
+    private static let loggers: [Category: OSLog] = {
+        var dict: [Category: OSLog] = [:]
+        for category in Category.allCases {
+            dict[category] = OSLog(subsystem: subsystem, category: category.rawValue)
+        }
+        return dict
+    }()
 
     private static func logger(for category: Category) -> OSLog {
-        if let cached = loggers[category] { return cached }
-        let log = OSLog(subsystem: subsystem, category: category.rawValue)
-        loggers[category] = log
-        return log
+        // Safe: eagerly populated for all cases via CaseIterable
+        loggers[category]!
     }
 
     public static func log(

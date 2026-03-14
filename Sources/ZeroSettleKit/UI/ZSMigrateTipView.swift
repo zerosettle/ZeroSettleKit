@@ -192,7 +192,11 @@ public struct MigrationTipView: View {
         VStack(spacing: 0) {
             // Tip header
             headerView(
-                icon: { Text("🎁").font(.largeTitle) },
+                icon: {
+                    Text("🎁")
+                        .font(.largeTitle)
+                        .accessibilityHidden(true)
+                },
                 title: "Thanks for being with us!",
                 message: manager.offerData?.prompt.message
                     ?? (discountPercent > 0
@@ -207,6 +211,7 @@ public struct MigrationTipView: View {
                     ProgressView()
                         .progressViewStyle(CircularProgressViewStyle(tint: .white))
                         .padding(.bottom, 16)
+                        .accessibilityLabel("Loading checkout")
                 } else {
                     Button(action: { ctaTapped = true; startCheckout() }) {
                         HStack(spacing: 8) {
@@ -214,6 +219,7 @@ public struct MigrationTipView: View {
                                 ProgressView()
                                     .progressViewStyle(CircularProgressViewStyle(tint: backgroundColor))
                                     .scaleEffect(0.8)
+                                    .accessibilityHidden(true)
                             }
                             Text(manager.isLoading ? "" : (manager.offerData?.prompt.ctaText ?? (discountPercent > 0 ? "Save \(discountPercent)% Forever" : "Switch Now")))
                                 .font(ctaFont ?? .body.weight(.bold))
@@ -224,6 +230,7 @@ public struct MigrationTipView: View {
                         .background(Color.white)
                         .clipShape(Capsule())
                     }
+                    .accessibilityHint("Opens the web checkout to switch to direct billing")
                     .disabled(manager.isLoading)
                     .padding(.horizontal, 16)
                     .padding(.bottom, 16)
@@ -243,7 +250,7 @@ public struct MigrationTipView: View {
                             switch paymentMethod {
                             case "apple_pay_detected":
                                 hasApplePay = true
-                                print("📐 [MigrateTip] apple_pay_detected → applePayCollapsed (\(Self.applePayCollapsedHeight))")
+                                ZSLogger.debug("[MigrateTip] apple_pay_detected → applePayCollapsed (\(Self.applePayCollapsedHeight))", category: .migration)
                                 withAnimation(.easeInOut(duration: 0.25)) {
                                     contentHeight = Self.applePayCollapsedHeight
                                 }
@@ -251,7 +258,7 @@ public struct MigrationTipView: View {
                                 let newHeight = hasApplePay
                                     ? Self.applePayCardExpandedHeight
                                     : Self.noApplePayExpandedHeight
-                                print("📐 [MigrateTip] card_expanded (hasApplePay=\(hasApplePay)) → \(newHeight)")
+                                ZSLogger.debug("[MigrateTip] card_expanded (hasApplePay=\(hasApplePay)) → \(newHeight)", category: .migration)
                                 withAnimation(.easeInOut(duration: 0.25)) {
                                     contentHeight = newHeight
                                 }
@@ -259,12 +266,12 @@ public struct MigrationTipView: View {
                                 let newHeight = hasApplePay
                                     ? Self.applePayCollapsedHeight
                                     : Self.noApplePayCollapsedHeight
-                                print("📐 [MigrateTip] card_collapsed (hasApplePay=\(hasApplePay)) → \(newHeight)")
+                                ZSLogger.debug("[MigrateTip] card_collapsed (hasApplePay=\(hasApplePay)) → \(newHeight)", category: .migration)
                                 withAnimation(.easeInOut(duration: 0.25)) {
                                     contentHeight = newHeight
                                 }
                             default:
-                                print("📐 [MigrateTip] unknown state '\(paymentMethod)' → collapsedHeight (\(Self.collapsedHeight))")
+                                ZSLogger.debug("[MigrateTip] unknown state '\(paymentMethod)' → collapsedHeight (\(Self.collapsedHeight))", category: .migration)
                                 withAnimation(.easeInOut(duration: 0.25)) {
                                     contentHeight = Self.collapsedHeight
                                 }
@@ -286,6 +293,7 @@ public struct MigrationTipView: View {
                     .frame(height: contentHeight)
                     .cornerRadius(12)
                     .padding(.horizontal, 12)
+                    .accessibilityLabel("Payment form")
 
                     Text("You won't be billed until the end of your current cycle\(renewalDateString.map { " (\($0))" } ?? ""). Cancel anytime.")
                         .font(.caption)
@@ -327,6 +335,7 @@ public struct MigrationTipView: View {
                             .font(.title2.weight(.bold))
                             .foregroundColor(.green)
                     }
+                    .accessibilityLabel("Success")
                 },
                 title: "Thanks for switching!",
                 message: "The last step is to cancel your Apple billing! Your card won't be charged until the end of your last Apple billing cycle. Pro features will continue uninterrupted.",
@@ -346,6 +355,7 @@ public struct MigrationTipView: View {
                     .background(Color.white)
                     .clipShape(Capsule())
             }
+            .accessibilityHint("Opens Apple subscription management to cancel your App Store billing")
             .padding(.horizontal, 16)
             .padding(.bottom, 16)
         }
@@ -369,12 +379,14 @@ public struct MigrationTipView: View {
                     ProgressView()
                         .tint(.white)
                         .controlSize(.regular)
+                        .accessibilityLabel("Checking cancellation status")
                 },
                 title: "Checking status...",
                 message: "Verifying your subscription was cancelled.",
                 showCloseButton: false
             )
         }
+        .accessibilityElement(children: .combine)
         .background(backgroundColor)
         .cornerRadius(16)
         .overlay(
@@ -391,12 +403,17 @@ public struct MigrationTipView: View {
     private var congratulationsCardView: some View {
         VStack(spacing: 0) {
             headerView(
-                icon: { Text("🎉").font(.largeTitle) },
+                icon: {
+                    Text("🎉")
+                        .font(.largeTitle)
+                        .accessibilityHidden(true)
+                },
                 title: "Congratulations!",
                 message: "You are now saving \(discountPercent)% forever.",
                 showCloseButton: false
             )
         }
+        .accessibilityElement(children: .combine)
         .background(backgroundColor)
         .cornerRadius(16)
         .overlay(
@@ -439,6 +456,8 @@ public struct MigrationTipView: View {
                                 .font(.title2)
                                 .foregroundColor(.white.opacity(0.7))
                         }
+                        .accessibilityLabel("Close")
+                        .accessibilityHint("Dismisses the migration offer")
                         .offset(y: -4)
                     }
                 }

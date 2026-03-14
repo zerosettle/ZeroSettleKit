@@ -64,7 +64,8 @@ protocol StoreKitUpdateDelegate: AnyObject {
 
 /// Listens to StoreKit 2 `Transaction.updates` and forwards JWS to the ZeroSettle backend.
 /// Also provides access to current entitlements derived from StoreKit transactions.
-internal final class StoreKitManager: @unchecked Sendable {
+@MainActor
+internal final class StoreKitManager {
     private let backend: Backend
     private let syncQueue = StoreKitSyncQueue()
     private var updateListenerTask: Task<Void, Never>?
@@ -89,13 +90,15 @@ internal final class StoreKitManager: @unchecked Sendable {
         }
 
         // Retry any pending syncs from previous sessions
+        let backend = self.backend
+        let syncQueue = self.syncQueue
         Task(priority: .utility) { [weak self] in
-            guard let self else { return }
-            await self.syncQueue.retryAll { [weak self] jws, userId in
-                try await self?.backend.syncStoreKitTransaction(
+            guard self != nil else { return }
+            await syncQueue.retryAll { @Sendable jws, userId in
+                try await backend.syncStoreKitTransaction(
                     jwsRepresentation: jws,
                     userId: userId
-                ) ?? { throw URLError(.cancelled) }()
+                )
             }
         }
 
@@ -152,7 +155,7 @@ internal final class StoreKitManager: @unchecked Sendable {
     func purchase(_ product: StoreKit.Product) async throws -> SKTransaction {
         let result: StoreKit.Product.PurchaseResult
         #if canImport(UIKit)
-        if let scene = await activeScene() {
+        if let scene = activeScene() {
             result = try await product.purchase(confirmIn: scene)
         } else {
             result = try await product.purchase()
@@ -240,22 +243,26 @@ internal final class StoreKitManager: @unchecked Sendable {
         for await result in SKTransaction.currentEntitlements {
             guard case .verified(let transaction) = result else { continue }
 
+            // For subscriptions, fetch real-time renewal status and original
+            // transaction ID in a single StoreKit call to avoid redundant fetches.
+            let subscriptionInfo: SubscriptionInfo? = transaction.expirationDate != nil
+                ? await fetchSubscriptionInfo(for: transaction.productID)
+                : nil
+
             // Transaction.originalID can return 0 in Xcode StoreKit testing.
             // Fall back to RenewalInfo.originalTransactionID which is more reliable.
             var originalTxnId = transaction.originalID
             if originalTxnId == 0 {
-                if let renewalOrigId = await fetchOriginalTransactionId(for: transaction.productID) {
+                if let renewalOrigId = subscriptionInfo?.originalTransactionID {
                     originalTxnId = renewalOrigId
                 } else {
                     originalTxnId = transaction.id
                 }
             }
 
-            // For subscriptions, fetch real-time renewal status to detect cancellation
-            // sooner than the cached transaction data would show it.
-            let renewalStatus: RenewalStatus? = transaction.expirationDate != nil
-                ? await fetchSubscriptionRenewalStatus(for: transaction.productID)
-                : nil
+            let renewalStatus: RenewalStatus? = subscriptionInfo.map {
+                RenewalStatus(willAutoRenew: $0.willAutoRenew)
+            }
 
             let entitlement = entitlementFromTransaction(
                 transaction,
@@ -273,25 +280,15 @@ internal final class StoreKitManager: @unchecked Sendable {
         let willAutoRenew: Bool
     }
 
-    /// Fetches the real-time renewal status for a subscription product.
-    ///
-    /// Uses `Product.SubscriptionInfo.Status` which reflects the current
-    /// auto-renew preference immediately, unlike `Transaction.currentEntitlements`
-    /// which can be cached for minutes in sandbox.
-    private func fetchSubscriptionRenewalStatus(for productId: String) async -> RenewalStatus? {
-        guard let product = try? await Product.products(for: [productId]).first,
-              let subscription = product.subscription,
-              let statuses = try? await subscription.status,
-              let status = statuses.first(where: { $0.state == .subscribed }) ?? statuses.first,
-              case .verified(let renewalInfo) = status.renewalInfo else {
-            return nil
-        }
-        ZSLogger.debug("RenewalStatus for product=\(productId): willAutoRenew=\(renewalInfo.willAutoRenew)", category: .entitlements)
-        return RenewalStatus(willAutoRenew: renewalInfo.willAutoRenew)
+    /// Combined subscription info from a single `Product.SubscriptionInfo.Status` query.
+    private struct SubscriptionInfo {
+        let willAutoRenew: Bool
+        let originalTransactionID: UInt64
     }
 
-    /// Fetches the original transaction ID from a subscription's RenewalInfo.
-    private func fetchOriginalTransactionId(for productId: String) async -> UInt64? {
+    /// Fetches real-time subscription info (renewal status and original transaction ID)
+    /// in a single StoreKit call, avoiding redundant `Product.products(for:)` queries.
+    private func fetchSubscriptionInfo(for productId: String) async -> SubscriptionInfo? {
         guard let product = try? await Product.products(for: [productId]).first,
               let subscription = product.subscription,
               let statuses = try? await subscription.status,
@@ -299,9 +296,11 @@ internal final class StoreKitManager: @unchecked Sendable {
               case .verified(let renewalInfo) = status.renewalInfo else {
             return nil
         }
-        let origId = renewalInfo.originalTransactionID
-        ZSLogger.debug("RenewalInfo.originalTransactionID=\(origId) for product=\(productId)", category: .entitlements)
-        return origId
+        ZSLogger.debug("SubscriptionInfo for product=\(productId): willAutoRenew=\(renewalInfo.willAutoRenew), originalTransactionID=\(renewalInfo.originalTransactionID)", category: .entitlements)
+        return SubscriptionInfo(
+            willAutoRenew: renewalInfo.willAutoRenew,
+            originalTransactionID: renewalInfo.originalTransactionID
+        )
     }
 
     // MARK: - Private
@@ -325,8 +324,7 @@ internal final class StoreKitManager: @unchecked Sendable {
 
         // If no userId is set, finish immediately and return (preserves pre-retry-queue behavior)
         guard let userId = userId else {
-            ZSLogger.debug("No userId set, finishing transaction without sync", category: .entitlements)
-            await transaction.finish()
+            ZSLogger.error("No userId set — transaction \(transaction.id) for \(transaction.productID) left unfinished to prevent payment loss. Set userId before StoreKit purchase.", category: .entitlements)
             return
         }
 
@@ -342,12 +340,10 @@ internal final class StoreKitManager: @unchecked Sendable {
             await transaction.finish()
 
             ZSLogger.info("StoreKit transaction synced: \(transaction.productID)", category: .entitlements)
-            await MainActor.run {
-                delegate?.storeKitDidSyncTransaction(
-                    productId: transaction.productID,
-                    transactionId: transaction.id
-                )
-            }
+            delegate?.storeKitDidSyncTransaction(
+                productId: transaction.productID,
+                transactionId: transaction.id
+            )
         } catch {
             // Sync failed — enqueue for retry, do NOT finish (StoreKit will redeliver)
             ZSLogger.error("Failed to sync StoreKit transaction: \(error)", category: .entitlements)
@@ -360,16 +356,12 @@ internal final class StoreKitManager: @unchecked Sendable {
                 lastAttemptAt: Date()
             ))
 
-            await MainActor.run {
-                delegate?.storeKitSyncFailed(error: error)
-            }
+            delegate?.storeKitSyncFailed(error: error)
         }
 
         // Refresh entitlements after a new transaction
         let entitlements = await getCurrentEntitlements()
-        await MainActor.run {
-            delegate?.storeKitEntitlementsDidChange(entitlements)
-        }
+        delegate?.storeKitEntitlementsDidChange(entitlements)
     }
 
     private func entitlementFromTransaction(
@@ -420,7 +412,6 @@ internal final class StoreKitManager: @unchecked Sendable {
     }
 
     #if canImport(UIKit)
-    @MainActor
     private func activeScene() -> UIWindowScene? {
         UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }

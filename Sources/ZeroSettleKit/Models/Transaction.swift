@@ -7,10 +7,22 @@
 
 import Foundation
 
+// MARK: - StoreKitSubscriptionStatus
+
+/// The lifecycle status of a StoreKit subscription.
+/// Maps to Apple's `Product.SubscriptionInfo.RenewalState` raw values.
+public enum StoreKitSubscriptionStatus: Int, Sendable, Codable, Hashable {
+    case subscribed = 1
+    case expired = 2
+    case billingRetry = 3
+    case gracePeriod = 4
+    case revoked = 5
+}
+
 // MARK: - CheckoutTransaction
 
 /// Represents a completed or pending purchase transaction.
-public struct CheckoutTransaction: Identifiable, Sendable, Codable, Equatable {
+public struct CheckoutTransaction: Identifiable, Sendable, Equatable {
 
     // MARK: - Nested Types
 
@@ -55,6 +67,11 @@ public struct CheckoutTransaction: Identifiable, Sendable, Codable, Equatable {
     /// StoreKit subscription status from the backend (1=subscribed, 2=expired, 3=billingRetry, 4=gracePeriod, 5=revoked).
     public let storekitStatus: Int?
 
+    /// Type-safe StoreKit subscription status. `nil` when not a StoreKit subscription or the value is unrecognized.
+    public var subscriptionStatus: StoreKitSubscriptionStatus? {
+        storekitStatus.flatMap(StoreKitSubscriptionStatus.init(rawValue:))
+    }
+
     public init(
         id: String,
         productId: String,
@@ -77,5 +94,41 @@ public struct CheckoutTransaction: Identifiable, Sendable, Codable, Equatable {
         self.amountCents = amountCents
         self.currency = currency
         self.storekitStatus = storekitStatus
+    }
+}
+
+// MARK: - Codable
+
+extension CheckoutTransaction: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case id, productId, status, source, purchasedAt, expiresAt
+        case productName, amountCents, currency, storekitStatus
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        productId = try container.decode(String.self, forKey: .productId)
+        // Resilient decoding: unknown status values fall back to .failed
+        if let rawStatus = try? container.decode(Status.self, forKey: .status) {
+            status = rawStatus
+        } else {
+            status = .failed
+        }
+        source = try container.decode(Entitlement.Source.self, forKey: .source)
+        purchasedAt = try container.decode(Date.self, forKey: .purchasedAt)
+        expiresAt = try container.decodeIfPresent(Date.self, forKey: .expiresAt)
+        productName = try container.decodeIfPresent(String.self, forKey: .productName)
+        amountCents = try container.decodeIfPresent(Int.self, forKey: .amountCents)
+        currency = try container.decodeIfPresent(String.self, forKey: .currency)
+        storekitStatus = try container.decodeIfPresent(Int.self, forKey: .storekitStatus)
+    }
+}
+
+// MARK: - Hashable
+
+extension CheckoutTransaction: Hashable {
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
     }
 }

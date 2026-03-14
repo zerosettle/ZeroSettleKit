@@ -9,7 +9,7 @@ import Foundation
 
 /// The result of fetching the product catalog.
 /// Contains both the product list and any remote configuration returned by the backend in a single response.
-public struct ProductCatalog: Sendable {
+public struct ProductCatalog: Sendable, Equatable {
     /// Products with web prices, StoreKit prices, and any active promotions.
     public let products: [ZSProduct]
 

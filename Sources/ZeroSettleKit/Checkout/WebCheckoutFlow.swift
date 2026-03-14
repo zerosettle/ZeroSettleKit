@@ -17,6 +17,7 @@ internal import ZeroSettleCore
 
 /// Orchestrates the web checkout flow: creates a Stripe checkout session,
 /// opens it in Safari or SFSafariViewController, and parses the universal link callback.
+@MainActor
 internal final class WebCheckoutFlow: NSObject {
     private let backend: Backend
 
@@ -54,7 +55,6 @@ internal final class WebCheckoutFlow: NSObject {
     ///   - productId: The product to purchase
     ///   - userId: The developer's user identifier
     /// - Returns: The checkout session (contains transactionId for status polling)
-    @MainActor
     func beginCheckout(productId: String, userId: String? = nil) async throws -> CheckoutSession {
         ZSLogger.info("Creating checkout session for product: \(productId)", category: .checkout)
 
@@ -63,7 +63,6 @@ internal final class WebCheckoutFlow: NSObject {
         let response = try await backend.initiateCheckout(
             productId: productId,
             userId: userId,
-            freeTrialDays: 0,
             checkoutMode: CheckoutConstants.CheckoutMode.browser
         )
 
@@ -107,7 +106,6 @@ internal final class WebCheckoutFlow: NSObject {
     /// Automatically dismisses the inline checkout view if one is presented.
     /// - Parameter url: The universal link URL
     /// - Returns: Parsed callback data, or `nil` if the URL is not a ZeroSettle checkout callback
-    @MainActor
     func handleCallback(url: URL) -> CheckoutCallback? {
         ZSLogger.info("handleCallback: incoming URL: \(url.absoluteString)", category: .checkout)
 
@@ -160,7 +158,6 @@ internal final class WebCheckoutFlow: NSObject {
 
     /// Dismiss the currently presented SFSafariViewController (if any).
     /// Call this after handling a universal link callback to close the in-app browser.
-    @MainActor
     func dismissSafariViewController() {
         presentedSafariVC?.dismiss(animated: true)
         presentedSafariVC = nil
@@ -168,9 +165,19 @@ internal final class WebCheckoutFlow: NSObject {
 
     // MARK: - Private
 
+    /// Idempotent method to resume the inline checkout continuation exactly once.
+    /// Safe to call from multiple dismissal paths — only the first call resumes;
+    /// subsequent calls are no-ops because the continuation is nil-ed out.
+    private func resumeCheckoutContinuation() {
+        guard let continuation = inlineCheckoutContinuation else { return }
+        inlineCheckoutContinuation = nil
+        safariViewController = nil
+        presentedSafariVC = nil
+        continuation.resume()
+    }
+
     /// Open a URL in the external Safari browser.
     /// Suspends until the user returns to the app (foreground notification).
-    @MainActor
     private func openInSafari(_ url: URL) async {
         ZSLogger.info("openInSafari: opening URL: \(url.absoluteString)", category: .checkout)
 
@@ -211,7 +218,6 @@ internal final class WebCheckoutFlow: NSObject {
     /// SFSafariViewController cannot intercept server-side redirects as universal links,
     /// so when a `transactionId` is provided we poll the transaction status in the background
     /// and auto-dismiss the sheet once the Stripe webhook confirms payment success.
-    @MainActor
     private func openInSafariVC(_ url: URL, transactionId: String? = nil) async {
         ZSLogger.info("openInSafariVC: opening URL: \(url.absoluteString)", category: .checkout)
 
@@ -286,26 +292,19 @@ internal final class WebCheckoutFlow: NSObject {
     }
 
     /// Dismiss the inline checkout view if it's currently presented.
-    @MainActor
     func dismissInlineCheckout() {
         safariViewController?.dismiss(animated: true) { [weak self] in
-            self?.safariViewController = nil
-            self?.presentedSafariVC = nil
-            self?.inlineCheckoutContinuation?.resume()
-            self?.inlineCheckoutContinuation = nil
+            self?.resumeCheckoutContinuation()
         }
     }
 }
 
 // MARK: - SFSafariViewControllerDelegate
 
-extension WebCheckoutFlow: SFSafariViewControllerDelegate {
+extension WebCheckoutFlow: @preconcurrency SFSafariViewControllerDelegate {
     func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
         ZSLogger.debug("Inline checkout dismissed by user", category: .checkout)
-        safariViewController = nil
-        presentedSafariVC = nil
-        inlineCheckoutContinuation?.resume()
-        inlineCheckoutContinuation = nil
+        resumeCheckoutContinuation()
     }
 }
 

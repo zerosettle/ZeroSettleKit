@@ -87,10 +87,10 @@ import SwiftUI
 //   - MigrationTipView.Event
 //
 // View Modifiers (on SwiftUI View):
-//   - .checkoutSheet(isPresented:product:userId:freeTrialDays:dismissible:preload:onComplete:)
-//   - .checkoutSheet(isPresented:product:userId:freeTrialDays:dismissible:preload:header:onComplete:)
-//   - .checkoutSheet(item:userId:freeTrialDays:dismissible:preload:onComplete:)
-//   - .checkoutSheet(item:userId:freeTrialDays:dismissible:preload:header:onComplete:)
+//   - .checkoutSheet(isPresented:product:userId:dismissible:preload:onComplete:)
+//   - .checkoutSheet(isPresented:product:userId:dismissible:preload:header:onComplete:)
+//   - .checkoutSheet(item:userId:dismissible:preload:onComplete:)
+//   - .checkoutSheet(item:userId:dismissible:preload:header:onComplete:)
 //   - .retentionSheet(isPresented:onResult:)
 //   - .cancelFlow(isPresented:productId:userId:onResult:)
 //   - .upgradeOffer(isPresented:productId:userId:onResult:)
@@ -128,7 +128,7 @@ public typealias ZSManageSubscriptionResult = RetentionResult
 extension View {
 
     /// Deprecated: use `.checkoutSheet(isPresented:product:userId:...)` instead.
-    @available(*, deprecated, renamed: "checkoutSheet(isPresented:product:userId:freeTrialDays:dismissible:preload:onComplete:)")
+    @available(*, deprecated, renamed: "checkoutSheet(isPresented:product:userId:dismissible:preload:onComplete:)")
     public func zsPaymentSheet(
         isPresented: Binding<Bool>,
         product: ZSProduct,
@@ -142,7 +142,6 @@ extension View {
             isPresented: isPresented,
             product: product,
             userId: userId,
-            freeTrialDays: freeTrialDays,
             dismissible: dismissible,
             preload: preload,
             onComplete: onComplete

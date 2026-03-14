@@ -368,6 +368,7 @@ internal struct PoolPreloaderHost: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
         let container = UIView()
         container.clipsToBounds = true
+        container.accessibilityElementsHidden = true
         return container
     }
 
@@ -415,7 +416,6 @@ public struct CheckoutSheet<Header: View>: View {
 
     private let product: ZSProduct
     private let userId: String?
-    private let freeTrialDays: Int
     private let dismissible: Bool
     private let prefetchedCheckoutURL: URL?
     private let prefetchedTransactionId: String?
@@ -446,7 +446,6 @@ public struct CheckoutSheet<Header: View>: View {
     public init(
         product: ZSProduct,
         userId: String? = nil,
-        freeTrialDays: Int,
         dismissible: Bool = true,
         checkoutURL: URL? = nil,
         transactionId: String? = nil,
@@ -455,7 +454,6 @@ public struct CheckoutSheet<Header: View>: View {
     ) {
         self.product = product
         self.userId = userId
-        self.freeTrialDays = freeTrialDays
         self.dismissible = dismissible
         self.prefetchedCheckoutURL = checkoutURL
         self.prefetchedTransactionId = transactionId
@@ -468,12 +466,33 @@ public struct CheckoutSheet<Header: View>: View {
         self._webContentHeight = State(initialValue: 0)
     }
 
+    @available(*, deprecated, message: "freeTrialDays is ignored. Free trials are configured server-side.")
+    public init(
+        product: ZSProduct,
+        userId: String? = nil,
+        freeTrialDays: Int,
+        dismissible: Bool = true,
+        checkoutURL: URL? = nil,
+        transactionId: String? = nil,
+        @ViewBuilder header: () -> Header,
+        onComplete: @escaping (Result<CheckoutTransaction, Error>) -> Void
+    ) {
+        self.init(
+            product: product,
+            userId: userId,
+            dismissible: dismissible,
+            checkoutURL: checkoutURL,
+            transactionId: transactionId,
+            header: header,
+            onComplete: onComplete
+        )
+    }
+
     // MARK: - Internal Initialization (with preloaded WebView)
 
     fileprivate init(
         product: ZSProduct,
         userId: String? = nil,
-        freeTrialDays: Int,
         dismissible: Bool = true,
         preloader: CheckoutPreloader,
         checkoutURL: URL,
@@ -483,7 +502,6 @@ public struct CheckoutSheet<Header: View>: View {
     ) {
         self.product = product
         self.userId = userId
-        self.freeTrialDays = freeTrialDays
         self.dismissible = dismissible
         self.prefetchedCheckoutURL = checkoutURL
         self.prefetchedTransactionId = transactionId
@@ -502,6 +520,26 @@ extension CheckoutSheet where Header == EmptyView {
     public init(
         product: ZSProduct,
         userId: String? = nil,
+        dismissible: Bool = true,
+        checkoutURL: URL? = nil,
+        transactionId: String? = nil,
+        onComplete: @escaping (Result<CheckoutTransaction, Error>) -> Void
+    ) {
+        self.init(
+            product: product,
+            userId: userId,
+            dismissible: dismissible,
+            checkoutURL: checkoutURL,
+            transactionId: transactionId,
+            header: { EmptyView() },
+            onComplete: onComplete
+        )
+    }
+
+    @available(*, deprecated, message: "freeTrialDays is ignored. Free trials are configured server-side.")
+    public init(
+        product: ZSProduct,
+        userId: String? = nil,
         freeTrialDays: Int,
         dismissible: Bool = true,
         checkoutURL: URL? = nil,
@@ -511,11 +549,9 @@ extension CheckoutSheet where Header == EmptyView {
         self.init(
             product: product,
             userId: userId,
-            freeTrialDays: freeTrialDays,
             dismissible: dismissible,
             checkoutURL: checkoutURL,
             transactionId: transactionId,
-            header: { EmptyView() },
             onComplete: onComplete
         )
     }
@@ -526,8 +562,7 @@ extension CheckoutSheet where Header == EmptyView {
     /// server request is made, and all callers share the result.
     public static func preload(
         productId: String,
-        userId: String? = nil,
-        freeTrialDays: Int = 0
+        userId: String? = nil
     ) async -> (checkoutURL: URL, transactionId: String)? {
         if let product = ZeroSettle.shared.product(for: productId), product.webPrice == nil {
             return nil
@@ -546,7 +581,6 @@ extension CheckoutSheet where Header == EmptyView {
             let backend = Backend(baseURL: baseURL, publishableKey: pk)
             return try? await backend.initiateCheckout(
                 productId: productId, userId: userId,
-                freeTrialDays: freeTrialDays,
                 storekitSubscriptionEnd: migrationEndDate(for: productId)
             )
         }
@@ -565,9 +599,23 @@ extension CheckoutSheet where Header == EmptyView {
         return (url, response.transactionId)
     }
 
+    @available(*, deprecated, message: "freeTrialDays is ignored. Free trials are configured server-side.")
+    public static func preload(
+        productId: String,
+        userId: String? = nil,
+        freeTrialDays: Int
+    ) async -> (checkoutURL: URL, transactionId: String)? {
+        await preload(productId: productId, userId: userId)
+    }
+
     /// Pre-caches the PaymentIntent for a single product so the sheet opens faster later.
-    public static func warmUp(productId: String, userId: String? = nil, freeTrialDays: Int = 0) async {
-        _ = await preload(productId: productId, userId: userId, freeTrialDays: freeTrialDays)
+    public static func warmUp(productId: String, userId: String? = nil) async {
+        _ = await preload(productId: productId, userId: userId)
+    }
+
+    @available(*, deprecated, message: "freeTrialDays is ignored. Free trials are configured server-side.")
+    public static func warmUp(productId: String, userId: String? = nil, freeTrialDays: Int) async {
+        await warmUp(productId: productId, userId: userId)
     }
 
     /// Pre-caches PaymentIntents for multiple products in parallel.
@@ -581,27 +629,37 @@ extension CheckoutSheet where Header == EmptyView {
     ///         let topProducts = products.prefix(10).map(\.id)
     ///         await CheckoutSheet.warmUp(productIds: topProducts, userId: "user_123")
     ///     }
-    public static func warmUp(productIds: [String], userId: String? = nil, freeTrialDays: Int = 0) async {
+    public static func warmUp(productIds: [String], userId: String? = nil) async {
         guard !productIds.isEmpty else { return }
         await withTaskGroup(of: Void.self) { group in
             for productId in productIds {
                 group.addTask {
-                    _ = await preload(productId: productId, userId: userId, freeTrialDays: freeTrialDays)
+                    _ = await preload(productId: productId, userId: userId)
                 }
             }
         }
     }
 
+    @available(*, deprecated, message: "freeTrialDays is ignored. Free trials are configured server-side.")
+    public static func warmUp(productIds: [String], userId: String? = nil, freeTrialDays: Int) async {
+        await warmUp(productIds: productIds, userId: userId)
+    }
+
     /// Pre-caches PaymentIntents for the entire product catalog in parallel,
     /// then pre-renders WKWebViews for instant checkout (webView/nativePay types only).
     ///
-    /// Convenience for ``warmUp(productIds:userId:freeTrialDays:)`` with all products.
-    public static func warmUpAll(userId: String? = nil, freeTrialDays: Int = 0) async {
+    /// Convenience for ``warmUp(productIds:userId:)`` with all products.
+    public static func warmUpAll(userId: String? = nil) async {
         let products = await ZeroSettle.shared.products
         guard !products.isEmpty else { return }
         ZSLogger.info("[Checkout] Preloading \(products.count) product(s)", category: .checkout)
-        await warmUp(productIds: products.map(\.id), userId: userId, freeTrialDays: freeTrialDays)
+        await warmUp(productIds: products.map(\.id), userId: userId)
         await CheckoutPreloaderPool.shared.loadFromCache(products: products, userId: userId)
+    }
+
+    @available(*, deprecated, message: "freeTrialDays is ignored. Free trials are configured server-side.")
+    public static func warmUpAll(userId: String? = nil, freeTrialDays: Int) async {
+        await warmUpAll(userId: userId)
     }
 }
 
@@ -628,16 +686,20 @@ extension CheckoutSheet {
                         isLoading: $isLoading,
                         preloadedWebView: preloadedWebView,
                         messageRouter: messageRouter,
+                        scrollEnabled: webContentHeight > maxWebViewHeight,
                         onAction: handleWebViewAction
                     )
+                    .accessibilityLabel("Payment form")
 
                     if isLoading {
                         Color(.systemBackground)
+                            .accessibilityHidden(true)
                     }
                 }
                 .frame(height: webContentHeight > 0 ? min(webContentHeight, maxWebViewHeight) : 400)
             } else {
                 ProgressView()
+                    .accessibilityLabel("Loading payment form")
                     .frame(height: 400)
                     .frame(maxWidth: .infinity)
             }
@@ -664,13 +726,15 @@ extension CheckoutSheet {
                         .frame(width: 32, height: 32)
                         .background(.ultraThinMaterial, in: Circle())
                 }
+                .accessibilityLabel("Close")
+                .accessibilityHint("Dismisses the checkout sheet")
                 .padding(.top, 14)
                 .padding(.trailing, 18)
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .ignoresSafeArea(edges: .bottom)
-        .presentationDetents([.height(sheetHeight)])
+        .presentationDetents([.height(sheetHeight), .large])
         .presentationDragIndicator(.hidden)
         .presentationBackground(.clear)
         .interactiveDismissDisabled(!dismissible)
@@ -713,13 +777,17 @@ extension CheckoutSheet {
             Image(systemName: "exclamationmark.triangle")
                 .font(.system(size: 48))
                 .foregroundStyle(.orange)
-            Text("Unable to load checkout")
-                .font(.headline)
-            Text(error.localizedDescription)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal)
+                .accessibilityHidden(true)
+            VStack(spacing: 8) {
+                Text("Unable to load checkout")
+                    .font(.headline)
+                Text(error.localizedDescription)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+            }
+            .accessibilityElement(children: .combine)
             Button("Try Again") {
                 loadError = nil
                 Task {
@@ -727,11 +795,13 @@ extension CheckoutSheet {
                 }
             }
             .buttonStyle(.borderedProminent)
+            .accessibilityHint("Retries loading the checkout form")
             Button("Cancel") {
                 dismiss()
                 onComplete(.failure(ZeroSettleError.cancelled))
             }
             .foregroundStyle(.secondary)
+            .accessibilityHint("Dismisses the checkout sheet")
             Spacer()
         }
         .frame(height: 300)
@@ -751,7 +821,7 @@ extension CheckoutSheet {
 
         do {
             let backend = Backend(baseURL: baseURL, publishableKey: config.publishableKey)
-            let checkout = try await backend.initiateCheckout(productId: product.id, userId: userId, freeTrialDays: freeTrialDays, storekitSubscriptionEnd: migrationEndDate(for: product.id))
+            let checkout = try await backend.initiateCheckout(productId: product.id, userId: userId, storekitSubscriptionEnd: migrationEndDate(for: product.id))
             await MainActor.run {
                 self.transactionId = checkout.transactionId
                 self.checkoutURL = URL(string: checkout.checkoutUrl)
@@ -841,6 +911,7 @@ private struct PaymentWebView: UIViewRepresentable {
     @Binding var isLoading: Bool
     var preloadedWebView: WKWebView?
     var messageRouter: MessageRouter?
+    var scrollEnabled: Bool = true
     let onAction: (WebViewAction) -> Void
 
     func makeUIView(context: Context) -> WKWebView {
@@ -921,6 +992,10 @@ private struct PaymentWebView: UIViewRepresentable {
             context.coordinator.hasReinstalledObserver = true
             uiView.evaluateJavaScript(setupMeasureJS + "\n" + heightObserverJS, completionHandler: nil)
         }
+
+        // Only allow scrolling when content overflows the visible frame
+        uiView.scrollView.isScrollEnabled = scrollEnabled
+        uiView.scrollView.bounces = scrollEnabled
     }
 
     func makeCoordinator() -> Coordinator {
@@ -1103,6 +1178,8 @@ internal enum PaymentSheetError: Error, LocalizedError {
     case cancelled
     case notConfigured
     case paymentFailed(PaymentFailureDetail)
+    case transactionFailed(status: String)
+    case verificationTimedOut
     case verificationFailed(String)
     case preloadFailed(APIErrorDetail)
     case userIdRequired
@@ -1112,6 +1189,8 @@ internal enum PaymentSheetError: Error, LocalizedError {
         case .cancelled: return "Payment was cancelled"
         case .notConfigured: return "ZeroSettle is not configured"
         case .paymentFailed(let detail): return detail.message
+        case .transactionFailed(let status): return "Transaction failed with status: \(status)"
+        case .verificationTimedOut: return "Transaction verification timed out"
         case .verificationFailed(let message): return "Verification failed: \(message)"
         case .preloadFailed(let detail): return detail.errorDescription
         case .userIdRequired: return "A userId is required for subscriptions and non-consumable products."
@@ -1190,7 +1269,6 @@ private class SheetDismissDetectorVC: UIViewController {
 private struct WindowLevelSheetBridge<SheetHeader: View>: View {
     let product: ZSProduct
     let userId: String?
-    let freeTrialDays: Int
     let dismissible: Bool
     let preloader: CheckoutPreloader
     let checkoutURL: URL?
@@ -1205,6 +1283,7 @@ private struct WindowLevelSheetBridge<SheetHeader: View>: View {
     var body: some View {
         Color.black.opacity(scrimVisible ? 0.6 : 0)
             .ignoresSafeArea()
+            .accessibilityHidden(true)
             .animation(.easeOut(duration: 0.35), value: scrimVisible)
             .onAppear { scrimVisible = true }
             .sheet(isPresented: $showSheet, onDismiss: {
@@ -1215,7 +1294,6 @@ private struct WindowLevelSheetBridge<SheetHeader: View>: View {
                         CheckoutSheet(
                             product: product,
                             userId: userId,
-                            freeTrialDays: freeTrialDays,
                             dismissible: dismissible,
                             preloader: preloader,
                             checkoutURL: url,
@@ -1227,7 +1305,6 @@ private struct WindowLevelSheetBridge<SheetHeader: View>: View {
                         CheckoutSheet(
                             product: product,
                             userId: userId,
-                            freeTrialDays: freeTrialDays,
                             dismissible: dismissible,
                             header: header,
                             onComplete: onComplete
@@ -1251,7 +1328,6 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
     @Binding var isPresented: Bool
     let product: ZSProduct
     let userId: String?
-    let freeTrialDays: Int
     let dismissible: Bool
     let preload: PaymentSheetPreload?
     let header: () -> Header
@@ -1290,7 +1366,6 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
                 let bridge = WindowLevelSheetBridge(
                     product: product,
                     userId: userId,
-                    freeTrialDays: freeTrialDays,
                     dismissible: dismissible,
                     preloader: preloader,
                     checkoutURL: preloadedURL,
@@ -1349,7 +1424,7 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
 
         // Webview path — preload PaymentIntent + WebView, then present sheet
         guard let result = await CheckoutSheet<EmptyView>.preload(
-            productId: product.id, userId: userId, freeTrialDays: freeTrialDays
+            productId: product.id, userId: userId
         ) else {
             guard !Task.isCancelled else { return }
             showSheet = true
@@ -1381,7 +1456,7 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
         guard !products.isEmpty else { return }
 
         await CheckoutSheet<EmptyView>.warmUp(
-            productIds: products.map(\.id), userId: userId, freeTrialDays: freeTrialDays
+            productIds: products.map(\.id), userId: userId
         )
 
         // Pre-render the bound product's WebView via the shared pool.
@@ -1408,7 +1483,6 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
 private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
     @Binding var item: ZSProduct?
     let userId: String?
-    let freeTrialDays: Int
     let dismissible: Bool
     let preload: PaymentSheetPreload?
     let header: () -> Header
@@ -1455,7 +1529,6 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
                 let bridge = WindowLevelSheetBridge(
                     product: product,
                     userId: userId,
-                    freeTrialDays: freeTrialDays,
                     dismissible: dismissible,
                     preloader: preloader,
                     checkoutURL: preloadedURL,
@@ -1513,7 +1586,7 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
         }
 
         guard let result = await CheckoutSheet<EmptyView>.preload(
-            productId: product.id, userId: userId, freeTrialDays: freeTrialDays
+            productId: product.id, userId: userId
         ) else {
             guard !Task.isCancelled else { return }
             showSheet = true
@@ -1544,7 +1617,7 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
         guard !products.isEmpty else { return }
 
         await CheckoutSheet<EmptyView>.warmUp(
-            productIds: products.map(\.id), userId: userId, freeTrialDays: freeTrialDays
+            productIds: products.map(\.id), userId: userId
         )
 
         guard !Task.isCancelled, presentedProduct == nil else { return }
@@ -1564,7 +1637,6 @@ extension View {
         isPresented: Binding<Bool>,
         product: ZSProduct,
         userId: String? = nil,
-        freeTrialDays: Int = 0,
         dismissible: Bool = true,
         preload: PaymentSheetPreload? = nil,
         onComplete: @escaping (Result<CheckoutTransaction, Error>) -> Void
@@ -1573,12 +1645,31 @@ extension View {
             isPresented: isPresented,
             product: product,
             userId: userId,
-            freeTrialDays: freeTrialDays,
             dismissible: dismissible,
             preload: preload,
             header: { EmptyView() },
             onComplete: onComplete
         ))
+    }
+
+    @available(*, deprecated, message: "freeTrialDays is ignored. Free trials are configured server-side.")
+    public func checkoutSheet(
+        isPresented: Binding<Bool>,
+        product: ZSProduct,
+        userId: String? = nil,
+        freeTrialDays: Int,
+        dismissible: Bool = true,
+        preload: PaymentSheetPreload? = nil,
+        onComplete: @escaping (Result<CheckoutTransaction, Error>) -> Void
+    ) -> some View {
+        checkoutSheet(
+            isPresented: isPresented,
+            product: product,
+            userId: userId,
+            dismissible: dismissible,
+            preload: preload,
+            onComplete: onComplete
+        )
     }
 
     /// Presents a ZeroSettle payment sheet with a custom header when `isPresented` is true.
@@ -1589,7 +1680,6 @@ extension View {
         isPresented: Binding<Bool>,
         product: ZSProduct,
         userId: String? = nil,
-        freeTrialDays: Int = 0,
         dismissible: Bool = true,
         preload: PaymentSheetPreload? = nil,
         @ViewBuilder header: @escaping () -> Header,
@@ -1599,12 +1689,33 @@ extension View {
             isPresented: isPresented,
             product: product,
             userId: userId,
-            freeTrialDays: freeTrialDays,
             dismissible: dismissible,
             preload: preload,
             header: header,
             onComplete: onComplete
         ))
+    }
+
+    @available(*, deprecated, message: "freeTrialDays is ignored. Free trials are configured server-side.")
+    public func checkoutSheet<Header: View>(
+        isPresented: Binding<Bool>,
+        product: ZSProduct,
+        userId: String? = nil,
+        freeTrialDays: Int,
+        dismissible: Bool = true,
+        preload: PaymentSheetPreload? = nil,
+        @ViewBuilder header: @escaping () -> Header,
+        onComplete: @escaping (Result<CheckoutTransaction, Error>) -> Void
+    ) -> some View {
+        checkoutSheet(
+            isPresented: isPresented,
+            product: product,
+            userId: userId,
+            dismissible: dismissible,
+            preload: preload,
+            header: header,
+            onComplete: onComplete
+        )
     }
 
     /// Presents a ZeroSettle payment sheet driven by an optional product binding.
@@ -1621,7 +1732,6 @@ extension View {
     public func checkoutSheet(
         item: Binding<ZSProduct?>,
         userId: String? = nil,
-        freeTrialDays: Int = 0,
         dismissible: Bool = true,
         preload: PaymentSheetPreload? = nil,
         onPresent: (() -> Void)? = nil,
@@ -1630,13 +1740,32 @@ extension View {
         modifier(CheckoutSheetItemModifier<EmptyView>(
             item: item,
             userId: userId,
-            freeTrialDays: freeTrialDays,
             dismissible: dismissible,
             preload: preload,
             header: { EmptyView() },
             onPresent: onPresent,
             onComplete: onComplete
         ))
+    }
+
+    @available(*, deprecated, message: "freeTrialDays is ignored. Free trials are configured server-side.")
+    public func checkoutSheet(
+        item: Binding<ZSProduct?>,
+        userId: String? = nil,
+        freeTrialDays: Int,
+        dismissible: Bool = true,
+        preload: PaymentSheetPreload? = nil,
+        onPresent: (() -> Void)? = nil,
+        onComplete: @escaping (Result<CheckoutTransaction, Error>) -> Void
+    ) -> some View {
+        checkoutSheet(
+            item: item,
+            userId: userId,
+            dismissible: dismissible,
+            preload: preload,
+            onPresent: onPresent,
+            onComplete: onComplete
+        )
     }
 
     /// Presents a ZeroSettle payment sheet with a custom header, driven by an optional product binding.
@@ -1648,7 +1777,6 @@ extension View {
     public func checkoutSheet<Header: View>(
         item: Binding<ZSProduct?>,
         userId: String? = nil,
-        freeTrialDays: Int = 0,
         dismissible: Bool = true,
         preload: PaymentSheetPreload? = nil,
         onPresent: (() -> Void)? = nil,
@@ -1658,13 +1786,34 @@ extension View {
         modifier(CheckoutSheetItemModifier(
             item: item,
             userId: userId,
-            freeTrialDays: freeTrialDays,
             dismissible: dismissible,
             preload: preload,
             header: header,
             onPresent: onPresent,
             onComplete: onComplete
         ))
+    }
+
+    @available(*, deprecated, message: "freeTrialDays is ignored. Free trials are configured server-side.")
+    public func checkoutSheet<Header: View>(
+        item: Binding<ZSProduct?>,
+        userId: String? = nil,
+        freeTrialDays: Int,
+        dismissible: Bool = true,
+        preload: PaymentSheetPreload? = nil,
+        onPresent: (() -> Void)? = nil,
+        @ViewBuilder header: @escaping () -> Header,
+        onComplete: @escaping (Result<CheckoutTransaction, Error>) -> Void
+    ) -> some View {
+        checkoutSheet(
+            item: item,
+            userId: userId,
+            dismissible: dismissible,
+            preload: preload,
+            onPresent: onPresent,
+            header: header,
+            onComplete: onComplete
+        )
     }
 }
 
@@ -1677,7 +1826,6 @@ extension CheckoutSheet where Header == EmptyView {
         from viewController: UIViewController,
         product: ZSProduct,
         userId: String? = nil,
-        freeTrialDays: Int = 0,
         dismissible: Bool = true,
         checkoutURL: URL? = nil,
         transactionId: String? = nil,
@@ -1687,11 +1835,33 @@ extension CheckoutSheet where Header == EmptyView {
             from: viewController,
             product: product,
             userId: userId,
-            freeTrialDays: freeTrialDays,
             dismissible: dismissible,
             checkoutURL: checkoutURL,
             transactionId: transactionId,
             header: { EmptyView() },
+            onComplete: onComplete
+        )
+    }
+
+    @available(*, deprecated, message: "freeTrialDays is ignored. Free trials are configured server-side.")
+    @MainActor
+    public static func present(
+        from viewController: UIViewController,
+        product: ZSProduct,
+        userId: String? = nil,
+        freeTrialDays: Int,
+        dismissible: Bool = true,
+        checkoutURL: URL? = nil,
+        transactionId: String? = nil,
+        onComplete: @escaping (Result<CheckoutTransaction, Error>) -> Void
+    ) {
+        present(
+            from: viewController,
+            product: product,
+            userId: userId,
+            dismissible: dismissible,
+            checkoutURL: checkoutURL,
+            transactionId: transactionId,
             onComplete: onComplete
         )
     }
@@ -1707,7 +1877,6 @@ extension CheckoutSheet {
         from viewController: UIViewController,
         product: ZSProduct,
         userId: String? = nil,
-        freeTrialDays: Int = 0,
         dismissible: Bool = true,
         checkoutURL: URL? = nil,
         transactionId: String? = nil,
@@ -1717,7 +1886,6 @@ extension CheckoutSheet {
         let bridge = UIKitSheetBridge<H>(
             product: product,
             userId: userId,
-            freeTrialDays: freeTrialDays,
             dismissible: dismissible,
             checkoutURL: checkoutURL,
             transactionId: transactionId,
@@ -1733,6 +1901,31 @@ extension CheckoutSheet {
         hosting.modalPresentationStyle = .overFullScreen
         viewController.present(hosting, animated: false)
     }
+
+    @available(*, deprecated, message: "freeTrialDays is ignored. Free trials are configured server-side.")
+    @MainActor
+    public static func present<H: View>(
+        from viewController: UIViewController,
+        product: ZSProduct,
+        userId: String? = nil,
+        freeTrialDays: Int,
+        dismissible: Bool = true,
+        checkoutURL: URL? = nil,
+        transactionId: String? = nil,
+        @ViewBuilder header: @escaping () -> H,
+        onComplete: @escaping (Result<CheckoutTransaction, Error>) -> Void
+    ) {
+        present(
+            from: viewController,
+            product: product,
+            userId: userId,
+            dismissible: dismissible,
+            checkoutURL: checkoutURL,
+            transactionId: transactionId,
+            header: header,
+            onComplete: onComplete
+        )
+    }
 }
 
 /// Transparent bridge that preloads the PaymentIntent and WebView, then
@@ -1744,7 +1937,6 @@ extension CheckoutSheet {
 private struct UIKitSheetBridge<SheetHeader: View>: View {
     let product: ZSProduct
     let userId: String?
-    let freeTrialDays: Int
     let dismissible: Bool
     let checkoutURL: URL?
     let transactionId: String?
@@ -1765,7 +1957,6 @@ private struct UIKitSheetBridge<SheetHeader: View>: View {
                     CheckoutSheet(
                         product: product,
                         userId: userId,
-                        freeTrialDays: freeTrialDays,
                         dismissible: dismissible,
                         preloader: pool.preloader(for: product.id),
                         checkoutURL: url,
@@ -1784,7 +1975,6 @@ private struct UIKitSheetBridge<SheetHeader: View>: View {
                     CheckoutSheet(
                         product: product,
                         userId: userId,
-                        freeTrialDays: freeTrialDays,
                         dismissible: dismissible,
                         checkoutURL: checkoutURL,
                         transactionId: transactionId,
@@ -1819,7 +2009,7 @@ private struct UIKitSheetBridge<SheetHeader: View>: View {
             preloadedURL = checkoutURL
             preloadedTransactionId = transactionId
         } else if let result = await CheckoutSheet<EmptyView>.preload(
-            productId: product.id, userId: userId, freeTrialDays: freeTrialDays
+            productId: product.id, userId: userId
         ) {
             url = result.checkoutURL
             preloadedURL = result.checkoutURL
@@ -1851,8 +2041,7 @@ struct CheckoutSheet_Previews: PreviewProvider {
                 webPrice: Price(amountMicros: 4_990_000, currencyCode: "USD"),
                 appStorePrice: Price(amountMicros: 5_990_000, currencyCode: "USD")
             ),
-            userId: "user_123",
-            freeTrialDays: 0
+            userId: "user_123"
         ) { _ in }
     }
 }

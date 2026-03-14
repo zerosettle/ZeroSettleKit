@@ -20,7 +20,12 @@ public enum NetworkEnvironment: String, Codable, Sendable, CaseIterable {
 
     // MARK: - ZeroSettle Backend
 
-    /// ZeroSettle backend API URL
+    /// ZeroSettle backend API URL.
+    ///
+    /// Both environments point to the same production backend intentionally.
+    /// Sandbox vs live behavior is controlled by API keys (`zs_pk_test_*` vs
+    /// `zs_pk_live_*`) and the `X-Sandbox-Mode` header. For local development,
+    /// use `ZeroSettle.baseURLOverride` instead of changing these URLs.
     public var backendURL: URL {
         switch self {
         case .production:

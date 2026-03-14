@@ -16,7 +16,8 @@ internal import ZeroSettleCore
 // MARK: - Upgrade Offer Presenter
 
 /// Handles UIHostingController presentation for the upgrade offer sheet.
-internal final class UpgradeOfferPresenter: NSObject, @unchecked Sendable {
+@MainActor
+internal final class UpgradeOfferPresenter: NSObject {
 
     private var hostingController: UIHostingController<AnyView>?
     private var continuation: CheckedContinuation<UpgradeOffer.Result, Never>?
@@ -119,11 +120,14 @@ private struct UpgradeOfferSheetView: View {
                         .frame(width: 30, height: 30)
                         .background(.quaternary, in: Circle())
                 }
+                .accessibilityLabel("Close")
+                .accessibilityHint("Dismisses the upgrade offer")
 
                 Spacer()
 
                 // Invisible spacer for symmetry
                 Color.clear.frame(width: 30, height: 30)
+                    .accessibilityHidden(true)
             }
             .padding(.horizontal, 20)
             .padding(.top, 16)
@@ -137,6 +141,7 @@ private struct UpgradeOfferSheetView: View {
                         .font(.system(size: 52))
                         .foregroundStyle(.green)
                         .padding(.top, 12)
+                        .accessibilityHidden(true)
 
                     // Title
                     Text(display?.title ?? "Upgrade & Save")
@@ -184,6 +189,7 @@ private struct UpgradeOfferSheetView: View {
                             .font(.caption)
                             .foregroundStyle(.red)
                             .multilineTextAlignment(.center)
+                            .accessibilityAddTraits(.isStaticText)
                     }
                 }
                 .padding(.horizontal, 20)
@@ -213,6 +219,8 @@ private struct UpgradeOfferSheetView: View {
                     }
                 }
                 .disabled(isLoading)
+                .accessibilityLabel(isLoading ? "Processing upgrade" : (display?.ctaText ?? "Upgrade Now"))
+                .accessibilityHint(isLoading ? "" : "Confirms and processes the plan upgrade")
 
                 // Dismiss button
                 Button {
@@ -252,6 +260,8 @@ private struct UpgradeOfferSheetView: View {
                 }
             }
             .padding(16)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Current plan: \(current.name), \(current.price.formatted) \(current.billingLabel)")
 
             Divider()
 
@@ -281,6 +291,8 @@ private struct UpgradeOfferSheetView: View {
                 }
             }
             .padding(16)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Upgrade to: \(target.name), \(target.price.formatted) \(target.billingLabel)")
         }
         .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
     }
@@ -319,6 +331,7 @@ private struct UpgradeOfferSheetView: View {
         }
         .padding(12)
         .background(Color(.systemBlue).opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+        .accessibilityElement(children: .combine)
     }
 
     // MARK: - StoreKit Cancel Instructions
@@ -336,6 +349,8 @@ private struct UpgradeOfferSheetView: View {
         }
         .padding(12)
         .background(Color(.systemOrange).opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Important: \(instructions)")
     }
 
     // MARK: - Execute Upgrade
