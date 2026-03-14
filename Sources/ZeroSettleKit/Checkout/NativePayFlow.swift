@@ -34,6 +34,7 @@ public enum NativePay {
         case noViewController
         case missingClientSecret
         case missingTransactionId
+        case alreadyInProgress
         case unknown
 
         public var errorDescription: String? {
@@ -46,6 +47,8 @@ public enum NativePay {
                 return "Missing payment intent client secret"
             case .missingTransactionId:
                 return "Missing transaction ID"
+            case .alreadyInProgress:
+                return "A payment is already in progress"
             case .unknown:
                 return "An unknown error occurred"
             }
@@ -88,7 +91,7 @@ extension NativePay {
                 response = cached
             } else {
                 response = try await backend.initiateCheckout(
-                    productId: productId, userId: userId, freeTrialDays: 0
+                    productId: productId, userId: userId
                 )
             }
 
@@ -160,6 +163,10 @@ extension NativePay {
             }
 
             return try await withCheckedThrowingContinuation { continuation in
+                guard self.paymentContinuation == nil else {
+                    continuation.resume(throwing: NativePay.PaymentError.alreadyInProgress)
+                    return
+                }
                 self.paymentContinuation = continuation
                 applePayContext.presentApplePay(on: topVC)
             }
@@ -202,7 +209,7 @@ extension NativePay.Flow: ApplePayContextDelegate {
         paymentInformation: PKPayment,
         completion: @escaping STPIntentClientSecretCompletionBlock
     ) {
-        Task { @MainActor in
+        MainActor.assumeIsolated {
             guard let clientSecret = currentResponse?.clientSecret else {
                 completion(nil, NativePay.PaymentError.missingClientSecret)
                 return
@@ -216,7 +223,7 @@ extension NativePay.Flow: ApplePayContextDelegate {
         didCompleteWith status: STPApplePayContext.PaymentStatus,
         error: Error?
     ) {
-        Task { @MainActor in
+        MainActor.assumeIsolated {
             switch status {
             case .success:
                 guard let transactionId = currentResponse?.transactionId else {
@@ -224,13 +231,17 @@ extension NativePay.Flow: ApplePayContextDelegate {
                     paymentContinuation = nil
                     return
                 }
-                do {
-                    let transaction = try await backend.verifyTransaction(transactionId: transactionId)
-                    paymentContinuation?.resume(returning: .success(transaction))
-                } catch {
-                    paymentContinuation?.resume(throwing: error)
-                }
+                // Capture and nil out continuation immediately to prevent races
+                let continuation = paymentContinuation
                 paymentContinuation = nil
+                Task { @MainActor [backend] in
+                    do {
+                        let transaction = try await backend.verifyTransaction(transactionId: transactionId)
+                        continuation?.resume(returning: .success(transaction))
+                    } catch {
+                        continuation?.resume(throwing: error)
+                    }
+                }
 
             case .error:
                 paymentContinuation?.resume(throwing: error ?? NativePay.PaymentError.unknown)

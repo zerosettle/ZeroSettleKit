@@ -100,6 +100,8 @@ public struct RetentionSheet: View {
                         .frame(width: 32, height: 32)
                         .background(.ultraThinMaterial, in: Circle())
                 }
+                .accessibilityLabel("Close")
+                .accessibilityHint("Dismisses the subscription management sheet")
                 .padding(.top, 14)
                 .padding(.trailing, 18)
             }
@@ -109,6 +111,7 @@ public struct RetentionSheet: View {
                 .font(.caption2)
                 .foregroundStyle(Color(.quaternaryLabel))
                 .padding(.bottom, 2)
+                .accessibilityHidden(true)
         }
         .presentationDetents([.large])
         .presentationDragIndicator(.hidden)
@@ -152,6 +155,8 @@ public struct RetentionSheet: View {
             .frame(height: 140)
             .padding(.horizontal, 20)
             .padding(.top, 48)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("DiveGenius Pro")
 
             // Title + subtitle
             VStack(spacing: 8) {
@@ -187,6 +192,7 @@ public struct RetentionSheet: View {
                     .foregroundStyle(.secondary)
             }
             .padding(.top, 16)
+            .accessibilityElement(children: .combine)
 
             Spacer()
 
@@ -216,6 +222,7 @@ public struct RetentionSheet: View {
                         .background(Self.teal, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
                 .buttonStyle(.plain)
+                .accessibilityHint("Keeps your subscription active and dismisses this sheet")
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 28)
@@ -247,6 +254,7 @@ public struct RetentionSheet: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(Color(.secondarySystemGroupedBackground))
         )
+        .accessibilityElement(children: .combine)
     }
 
     // MARK: - 2. Questionnaire View
@@ -264,6 +272,7 @@ public struct RetentionSheet: View {
                     .foregroundStyle(Self.teal)
             }
             .padding(.top, 48)
+            .accessibilityHidden(true)
 
             VStack(spacing: 8) {
                 Text("Before you go")
@@ -312,6 +321,8 @@ public struct RetentionSheet: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityValue(selectedReason == reason ? "Selected" : "")
                 }
             }
             .background(
@@ -340,6 +351,7 @@ public struct RetentionSheet: View {
             }
             .buttonStyle(.plain)
             .disabled(selectedReason == nil)
+            .accessibilityHint("Proceeds to the next step after selecting a reason")
             .padding(.horizontal, 20)
             .padding(.bottom, 28)
         }
@@ -361,6 +373,7 @@ public struct RetentionSheet: View {
                     .font(.system(size: 32))
                     .foregroundStyle(.green)
             }
+            .accessibilityHidden(true)
 
             VStack(spacing: 8) {
                 Text("Save 40% on DiveGenius Pro")
@@ -386,6 +399,7 @@ public struct RetentionSheet: View {
                     .foregroundStyle(.secondary)
             }
             .padding(.top, 20)
+            .accessibilityElement(children: .combine)
 
             Spacer()
 
@@ -406,6 +420,7 @@ public struct RetentionSheet: View {
                         .background(Color.green, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
                 .buttonStyle(.plain)
+                .accessibilityHint("Applies a 40% discount to your subscription")
 
                 Button {
                     withAnimation(.easeInOut(duration: 0.3)) {
@@ -441,6 +456,7 @@ public struct RetentionSheet: View {
                     .font(.system(size: 32))
                     .foregroundStyle(Self.teal)
             }
+            .accessibilityHidden(true)
 
             VStack(spacing: 8) {
                 Text("Not diving season?")
@@ -471,6 +487,7 @@ public struct RetentionSheet: View {
                         .background(Self.teal, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
                 .buttonStyle(.plain)
+                .accessibilityHint("Pauses your subscription instead of cancelling")
 
                 Button {
                     dismiss()
@@ -483,6 +500,7 @@ public struct RetentionSheet: View {
                         .frame(height: 44)
                 }
                 .buttonStyle(.plain)
+                .accessibilityHint("Cancels your subscription permanently")
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 28)
@@ -498,6 +516,7 @@ public struct RetentionSheet: View {
             Text("\u{1F389}")
                 .font(.system(size: 56))
                 .confettiCannon(trigger: $confettiTrigger, num: 50, openingAngle: Angle(degrees: 0), closingAngle: Angle(degrees: 360), radius: 200)
+                .accessibilityHidden(true)
 
             VStack(spacing: 8) {
                 Text("You're saving 40%!")
@@ -525,6 +544,7 @@ public struct RetentionSheet: View {
                     .background(Color.green, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
             .buttonStyle(.plain)
+            .accessibilityHint("Confirms your discount and returns to the app")
             .padding(.horizontal, 20)
             .padding(.bottom, 28)
         }
@@ -545,6 +565,7 @@ public struct RetentionSheet: View {
                     .font(.system(size: 36))
                     .foregroundStyle(Self.teal)
             }
+            .accessibilityHidden(true)
 
             VStack(spacing: 8) {
                 Text("Account Paused")
@@ -572,6 +593,7 @@ public struct RetentionSheet: View {
                     .background(Self.teal, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
             .buttonStyle(.plain)
+            .accessibilityHint("Confirms the pause and returns to the app")
             .padding(.horizontal, 20)
             .padding(.bottom, 28)
         }

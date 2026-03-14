@@ -8,6 +8,15 @@
 import Foundation
 import StoreKit
 
+// MARK: - BillingInterval
+
+/// The billing cadence for a subscription product.
+public enum BillingInterval: String, Sendable, Codable, Hashable {
+    case week
+    case month
+    case year
+}
+
 // MARK: - ZSProduct
 
 /// A product available for web checkout via ZeroSettle.
@@ -50,8 +59,13 @@ public struct ZSProduct: Identifiable, Sendable {
     /// Active promotion, if any
     public let promotion: Promotion?
 
-    /// Billing interval for subscriptions: `"week"`, `"month"`, `"year"`. `nil` for non-subscriptions.
+    /// Billing interval for subscriptions as a raw string. Prefer ``billingPeriod`` for type-safe access.
     public let billingInterval: String?
+
+    /// Type-safe billing period for subscriptions. `nil` for non-subscriptions or unrecognized values.
+    public var billingPeriod: BillingInterval? {
+        billingInterval.flatMap(BillingInterval.init(rawValue:))
+    }
 
     /// Subscription group identifier (non-nil for grouped subscriptions)
     public let subscriptionGroupId: Int?
@@ -72,7 +86,10 @@ public struct ZSProduct: Identifiable, Sendable {
     /// StoreKit price - prefers on-device fetch, falls back to backend price for display
     public var storeKitPrice: Price? {
         if let skProduct = _storeKitProduct {
-            let cents = Int(((skProduct.price as NSDecimalNumber).doubleValue * 100).rounded())
+            let cents = (skProduct.price as NSDecimalNumber)
+                .multiplying(by: 100)
+                .rounding(accordingToBehavior: nil)
+                .intValue
             let currency = webPrice?.currencyCode ?? appStorePrice?.currencyCode ?? "USD"
             return Price(amountCents: cents, currencyCode: currency)
         }
@@ -262,6 +279,14 @@ extension ZSProduct: Equatable {
     }
 }
 
+// MARK: - Hashable
+
+extension ZSProduct: Hashable {
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
+}
+
 // MARK: - Price
 
 /// A price with currency information.
@@ -269,7 +294,7 @@ extension ZSProduct: Equatable {
 /// All amounts are in **cents** (e.g., 999 = $9.99), consistent with Stripe conventions.
 /// The backend sends amounts in micros; the custom `Codable` implementation converts
 /// automatically so callers always work with cents.
-public struct Price: Sendable, Equatable {
+public struct Price: Sendable, Equatable, Hashable {
     /// Price in cents (e.g., 999 = $9.99).
     public let amountCents: Int
 
@@ -289,11 +314,8 @@ public struct Price: Sendable, Equatable {
 
     /// Formatted price string (e.g., "$9.99")
     public var formatted: String {
-        let amount = Double(amountCents) / 100.0
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .currency
-        formatter.currencyCode = currencyCode
-        return formatter.string(from: NSNumber(value: amount)) ?? "\(currencyCode) \(String(format: "%.2f", amount))"
+        let decimal = Decimal(amountCents) / 100
+        return decimal.formatted(.currency(code: currencyCode))
     }
 }
 

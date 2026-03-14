@@ -16,7 +16,8 @@ internal import ZeroSettleCore
 // MARK: - Cancel Flow Presenter
 
 /// Handles UIHostingController presentation for the cancel flow sheet.
-internal final class CancelFlowPresenter: NSObject, @unchecked Sendable {
+@MainActor
+internal final class CancelFlowPresenter: NSObject {
 
     private var hostingController: UIHostingController<AnyView>?
     private var continuation: CheckedContinuation<CancelFlow.Result, Never>?
@@ -188,6 +189,8 @@ private struct CancelFlowSheetView: View {
                     }
                     .opacity(canGoBack ? 1 : 0)
                     .disabled(!canGoBack)
+                    .accessibilityLabel("Back")
+                    .accessibilityHint("Goes to the previous step")
 
                     Spacer()
 
@@ -197,6 +200,7 @@ private struct CancelFlowSheetView: View {
 
                     // Invisible spacer for symmetry
                     Color.clear.frame(width: 30, height: 30)
+                        .accessibilityHidden(true)
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 16)
@@ -240,6 +244,7 @@ private struct CancelFlowSheetView: View {
                                 )
                         }
                         .disabled(!canContinue)
+                        .accessibilityHint("Proceeds to the next step")
 
                         Button {
                             finish(result: .cancelled)
@@ -248,6 +253,7 @@ private struct CancelFlowSheetView: View {
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }
+                        .accessibilityHint("Skips remaining questions and cancels your subscription")
                     }
                 }
                 .padding(.horizontal, 20)
@@ -262,6 +268,7 @@ private struct CancelFlowSheetView: View {
                 radius: 300
             )
             .allowsHitTesting(false)
+            .accessibilityHidden(true)
         }
     }
 
@@ -273,8 +280,11 @@ private struct CancelFlowSheetView: View {
                 Circle()
                     .fill(step <= currentStep ? Color.green : Color(.systemGray4))
                     .frame(width: 8, height: 8)
+                    .accessibilityHidden(true)
             }
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Step \(currentStep + 1) of \(totalSteps)")
     }
 
     // MARK: - Question View
@@ -310,51 +320,63 @@ private struct CancelFlowSheetView: View {
                         selectedOptionId = option.id
                     }
                 } label: {
-                    HStack(spacing: 14) {
-                        if let iconName = option.iconName {
-                            Image(systemName: iconName)
-                                .font(.title3)
-                                .foregroundStyle(isSelected ? Color.green : .secondary)
-                                .frame(width: 44, height: 44)
-                                .background(
-                                    (isSelected ? Color.green.opacity(0.12) : Color(.systemGray4).opacity(0.25)),
-                                    in: RoundedRectangle(cornerRadius: 12)
-                                )
-                        }
-
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(option.label)
-                                .font(.body.weight(.medium))
-                                .foregroundStyle(.primary)
-
-                            if let subtitle = option.subtitle {
-                                Text(subtitle)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-
-                        Spacer(minLength: 8)
-
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.title2)
-                            .foregroundStyle(Color.green)
-                            .opacity(isSelected ? 1 : 0)
-                    }
-                    .padding(.vertical, 18)
-                    .padding(.horizontal, 16)
-                    .background(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .fill(isSelected ? Color.green.opacity(0.08) : Color(.secondarySystemGroupedBackground))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .stroke(isSelected ? Color.green.opacity(0.5) : Color(.systemGray3).opacity(0.6), lineWidth: isSelected ? 2 : 1)
-                    )
+                    optionRowLabel(option: option, isSelected: isSelected)
                 }
                 .buttonStyle(.plain)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel([option.label, option.subtitle].compactMap { $0 }.joined(separator: ", "))
+                .accessibilityValue(isSelected ? "Selected" : "")
+                .accessibilityAddTraits(.isButton)
             }
         }
+    }
+
+    private func optionRowLabel(option: CancelFlow.Option, isSelected: Bool) -> some View {
+        let fillColor: Color = isSelected ? Color.green.opacity(0.08) : Color(.secondarySystemGroupedBackground)
+        let strokeColor: Color = isSelected ? Color.green.opacity(0.5) : Color(.systemGray3).opacity(0.6)
+        let strokeWidth: CGFloat = isSelected ? 2 : 1
+
+        return HStack(spacing: 14) {
+            if let iconName = option.iconName {
+                Image(systemName: iconName)
+                    .font(.title3)
+                    .foregroundStyle(isSelected ? Color.green : .secondary)
+                    .frame(width: 44, height: 44)
+                    .background(
+                        (isSelected ? Color.green.opacity(0.12) : Color(.systemGray4).opacity(0.25)),
+                        in: RoundedRectangle(cornerRadius: 12)
+                    )
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(option.label)
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(.primary)
+
+                if let subtitle = option.subtitle {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            Image(systemName: "checkmark.circle.fill")
+                .font(.title2)
+                .foregroundStyle(Color.green)
+                .opacity(isSelected ? 1 : 0)
+        }
+        .padding(.vertical, 18)
+        .padding(.horizontal, 16)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(fillColor)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(strokeColor, lineWidth: strokeWidth)
+        )
     }
 
     private var freeTextView: some View {
@@ -364,6 +386,8 @@ private struct CancelFlowSheetView: View {
             .padding(12)
             .frame(minHeight: 120)
             .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+            .accessibilityLabel("Your feedback")
+            .accessibilityHint("Enter your reason for cancelling")
     }
 
     // MARK: - Retention View (Offer + Pause)
@@ -393,6 +417,7 @@ private struct CancelFlowSheetView: View {
                 .font(.system(size: 44))
                 .foregroundStyle(.green)
                 .padding(.top, 20)
+                .accessibilityHidden(true)
 
             Text(offer.title)
                 .font(.title2.weight(.bold))
@@ -438,6 +463,7 @@ private struct CancelFlowSheetView: View {
                 }
             }
         }
+        .accessibilityElement(children: .combine)
         .onAppear {
             ZSLogger.debug("offerSection appeared: type=\(offer.type.rawString), value=\(offer.value), productId=\(productId), productFound=\(product != nil), price=\(currentPrice?.formatted ?? "nil"), discountPercent=\(discountPercent)", category: .cancelFlow)
         }
@@ -496,6 +522,10 @@ private struct CancelFlowSheetView: View {
                 )
             }
             .buttonStyle(.plain)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(pauseConfig.title), \(pauseConfig.body)")
+            .accessibilityHint(pauseExpanded ? "Collapses pause duration options" : "Expands pause duration options")
+            .accessibilityAddTraits(.isButton)
 
             // Expandable pause duration options
             if pauseExpanded {
@@ -541,6 +571,10 @@ private struct CancelFlowSheetView: View {
                             )
                         }
                         .buttonStyle(.plain)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel("Pause for \(option.label)")
+                        .accessibilityValue(isSelected ? "Selected" : "")
+                        .accessibilityAddTraits(.isButton)
                     }
                 }
                 .transition(.opacity.combined(with: .move(edge: .top)))
@@ -568,6 +602,7 @@ private struct CancelFlowSheetView: View {
                     .padding(.vertical, 14)
                     .background(.green, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
+            .accessibilityHint("Accepts the offer and keeps your subscription")
         }
 
         // Pause button (only when pause is expanded and a duration is selected)
@@ -594,6 +629,8 @@ private struct CancelFlowSheetView: View {
                 }
             }
             .disabled(selectedPauseOptionId == nil || isPauseLoading)
+            .accessibilityLabel(isPauseLoading ? "Processing" : pauseConfig.ctaText)
+            .accessibilityHint("Pauses your subscription for the selected duration")
         }
 
         // Cancel anyway
@@ -605,6 +642,7 @@ private struct CancelFlowSheetView: View {
                 .foregroundStyle(.secondary)
         }
         .disabled(isPauseLoading)
+        .accessibilityHint("Cancels your subscription without accepting any offers")
     }
 
     // MARK: - Flow Logic

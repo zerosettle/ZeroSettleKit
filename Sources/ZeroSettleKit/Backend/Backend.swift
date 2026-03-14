@@ -60,11 +60,11 @@ internal final class Backend: @unchecked Sendable {
 
         let response: ProductsResponse
         do {
-            var request = URLRequest(url: url)
-            request.httpMethod = "GET"
-            authHeaders.forEach { request.setValue($1, forHTTPHeaderField: $0) }
-            let (data, _) = try await URLSession.shared.data(for: request)
-            response = try decoder.decode(ProductsResponse.self, from: data)
+            response = try await httpClient.get(
+                url,
+                headers: authHeaders,
+                responseType: ProductsResponse.self
+            )
         } catch {
             throw Backend.wrapError(error)
         }
@@ -184,10 +184,10 @@ internal final class Backend: @unchecked Sendable {
 
     /// Initiate a checkout for the given product.
     /// The backend creates the Transaction, PaymentIntent/SetupIntent, and returns a `checkoutUrl`.
-    func initiateCheckout(productId: String, userId: String? = nil, freeTrialDays: Int, stripeCustomerId: String? = nil, storekitSubscriptionEnd: Date? = nil, storekitOriginalTransactionId: String? = nil, checkoutMode: String? = nil) async throws -> CheckoutResponse {
+    func initiateCheckout(productId: String, userId: String? = nil, stripeCustomerId: String? = nil, storekitSubscriptionEnd: Date? = nil, storekitOriginalTransactionId: String? = nil, checkoutMode: String? = nil) async throws -> CheckoutResponse {
         let url = apiURL("iap/payment-intents/")
         let iso8601End: String? = storekitSubscriptionEnd.map {
-            ISO8601DateFormatter().string(from: $0)
+            $0.formatted(.iso8601)
         }
         // Auto-detect the active StoreKit subscription's originalTransactionId
         // when not explicitly provided.  Scoped to the same subscription group
@@ -212,16 +212,9 @@ internal final class Backend: @unchecked Sendable {
                     .storekitOriginalTransactionId
             }
         }
-        let body = InitiateCheckoutRequest(productId: productId, userId: userId, freeTrialDays: freeTrialDays, stripeCustomerId: stripeCustomerId, storekitSubscriptionEnd: iso8601End, storekitOriginalTransactionId: resolvedOriginalTxnId, checkoutMode: checkoutMode)
-        do {
-            return try await httpClient.post(
-                url,
-                body: body,
-                headers: authHeaders,
-                responseType: CheckoutResponse.self
-            )
-        } catch {
-            throw Backend.wrapError(error)
+        let body = InitiateCheckoutRequest(productId: productId, userId: userId, stripeCustomerId: stripeCustomerId, storekitSubscriptionEnd: iso8601End, storekitOriginalTransactionId: resolvedOriginalTxnId, checkoutMode: checkoutMode)
+        return try await wrapped {
+            try await httpClient.post(url, body: body, headers: authHeaders, responseType: CheckoutResponse.self)
         }
     }
 
@@ -230,14 +223,8 @@ internal final class Backend: @unchecked Sendable {
     /// Get the status of a transaction by ID.
     func getTransaction(transactionId: String) async throws -> CheckoutTransaction {
         let url = apiURL("iap/transactions/\(transactionId)/")
-        do {
-            return try await httpClient.get(
-                url,
-                headers: authHeaders,
-                responseType: CheckoutTransaction.self
-            )
-        } catch {
-            throw Backend.wrapError(error)
+        return try await wrapped {
+            try await httpClient.get(url, headers: authHeaders, responseType: CheckoutTransaction.self)
         }
     }
 
@@ -245,16 +232,7 @@ internal final class Backend: @unchecked Sendable {
     func updateStorekitStatus(transactionId: String, storekitStatus: Int, storekitSubscriptionEnd: Date? = nil) async throws {
         let url = apiURL("iap/transactions/\(transactionId)/storekit-status/")
         let body = UpdateStorekitStatusRequest(storekitStatus: storekitStatus, storekitSubscriptionEnd: storekitSubscriptionEnd)
-        var request = URLRequest(url: url)
-        request.httpMethod = "PATCH"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        authHeaders.forEach { request.setValue($1, forHTTPHeaderField: $0) }
-        request.httpBody = try encoder.encode(body)
-        do {
-            try await httpClient.executeVoid(request)
-        } catch {
-            throw Backend.wrapError(error)
-        }
+        try await wrapped { try await httpClient.patchVoid(url, body: body, headers: authHeaders) }
     }
 
     // MARK: - Transaction Verification
@@ -290,10 +268,10 @@ internal final class Backend: @unchecked Sendable {
                 if transaction.status == .processing {
                     return transaction
                 }
-                throw PaymentSheetError.cancelled
+                throw PaymentSheetError.verificationTimedOut
             default:
                 // .failed, .refunded — terminal error states
-                throw PaymentSheetError.cancelled
+                throw PaymentSheetError.transactionFailed(status: transaction.status.rawValue)
             }
         }
         if let txn = lastTransaction { return txn }
@@ -311,11 +289,9 @@ internal final class Backend: @unchecked Sendable {
             throw Backend.wrapError(HTTPError.invalidURL("Failed to construct entitlements URL"))
         }
 
-        let response: EntitlementsResponse = try await httpClient.get(
-            url,
-            headers: authHeaders,
-            responseType: EntitlementsResponse.self
-        )
+        let response: EntitlementsResponse = try await wrapped {
+            try await httpClient.get(url, headers: authHeaders, responseType: EntitlementsResponse.self)
+        }
         return response.entitlements
     }
 
@@ -330,11 +306,9 @@ internal final class Backend: @unchecked Sendable {
             throw Backend.wrapError(HTTPError.invalidURL("Failed to construct transaction history URL"))
         }
 
-        let response: TransactionHistoryResponse = try await httpClient.get(
-            url,
-            headers: authHeaders,
-            responseType: TransactionHistoryResponse.self
-        )
+        let response: TransactionHistoryResponse = try await wrapped {
+            try await httpClient.get(url, headers: authHeaders, responseType: TransactionHistoryResponse.self)
+        }
         return response.transactions
     }
 
@@ -344,14 +318,7 @@ internal final class Backend: @unchecked Sendable {
     func trackMigrationConversion(userId: String) async throws {
         let url = apiURL("iap/migration-converted/")
         let body = MigrationConversionRequest(userId: userId)
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        authHeaders.forEach { request.setValue($1, forHTTPHeaderField: $0) }
-        request.httpBody = try encoder.encode(body)
-
-        try await httpClient.executeVoid(request)
+        try await wrapped { try await httpClient.postVoid(url, body: body, headers: authHeaders) }
     }
 
     // MARK: - StoreKit Transaction Sync
@@ -363,14 +330,7 @@ internal final class Backend: @unchecked Sendable {
             jwsRepresentation: jwsRepresentation,
             userId: userId
         )
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        authHeaders.forEach { request.setValue($1, forHTTPHeaderField: $0) }
-        request.httpBody = try encoder.encode(body)
-
-        try await httpClient.executeVoid(request)
+        try await wrapped { try await httpClient.postVoid(url, body: body, headers: authHeaders) }
     }
 
     // MARK: - Cancel Flow
@@ -387,39 +347,23 @@ internal final class Backend: @unchecked Sendable {
             throw Backend.wrapError(HTTPError.invalidURL("Failed to construct cancel flow URL"))
         }
 
-        return try await httpClient.get(
-            url,
-            headers: authHeaders,
-            responseType: CancelFlow.Config.self
-        )
+        return try await wrapped {
+            try await httpClient.get(url, headers: authHeaders, responseType: CancelFlow.Config.self)
+        }
     }
 
     /// Submit a cancel flow response (fire-and-forget from the caller's perspective).
     func submitCancelFlowResponse(_ payload: CancelFlow.ResponsePayload) async throws {
         let url = apiURL("iap/cancel-flow/respond/")
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        authHeaders.forEach { request.setValue($1, forHTTPHeaderField: $0) }
-        request.httpBody = try encoder.encode(payload)
-
-        try await httpClient.executeVoid(request)
+        try await wrapped { try await httpClient.postVoid(url, body: payload, headers: authHeaders) }
     }
 
     /// Accept the save offer for a cancel flow, applying the discount on Stripe.
     func acceptSaveOffer(productId: String, userId: String) async throws -> AcceptSaveOfferResponse {
         let url = apiURL("iap/cancel-flow/accept-offer/")
         let body = AcceptSaveOfferRequest(productId: productId, userId: userId)
-        do {
-            return try await httpClient.post(
-                url,
-                body: body,
-                headers: authHeaders,
-                responseType: AcceptSaveOfferResponse.self
-            )
-        } catch {
-            throw Backend.wrapError(error)
+        return try await wrapped {
+            try await httpClient.post(url, body: body, headers: authHeaders, responseType: AcceptSaveOfferResponse.self)
         }
     }
 
@@ -434,51 +378,23 @@ internal final class Backend: @unchecked Sendable {
     func pauseSubscription(productId: String, userId: String, pauseDurationDays: Int?) async throws -> PauseSubscriptionResponse {
         let url = apiURL("iap/subscriptions/pause/")
         let body = PauseSubscriptionRequest(productId: productId, userId: userId, pauseDurationDays: pauseDurationDays)
-        do {
-            return try await httpClient.post(
-                url,
-                body: body,
-                headers: authHeaders,
-                responseType: PauseSubscriptionResponse.self
-            )
-        } catch {
-            throw Backend.wrapError(error)
+        return try await wrapped {
+            try await httpClient.post(url, body: body, headers: authHeaders, responseType: PauseSubscriptionResponse.self)
         }
     }
 
     /// Resume a paused subscription.
-    /// - Parameters:
-    ///   - productId: The product to resume
-    ///   - userId: The user who owns the subscription
     func resumeSubscription(productId: String, userId: String) async throws {
         let url = apiURL("iap/subscriptions/resume/")
         let body = ResumeSubscriptionRequest(productId: productId, userId: userId)
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        authHeaders.forEach { request.setValue($1, forHTTPHeaderField: $0) }
-        request.httpBody = try encoder.encode(body)
-
-        try await httpClient.executeVoid(request)
+        try await wrapped { try await httpClient.postVoid(url, body: body, headers: authHeaders) }
     }
 
     /// Cancel a subscription.
-    /// - Parameters:
-    ///   - productId: The product to cancel
-    ///   - userId: The user who owns the subscription
-    ///   - immediate: If `true`, cancel immediately. If `false`, cancel at period end.
     func cancelSubscription(productId: String, userId: String, immediate: Bool) async throws {
         let url = apiURL("iap/subscriptions/cancel/")
         let body = CancelSubscriptionRequest(productId: productId, userId: userId, immediate: immediate)
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        authHeaders.forEach { request.setValue($1, forHTTPHeaderField: $0) }
-        request.httpBody = try encoder.encode(body)
-
-        try await httpClient.executeVoid(request)
+        try await wrapped { try await httpClient.postVoid(url, body: body, headers: authHeaders) }
     }
 
     // MARK: - Upgrade Offer
@@ -496,39 +412,23 @@ internal final class Backend: @unchecked Sendable {
             throw Backend.wrapError(HTTPError.invalidURL("Failed to construct upgrade offer URL"))
         }
 
-        return try await httpClient.get(
-            url,
-            headers: authHeaders,
-            responseType: UpgradeOffer.Config.self
-        )
+        return try await wrapped {
+            try await httpClient.get(url, headers: authHeaders, responseType: UpgradeOffer.Config.self)
+        }
     }
 
     /// Execute a subscription upgrade (web-to-web or storekit-to-web).
     func executeUpgradeOffer(_ request: UpgradeOffer.ExecuteRequest) async throws -> UpgradeOfferExecuteResponse {
         let url = apiURL("iap/upgrade-offer/execute/")
-        do {
-            return try await httpClient.post(
-                url,
-                body: request,
-                headers: authHeaders,
-                responseType: UpgradeOfferExecuteResponse.self
-            )
-        } catch {
-            throw Backend.wrapError(error)
+        return try await wrapped {
+            try await httpClient.post(url, body: request, headers: authHeaders, responseType: UpgradeOfferExecuteResponse.self)
         }
     }
 
     /// Submit a declined/dismissed response for an upgrade offer.
     func respondUpgradeOffer(_ request: UpgradeOffer.RespondRequest) async throws {
         let url = apiURL("iap/upgrade-offer/respond/")
-
-        var urlRequest = URLRequest(url: url)
-        urlRequest.httpMethod = "POST"
-        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        authHeaders.forEach { urlRequest.setValue($1, forHTTPHeaderField: $0) }
-        urlRequest.httpBody = try encoder.encode(request)
-
-        try await httpClient.executeVoid(urlRequest)
+        try await wrapped { try await httpClient.postVoid(url, body: request, headers: authHeaders) }
     }
 
     // MARK: - StoreKit Subscription Status (Server-Side)
@@ -542,11 +442,9 @@ internal final class Backend: @unchecked Sendable {
             throw Backend.wrapError(HTTPError.invalidURL("Failed to construct storekit-subscription-status URL"))
         }
 
-        return try await httpClient.get(
-            url,
-            headers: authHeaders,
-            responseType: StoreKitSubscriptionStatusResponse.self
-        )
+        return try await wrapped {
+            try await httpClient.get(url, headers: authHeaders, responseType: StoreKitSubscriptionStatusResponse.self)
+        }
     }
 
     // MARK: - Funnel Analytics
@@ -567,14 +465,7 @@ internal final class Backend: @unchecked Sendable {
             screenName: screenName,
             metadata: metadata
         )
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        authHeaders.forEach { request.setValue($1, forHTTPHeaderField: $0) }
-        request.httpBody = try encoder.encode(body)
-
-        try await httpClient.executeVoid(request)
+        try await wrapped { try await httpClient.postVoid(url, body: body, headers: authHeaders) }
     }
 
     // MARK: - Error Wrapping
@@ -637,6 +528,12 @@ internal final class Backend: @unchecked Sendable {
     }
 
     // MARK: - Helpers
+
+    /// Wraps an async operation with consistent error conversion to ``ZeroSettleError/apiError(_:)``.
+    private func wrapped<T>(_ operation: () async throws -> T) async throws -> T {
+        do { return try await operation() }
+        catch { throw Self.wrapError(error) }
+    }
 
     private func apiURL(_ path: String) -> URL {
         baseURL.appendingPathComponent(path)
@@ -707,7 +604,6 @@ internal struct CreateCheckoutSessionRequest: Encodable {
 internal struct InitiateCheckoutRequest: Encodable {
     let productId: String
     let userId: String?
-    let freeTrialDays: Int
     let stripeCustomerId: String?
     let storekitSubscriptionEnd: String?
     let storekitOriginalTransactionId: String?

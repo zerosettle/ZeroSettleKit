@@ -56,6 +56,15 @@ public final class ZSMigrationManager: ObservableObject {
     /// The transaction ID from the checkout, used to update StoreKit status on the backend.
     private var checkoutTransactionId: String?
 
+    /// Tracks the active sync task to prevent concurrent evaluations.
+    private var syncTask: Task<Void, Never>?
+
+    /// Re-entrancy guard for evaluateEligibility.
+    private var isEvaluating = false
+
+    /// Convenience alias for Apple subscription status comparison.
+    private typealias AppleStatus = StoreKitSubscriptionStatus
+
     // MARK: - Public Properties
 
     /// The user identifier for this migration flow.
@@ -106,12 +115,23 @@ public final class ZSMigrationManager: ObservableObject {
 
     // MARK: - Persistence
 
-    private static let dismissedKey = "com.zerosettle.migrateTipDismissed"
+    private static let dismissedKeyPrefix = "com.zerosettle.migrateTipDismissed"
 
     /// Whether the migration tip has been permanently dismissed (persisted across app launches).
+    /// - Note: This checks the global (non-user-scoped) key. Prefer ``isPermanentlyDismissed(forUserId:)`` for per-user state.
     public static var isPermanentlyDismissed: Bool {
-        get { UserDefaults.standard.bool(forKey: dismissedKey) }
-        set { UserDefaults.standard.set(newValue, forKey: dismissedKey) }
+        get { UserDefaults.standard.bool(forKey: dismissedKeyPrefix) }
+        set { UserDefaults.standard.set(newValue, forKey: dismissedKeyPrefix) }
+    }
+
+    /// Whether the migration tip has been permanently dismissed for a specific user.
+    public static func isPermanentlyDismissed(forUserId userId: String) -> Bool {
+        UserDefaults.standard.bool(forKey: "\(dismissedKeyPrefix).\(userId)")
+    }
+
+    /// Set the dismissed state for a specific user.
+    public static func setDismissed(_ dismissed: Bool, forUserId userId: String) {
+        UserDefaults.standard.set(dismissed, forKey: "\(dismissedKeyPrefix).\(userId)")
     }
 
     /// Resets the dismissed state, allowing the migration offer to be shown again.
@@ -158,6 +178,10 @@ public final class ZSMigrationManager: ObservableObject {
     /// Each check either returns early (not eligible) or falls through to the next.
     /// Mid-flow states (.presented, .accepted, .completed, .dismissed) are locked.
     private func evaluateEligibility() {
+        guard !isEvaluating else { return }
+        isEvaluating = true
+        defer { isEvaluating = false }
+
         // Demo mode: force out of dismissed state so re-evaluation can proceed
         if Self.demoMode && state == .dismissed {
             state = .loading
@@ -172,19 +196,20 @@ public final class ZSMigrationManager: ObservableObject {
         let syncProductId = syncEntitlement?.productId
         let syncOrigTxnId = syncEntitlement?.storekitOriginalTransactionId
         if let syncProductId {
-            Task { [weak self] in
+            syncTask?.cancel()
+            syncTask = Task { [weak self] in
                 guard let self else { return }
                 // Try server-side first (real-time), fall back to on-device StoreKit
                 var result = await self.fetchAppleSubscriptionStatusFromServer(originalTransactionId: syncOrigTxnId)
                 if result == nil {
                     result = await self.fetchAppleSubscriptionStatus(productId: syncProductId)
                 }
-                let appleStatus = result?.status ?? 1
+                let appleStatus = result?.status ?? AppleStatus.subscribed.rawValue
                 let expirationDate = result?.expirationDate
                 await self.syncStorekitStatusToBackend(productId: syncProductId, status: appleStatus, expirationDate: expirationDate)
 
                 // If Apple is cancelled and we're in .accepted, transition to .completed
-                if appleStatus == 2 && self.state == .accepted {
+                if appleStatus == AppleStatus.expired.rawValue && self.state == .accepted {
                     self.storekitCancelRequired = false
                     self.state = .completed
                 }
@@ -238,8 +263,8 @@ public final class ZSMigrationManager: ObservableObject {
             return
         }
 
-        // ── Check 5: Not permanently dismissed ──
-        guard !Self.isPermanentlyDismissed else {
+        // ── Check 5: Not permanently dismissed (per-user, with global fallback) ──
+        guard !Self.isPermanentlyDismissed(forUserId: userId) && !Self.isPermanentlyDismissed else {
             state = .dismissed
             offerData = nil
             ZSLogger.info("[MigrationTip] SKIP: permanently dismissed by user", category: .migration)
@@ -423,13 +448,6 @@ public final class ZSMigrationManager: ObservableObject {
         return nil
     }
 
-    /// Computes the number of free trial days from a StoreKit entitlement's expiration date.
-    private func computeFreeTrialDays(from entitlement: Entitlement) -> Int {
-        guard let expiresAt = entitlement.expiresAt else { return 0 }
-        let components = Calendar.current.dateComponents([.day], from: Date(), to: expiresAt)
-        return max(0, components.day ?? 0)
-    }
-
     // MARK: - State Transitions
 
     /// Transition from `.eligible` to `.presented`.
@@ -469,7 +487,6 @@ public final class ZSMigrationManager: ObservableObject {
             let checkout = try await backend.initiateCheckout(
                 productId: offerData.prompt.productId,
                 userId: userId,
-                freeTrialDays: offerData.freeTrialDays,
                 stripeCustomerId: stripeCustomerId,
                 storekitSubscriptionEnd: offerData.storekitSubscriptionEnd,
                 storekitOriginalTransactionId: offerData.activeStoreKitOriginalTransactionId
@@ -569,10 +586,10 @@ public final class ZSMigrationManager: ObservableObject {
         if result == nil {
             result = await fetchAppleSubscriptionStatus(productId: productId)
         }
-        let appleStatus = result?.status ?? 1
+        let appleStatus = result?.status ?? AppleStatus.subscribed.rawValue
         let expirationDate = result?.expirationDate
 
-        if appleStatus == 2 {
+        if appleStatus == AppleStatus.expired.rawValue {
             storekitCancelRequired = false
             state = .completed
         } else {
@@ -627,7 +644,7 @@ public final class ZSMigrationManager: ObservableObject {
         }
 
         let isActive = status.state == .subscribed && willAutoRenew
-        return (isActive ? 1 : 2, expirationDate)
+        return (isActive ? AppleStatus.subscribed.rawValue : AppleStatus.expired.rawValue, expirationDate)
     }
 
     /// Syncs the StoreKit subscription status to the backend.
@@ -658,7 +675,7 @@ public final class ZSMigrationManager: ObservableObject {
     public func dismiss() {
         state = .dismissed
         offerData = nil
-        Self.isPermanentlyDismissed = true
+        Self.setDismissed(true, forUserId: userId)
     }
 
     // MARK: - StoreKit Tenure

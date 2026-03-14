@@ -31,8 +31,6 @@ public enum HTTPError: Error, LocalizedError {
 }
 
 public final class HTTPClient: @unchecked Sendable {
-    public static let shared = HTTPClient()
-
     private let session: URLSession
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
@@ -56,6 +54,7 @@ public final class HTTPClient: @unchecked Sendable {
     ) async throws -> T {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
+        request.timeoutInterval = ZeroSettleConstants.Network.defaultTimeoutSeconds
         headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
 
         return try await execute(request, responseType: responseType)
@@ -71,6 +70,7 @@ public final class HTTPClient: @unchecked Sendable {
     ) async throws -> Response {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.timeoutInterval = ZeroSettleConstants.Network.defaultTimeoutSeconds
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
         request.httpBody = try encoder.encode(body)
@@ -85,9 +85,40 @@ public final class HTTPClient: @unchecked Sendable {
     ) async throws -> Response {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.timeoutInterval = ZeroSettleConstants.Network.defaultTimeoutSeconds
         headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
 
         return try await execute(request, responseType: responseType)
+    }
+
+    // MARK: - Void Convenience Methods
+
+    public func postVoid<Body: Encodable>(
+        _ url: URL,
+        body: Body,
+        headers: [String: String] = [:]
+    ) async throws {
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = ZeroSettleConstants.Network.defaultTimeoutSeconds
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
+        request.httpBody = try encoder.encode(body)
+        try await validateResponse(for: request)
+    }
+
+    public func patchVoid<Body: Encodable>(
+        _ url: URL,
+        body: Body,
+        headers: [String: String] = [:]
+    ) async throws {
+        var request = URLRequest(url: url)
+        request.httpMethod = "PATCH"
+        request.timeoutInterval = ZeroSettleConstants.Network.defaultTimeoutSeconds
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
+        request.httpBody = try encoder.encode(body)
+        try await validateResponse(for: request)
     }
 
     // MARK: - Raw Request
@@ -96,6 +127,20 @@ public final class HTTPClient: @unchecked Sendable {
         _ request: URLRequest,
         responseType: T.Type
     ) async throws -> T {
+        let data = try await validateResponse(for: request)
+
+        do {
+            return try decoder.decode(T.self, from: data)
+        } catch {
+            ZSLogger.error("Decoding failed: \(error)", category: .network)
+            throw HTTPError.decodingFailed(error)
+        }
+    }
+
+    // MARK: - Shared Validation
+
+    @discardableResult
+    private func validateResponse(for request: URLRequest) async throws -> Data {
         let (data, response): (Data, URLResponse)
         do {
             (data, response) = try await session.data(for: request)
@@ -112,12 +157,7 @@ public final class HTTPClient: @unchecked Sendable {
             throw HTTPError.httpError(statusCode: httpResponse.statusCode, body: data)
         }
 
-        do {
-            return try decoder.decode(T.self, from: data)
-        } catch {
-            ZSLogger.error("Decoding failed: \(error)", category: .network)
-            throw HTTPError.decodingFailed(error)
-        }
+        return data
     }
 
     // MARK: - Error Logging
@@ -179,20 +219,6 @@ public final class HTTPClient: @unchecked Sendable {
 
     /// Execute request expecting empty response (204 No Content, etc.)
     public func executeVoid(_ request: URLRequest) async throws {
-        let (data, response): (Data, URLResponse)
-        do {
-            (data, response) = try await session.data(for: request)
-        } catch {
-            throw HTTPError.networkError(error)
-        }
-
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw HTTPError.invalidResponse
-        }
-
-        guard (200...299).contains(httpResponse.statusCode) else {
-            logAPIError(statusCode: httpResponse.statusCode, url: request.url, requestBody: request.httpBody, data: data)
-            throw HTTPError.httpError(statusCode: httpResponse.statusCode, body: data)
-        }
+        try await validateResponse(for: request)
     }
 }

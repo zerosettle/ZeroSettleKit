@@ -431,6 +431,7 @@ public final class ZeroSettle: ObservableObject {
 
     /// Update entitlements and notify all observers (delegate + AsyncStream).
     private func updateEntitlements(_ newEntitlements: [Entitlement]) {
+        guard entitlements != newEntitlements else { return }
         entitlements = newEntitlements
         entitlementContinuation?.yield(newEntitlements)
         delegate?.zeroSettleEntitlementsDidUpdate(newEntitlements)
@@ -607,9 +608,7 @@ public final class ZeroSettle: ObservableObject {
     /// - Returns: A ``ProductCatalog`` containing products and remote configuration
     @discardableResult
     public func fetchProducts(userId: String? = nil) async throws -> ProductCatalog {
-        guard let backend else {
-            throw ZeroSettleError.notConfigured
-        }
+        let backend = try requireBackend()
 
         do {
             // 1. Fetch from ZeroSettle backend (includes config when userId is provided)
@@ -898,9 +897,7 @@ public final class ZeroSettle: ObservableObject {
     ///
     /// - Parameter userId: Your app's user identifier
     public func trackMigrationConversion(userId: String) async throws {
-        guard let backend else {
-            throw ZeroSettleError.notConfigured
-        }
+        let backend = try requireBackend()
 
         do {
             try await backend.trackMigrationConversion(userId: userId)
@@ -1007,10 +1004,7 @@ public final class ZeroSettle: ObservableObject {
             throw ZeroSettleError.invalidUserId
         }
 
-        guard let backend else {
-            ZSLogger.error("restoreEntitlements() — SDK not configured", category: .entitlements)
-            throw ZeroSettleError.notConfigured
-        }
+        let backend = try requireBackend()
 
         storeKitManager?.setUserId(userId)
 
@@ -1050,9 +1044,7 @@ public final class ZeroSettle: ObservableObject {
     /// - Parameter userId: Your app's user identifier
     /// - Returns: An array of ``CheckoutTransaction`` ordered by most recent first
     public func fetchTransactionHistory(userId: String) async throws -> [CheckoutTransaction] {
-        guard let backend else {
-            throw ZeroSettleError.notConfigured
-        }
+        let backend = try requireBackend()
 
         do {
             let transactions = try await backend.getTransactionHistory(userId: userId)
@@ -1140,7 +1132,10 @@ public final class ZeroSettle: ObservableObject {
                     try await cancelSubscription(productId: productId, userId: userId, immediate: false)
                     ZSLogger.info("Cancel API succeeded", category: .cancelFlow)
                 } catch {
-                    ZSLogger.error("Cancel API failed: \(error)", category: .cancelFlow)
+                    ZSLogger.error("Cancel API failed — subscription may still be active: \(error)", category: .cancelFlow)
+                    // Return .dismissed instead of .cancelled so the caller knows the
+                    // cancellation did not actually succeed on the backend.
+                    return .dismissed
                 }
             }
         }
@@ -1183,9 +1178,7 @@ public final class ZeroSettle: ObservableObject {
     /// - Parameter userId: Optional user ID for A/B experiment targeting
     /// - Returns: The cancel flow ``CancelFlow/Config``
     public func fetchCancelFlowConfig(userId: String? = nil) async throws -> CancelFlow.Config {
-        guard let backend else {
-            throw ZeroSettleError.notConfigured
-        }
+        let backend = try requireBackend()
 
         do {
             let config = try await backend.fetchCancelFlow(userId: userId)
@@ -1211,9 +1204,7 @@ public final class ZeroSettle: ObservableObject {
     ///   - userId: Your app's user identifier
     /// - Returns: A ``CancelFlow/SaveOfferResult`` with details of the applied discount
     public func acceptSaveOffer(productId: String, userId: String) async throws -> CancelFlow.SaveOfferResult {
-        guard let backend else {
-            throw ZeroSettleError.notConfigured
-        }
+        let backend = try requireBackend()
 
         do {
             let response = try await backend.acceptSaveOffer(productId: productId, userId: userId)
@@ -1286,9 +1277,7 @@ public final class ZeroSettle: ObservableObject {
     ///   - pauseOptionId: The ID of the selected ``CancelFlow/PauseOption``
     /// - Returns: The date when the subscription will automatically resume, or `nil` if unspecified
     public func pauseSubscription(productId: String, userId: String, pauseDurationDays: Int?) async throws -> Date? {
-        guard let backend else {
-            throw ZeroSettleError.notConfigured
-        }
+        let backend = try requireBackend()
 
         do {
             let response = try await backend.pauseSubscription(
@@ -1316,9 +1305,7 @@ public final class ZeroSettle: ObservableObject {
     ///   - productId: The product identifier to resume
     ///   - userId: Your app's user identifier
     public func resumeSubscription(productId: String, userId: String) async throws {
-        guard let backend else {
-            throw ZeroSettleError.notConfigured
-        }
+        let backend = try requireBackend()
 
         do {
             try await backend.resumeSubscription(productId: productId, userId: userId)
@@ -1342,9 +1329,7 @@ public final class ZeroSettle: ObservableObject {
     ///   - userId: Your app's user identifier
     ///   - immediate: If `true`, cancel immediately. If `false` (default), cancel at the end of the current billing period.
     public func cancelSubscription(productId: String, userId: String, immediate: Bool = false) async throws {
-        guard let backend else {
-            throw ZeroSettleError.notConfigured
-        }
+        let backend = try requireBackend()
 
         do {
             try await backend.cancelSubscription(productId: productId, userId: userId, immediate: immediate)
@@ -1430,9 +1415,7 @@ public final class ZeroSettle: ObservableObject {
     ///   - userId: Your app's user identifier
     /// - Returns: The upgrade offer ``UpgradeOffer/Config``
     public func fetchUpgradeOfferConfig(productId: String? = nil, userId: String) async throws -> UpgradeOffer.Config {
-        guard let backend else {
-            throw ZeroSettleError.notConfigured
-        }
+        let backend = try requireBackend()
 
         do {
             let config = try await backend.fetchUpgradeOffer(userId: userId, productId: productId)
@@ -1464,6 +1447,12 @@ public final class ZeroSettle: ObservableObject {
     }
 
     // MARK: - Private
+
+    /// Unwrap the backend or throw ``ZeroSettleError/notConfigured``.
+    private func requireBackend() throws -> Backend {
+        guard let backend else { throw ZeroSettleError.notConfigured }
+        return backend
+    }
 
     /// Load and cache the cancel flow configuration. Non-throwing — logs errors and continues.
     private func loadCancelFlowConfig(userId: String? = nil) async {
@@ -1569,26 +1558,20 @@ public final class ZeroSettle: ObservableObject {
 // MARK: - StoreKit Update Delegate
 
 extension ZeroSettle: StoreKitUpdateDelegate {
-    nonisolated func storeKitDidSyncTransaction(productId: String, transactionId: UInt64) {
-        Task { @MainActor in
-            delegate?.zeroSettleDidSyncStoreKitTransaction(
-                productId: productId,
-                transactionId: transactionId
-            )
-        }
+    func storeKitDidSyncTransaction(productId: String, transactionId: UInt64) {
+        delegate?.zeroSettleDidSyncStoreKitTransaction(
+            productId: productId,
+            transactionId: transactionId
+        )
     }
 
-    nonisolated func storeKitSyncFailed(error: Error) {
-        Task { @MainActor in
-            delegate?.zeroSettleStoreKitSyncFailed(error: error)
-        }
+    func storeKitSyncFailed(error: Error) {
+        delegate?.zeroSettleStoreKitSyncFailed(error: error)
     }
 
-    nonisolated func storeKitEntitlementsDidChange(_ storeKitEntitlements: [Entitlement]) {
-        Task { @MainActor in
-            // Merge: keep web entitlements, replace StoreKit entitlements
-            let webEntitlements = self.entitlements.filter { $0.source == .webCheckout }
-            updateEntitlements(webEntitlements + storeKitEntitlements)
-        }
+    func storeKitEntitlementsDidChange(_ storeKitEntitlements: [Entitlement]) {
+        // Merge: keep web entitlements, replace StoreKit entitlements
+        let webEntitlements = self.entitlements.filter { $0.source == .webCheckout }
+        updateEntitlements(webEntitlements + storeKitEntitlements)
     }
 }

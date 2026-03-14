@@ -218,3 +218,11 @@ public struct Entitlement: Identifiable, Sendable, Codable, Equatable {
         try container.encodeIfPresent(originalPurchaseDate, forKey: .originalPurchaseDate)
     }
 }
+
+// MARK: - Hashable
+
+extension Entitlement: Hashable {
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
+}
