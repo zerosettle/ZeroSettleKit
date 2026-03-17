@@ -218,6 +218,16 @@ internal final class Backend: @unchecked Sendable {
         }
     }
 
+    /// Initiate checkouts for multiple products in a single request.
+    /// Shares expensive work (Stripe customer, connect account) across all products.
+    func initiateCheckoutBatch(products: [BatchCheckoutRequest.ProductEntry], userId: String? = nil, stripeCustomerId: String? = nil) async throws -> BatchCheckoutResponse {
+        let url = apiURL("iap/payment-intents/batch/")
+        let body = BatchCheckoutRequest(products: products, userId: userId, stripeCustomerId: stripeCustomerId)
+        return try await wrapped {
+            try await httpClient.post(url, body: body, headers: authHeaders, responseType: BatchCheckoutResponse.self)
+        }
+    }
+
     // MARK: - Transactions
 
     /// Get the status of a transaction by ID.
@@ -640,6 +650,69 @@ internal struct CheckoutResponse: Decodable {
     let trialEnd: Int?
     /// The amount (in cents) the customer will be charged when the trial ends.
     let pendingAmount: Int?
+}
+
+// MARK: - Batch Checkout
+
+internal struct BatchCheckoutRequest: Encodable {
+    struct ProductEntry: Encodable {
+        let productId: String
+        let storekitSubscriptionEnd: String?
+        let storekitOriginalTransactionId: String?
+    }
+    let products: [ProductEntry]
+    let userId: String?
+    let stripeCustomerId: String?
+    let platform: String = "ios"
+}
+
+internal struct BatchCheckoutResponse: Decodable {
+    struct Result: Decodable {
+        let productId: String
+        let error: String?
+        // All CheckoutResponse fields as optionals (absent when error is set)
+        let clientSecret: String?
+        let transactionId: String?
+        let amount: Int?
+        let currency: String?
+        let productName: String?
+        let originalAmount: Int?
+        let callbackUrl: String?
+        let publishableKey: String?
+        let checkoutUrl: String?
+        let stripeAccount: String?
+        let merchantCountry: String?
+        let isSubscription: Bool?
+        let subscriptionInterval: String?
+        let trialEnd: Int?
+        let pendingAmount: Int?
+
+        /// Convert a successful result to a full CheckoutResponse.
+        func asCheckoutResponse() -> CheckoutResponse? {
+            guard error == nil,
+                  let clientSecret, let transactionId, let amount,
+                  let currency, let productName, let callbackUrl,
+                  let publishableKey, let checkoutUrl else { return nil }
+            return CheckoutResponse(
+                clientSecret: clientSecret,
+                transactionId: transactionId,
+                amount: amount,
+                currency: currency,
+                productName: productName,
+                originalAmount: originalAmount,
+                callbackUrl: callbackUrl,
+                publishableKey: publishableKey,
+                checkoutUrl: checkoutUrl,
+                stripeAccount: stripeAccount,
+                merchantCountry: merchantCountry,
+                isSubscription: isSubscription,
+                subscriptionInterval: subscriptionInterval,
+                trialEnd: trialEnd,
+                pendingAmount: pendingAmount
+            )
+        }
+    }
+    let results: [Result]
 }
 
 private struct SyncStoreKitTransactionRequest: Encodable {
