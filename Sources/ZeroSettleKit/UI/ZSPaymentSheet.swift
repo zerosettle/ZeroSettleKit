@@ -631,10 +631,90 @@ extension CheckoutSheet where Header == EmptyView {
     ///     }
     public static func warmUp(productIds: [String], userId: String? = nil) async {
         guard !productIds.isEmpty else { return }
-        await withTaskGroup(of: Void.self) { group in
+
+        guard let config = ZeroSettle.shared.currentConfig,
+              let baseURL = ZeroSettle.shared.effectiveBaseURL else {
+            return
+        }
+
+        let pk = config.publishableKey
+
+        // Build batch entries on MainActor to access shared state
+        let entries: [BatchCheckoutRequest.ProductEntry] = await MainActor.run {
+            var result: [BatchCheckoutRequest.ProductEntry] = []
+            var groupOrigTxnIds: [Int: String?] = [:]
+
             for productId in productIds {
-                group.addTask {
-                    _ = await preload(productId: productId, userId: userId)
+                guard let product = ZeroSettle.shared.product(for: productId),
+                      product.webPrice != nil else { continue }
+
+                let migEnd = migrationEndDate(for: productId)?.formatted(.iso8601)
+
+                // Resolve originalTransactionId once per subscription group
+                var origTxnId: String?
+                if let groupId = product.subscriptionGroupId {
+                    if let cached = groupOrigTxnIds[groupId] {
+                        origTxnId = cached
+                    } else {
+                        let groupProductIds = Set(ZeroSettle.shared.products
+                            .filter { $0.subscriptionGroupId == groupId }
+                            .map { $0.id })
+                        origTxnId = ZeroSettle.shared.entitlements
+                            .first(where: {
+                                $0.source == .storeKit &&
+                                $0.isActive &&
+                                $0.storekitOriginalTransactionId != nil &&
+                                groupProductIds.contains($0.productId)
+                            })?
+                            .storekitOriginalTransactionId
+                        groupOrigTxnIds[groupId] = origTxnId
+                    }
+                }
+
+                result.append(BatchCheckoutRequest.ProductEntry(
+                    productId: productId,
+                    storekitSubscriptionEnd: migEnd,
+                    storekitOriginalTransactionId: origTxnId
+                ))
+            }
+            return result
+        }
+
+        guard !entries.isEmpty else { return }
+
+        let backend = Backend(baseURL: baseURL, publishableKey: pk)
+
+        guard let batchResponse = try? await backend.initiateCheckoutBatch(
+            products: entries, userId: userId
+        ) else {
+            // Batch endpoint failed — fall back to individual preloads
+            ZSLogger.info("[Checkout] Batch preload failed, falling back to individual", category: .checkout)
+            await withTaskGroup(of: Void.self) { group in
+                for productId in productIds {
+                    group.addTask {
+                        _ = await preload(productId: productId, userId: userId)
+                    }
+                }
+            }
+            return
+        }
+
+        // Populate cache with each successful result
+        for result in batchResponse.results {
+            if let response = result.asCheckoutResponse() {
+                await CheckoutResponseCache.shared.set(
+                    productId: result.productId,
+                    userId: userId,
+                    publishableKey: pk,
+                    response: response
+                )
+
+                // Fire-and-forget DNS/TLS prefetch for webView mode
+                if ZeroSettle.shared.checkoutType == .webView,
+                   let url = URL(string: response.checkoutUrl) {
+                    Task.detached(priority: .utility) {
+                        _ = try? await URLSession.shared.data(from: url)
+                    }
                 }
             }
         }
