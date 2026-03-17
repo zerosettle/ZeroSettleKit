@@ -25,7 +25,7 @@ let package = Package(
 
     // MARK: - Dependencies
     dependencies: [
-        .package(url: "https://github.com/stripe/stripe-ios.git", from: "24.0.0"),
+        .package(url: "https://github.com/stripe/stripe-ios.git", "23.0.0"..<"25.0.0"),
     ],
 
     // MARK: - Targets
