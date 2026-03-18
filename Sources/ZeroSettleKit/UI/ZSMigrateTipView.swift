@@ -531,7 +531,7 @@ public struct MigrationTipView: View {
                 let checkoutURL = baseURL.appendingPathComponent("iap/payment-intents/")
                 ZSLogger.info("[MigrateTipView] Checkout endpoint: \(checkoutURL.absoluteString)", category: .migration)
             }
-            let url = await manager.startCheckout()
+            let url = await manager.startCheckout(stripeCustomerId: stripeCustomerId)
             if let url {
                 checkoutURL = url
                 withAnimation(.easeInOut(duration: 0.3)) {

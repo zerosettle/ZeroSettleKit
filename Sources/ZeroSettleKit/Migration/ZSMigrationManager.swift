@@ -463,9 +463,13 @@ public final class ZSMigrationManager: ObservableObject {
     /// Transitions to `.presented` if not already there.
     /// Returns `nil` if checkout creation fails (check ``checkoutError``).
     ///
+    /// - Parameter stripeCustomerId: Optional Stripe customer ID to use for this checkout.
+    ///   Overrides the value stored on the singleton, which may be `nil` if the manager
+    ///   was cached before a customer ID was available (e.g. during `bootstrap()`).
+    ///   Falls back to `self.stripeCustomerId` when `nil`.
     /// - Returns: The checkout URL to load in a webview, or `nil` on failure
     @discardableResult
-    public func startCheckout() async -> URL? {
+    public func startCheckout(stripeCustomerId: String? = nil) async -> URL? {
         guard let offerData else {
             ZSLogger.error("[MigrationManager] startCheckout() failed — no offerData available", category: .migration)
             checkoutError = ZeroSettleError.notConfigured
@@ -487,7 +491,7 @@ public final class ZSMigrationManager: ObservableObject {
             let checkout = try await backend.initiateCheckout(
                 productId: offerData.prompt.productId,
                 userId: userId,
-                stripeCustomerId: stripeCustomerId,
+                stripeCustomerId: stripeCustomerId ?? self.stripeCustomerId,
                 storekitSubscriptionEnd: offerData.storekitSubscriptionEnd,
                 storekitOriginalTransactionId: offerData.activeStoreKitOriginalTransactionId
             )
