@@ -120,7 +120,7 @@ internal final class MessageRouter: NSObject, WKScriptMessageHandler {
 /// to when the checkout modifier enters the view hierarchy — well before
 /// the user taps buy.
 @MainActor
-private enum WebKitWarmup {
+internal enum WebKitWarmup {
     static let processPool = WKProcessPool()
 
     private static var isWarmed = false
