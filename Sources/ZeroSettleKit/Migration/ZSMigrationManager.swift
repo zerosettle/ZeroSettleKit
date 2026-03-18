@@ -62,6 +62,17 @@ public final class ZSMigrationManager: ObservableObject {
     /// Re-entrancy guard for evaluateEligibility.
     private var isEvaluating = false
 
+    // MARK: - Checkout Preloading
+
+    /// Preloaded checkout URL ready for instant presentation.
+    private var preloadedCheckoutURL: URL?
+
+    /// Transaction ID associated with the preloaded checkout.
+    private var preloadedTransactionId: String?
+
+    /// In-flight preload task for coalescing concurrent calls.
+    private var preloadTask: Task<URL?, Never>?
+
     /// Convenience alias for Apple subscription status comparison.
     private typealias AppleStatus = StoreKitSubscriptionStatus
 
@@ -180,7 +191,6 @@ public final class ZSMigrationManager: ObservableObject {
     private func evaluateEligibility() {
         guard !isEvaluating else { return }
         isEvaluating = true
-        defer { isEvaluating = false }
 
         // Demo mode: force out of dismissed state so re-evaluation can proceed
         if Self.demoMode && state == .dismissed {
@@ -188,6 +198,14 @@ public final class ZSMigrationManager: ObservableObject {
         }
 
         let previousState = state
+        defer {
+            // Clear preloaded checkout when transitioning away from .eligible.
+            // Must happen before resetting isEvaluating to prevent re-entrant evaluation.
+            if previousState == .eligible && state != .eligible {
+                clearPreloadedCheckout()
+            }
+            isEvaluating = false
+        }
         let iap = ZeroSettle.shared
 
         // ── Always sync Apple subscription status to backend ──
@@ -476,6 +494,20 @@ public final class ZSMigrationManager: ObservableObject {
             return nil
         }
 
+        // Fast path: consume preloaded checkout URL
+        if let url = consumePreloadedURL() {
+            return url
+        }
+
+        // Wait for in-flight preload if running
+        if preloadTask != nil {
+            _ = await preloadTask?.value
+            if let url = consumePreloadedURL() {
+                return url
+            }
+        }
+
+        // Slow path: create PI on-demand
         if state == .eligible {
             state = .presented
         }
@@ -484,31 +516,10 @@ public final class ZSMigrationManager: ObservableObject {
         isLoading = true
 
         do {
-            let backend = try makeBackend()
-            // Migration PIs need stripeCustomerId, storekitSubscriptionEnd, and
-            // storekitOriginalTransactionId — params that a cached preload PI
-            // won't have. Always call the server to avoid double-billing.
-            let checkout = try await backend.initiateCheckout(
-                productId: offerData.prompt.productId,
-                userId: userId,
-                stripeCustomerId: stripeCustomerId ?? self.stripeCustomerId,
-                storekitSubscriptionEnd: offerData.storekitSubscriptionEnd,
-                storekitOriginalTransactionId: offerData.activeStoreKitOriginalTransactionId
-            )
-
+            let result = try await createCheckout(stripeCustomerId: stripeCustomerId)
             isLoading = false
-            checkoutTransactionId = checkout.transactionId
-            let url = URL(string: checkout.checkoutUrl)
-
-            // Default Apple subscription to active — "guilty until proven innocent".
-            // Updated with real status after manage subscription sheet dismisses.
-            do {
-                try await backend.updateStorekitStatus(transactionId: checkout.transactionId, storekitStatus: 1)
-            } catch {
-                ZSLogger.error("[MigrationManager] Failed to set default storekit_status: \(error)", category: .migration)
-            }
-
-            return url
+            checkoutTransactionId = result.transactionId
+            return result.url
         } catch {
             checkoutError = error
             isLoading = false
@@ -677,9 +688,101 @@ public final class ZSMigrationManager: ObservableObject {
     /// Sets the state to `.dismissed` and persists the dismissal in UserDefaults.
     /// Can be called from any state.
     public func dismiss() {
+        clearPreloadedCheckout()
         state = .dismissed
         offerData = nil
         Self.setDismissed(true, forUserId: userId)
+    }
+
+    // MARK: - Checkout Preloading
+
+    /// Pre-creates a PaymentIntent so the checkout URL is ready before the user taps the CTA.
+    ///
+    /// Returns the cached URL on subsequent calls. Concurrent calls are coalesced into a single
+    /// network request. Does **not** set `isLoading` or transition state.
+    ///
+    /// - Parameter stripeCustomerId: Optional Stripe customer ID override.
+    /// - Returns: The checkout URL, or `nil` if preloading fails or the manager isn't eligible.
+    internal func preloadCheckout(stripeCustomerId: String? = nil) async -> URL? {
+        guard offerData != nil, state == .eligible else { return nil }
+
+        // Cache hit
+        if let preloadedCheckoutURL { return preloadedCheckoutURL }
+
+        // Coalesce concurrent calls
+        if let preloadTask {
+            return await preloadTask.value
+        }
+
+        let task = Task<URL?, Never> { [weak self] in
+            guard let self else { return nil }
+
+            do {
+                let result = try await self.createCheckout(stripeCustomerId: stripeCustomerId)
+                self.preloadedCheckoutURL = result.url
+                self.preloadedTransactionId = result.transactionId
+                return result.url
+            } catch {
+                ZSLogger.error("[MigrationManager] Preload checkout failed: \(error)", category: .migration)
+                return nil
+            }
+        }
+        preloadTask = task
+        return await task.value
+    }
+
+    /// Consumes the preloaded checkout URL if available, transitioning to `.presented`.
+    ///
+    /// Returns the URL and clears preloaded state. Returns `nil` if nothing was preloaded.
+    internal func consumePreloadedURL() -> URL? {
+        guard let url = preloadedCheckoutURL else { return nil }
+
+        if state == .eligible {
+            state = .presented
+        }
+        checkoutTransactionId = preloadedTransactionId
+
+        // Clear preloaded state after consumption
+        preloadedCheckoutURL = nil
+        preloadedTransactionId = nil
+        preloadTask = nil
+
+        return url
+    }
+
+    /// Cancels any in-flight preload and clears cached checkout state.
+    private func clearPreloadedCheckout() {
+        preloadTask?.cancel()
+        preloadTask = nil
+        preloadedCheckoutURL = nil
+        preloadedTransactionId = nil
+    }
+
+    /// Creates a PaymentIntent and sets the default Apple subscription status.
+    ///
+    /// Shared by `startCheckout()` and `preloadCheckout()` to avoid duplicating
+    /// the `initiateCheckout` + `updateStorekitStatus` call sequence.
+    private func createCheckout(stripeCustomerId: String?) async throws -> (url: URL?, transactionId: String) {
+        guard let offerData else { throw ZeroSettleError.notConfigured }
+
+        let backend = try makeBackend()
+        let checkout = try await backend.initiateCheckout(
+            productId: offerData.prompt.productId,
+            userId: userId,
+            stripeCustomerId: stripeCustomerId ?? self.stripeCustomerId,
+            storekitSubscriptionEnd: offerData.storekitSubscriptionEnd,
+            storekitOriginalTransactionId: offerData.activeStoreKitOriginalTransactionId
+        )
+
+        // Default Apple subscription to active — "guilty until proven innocent".
+        // Updated with real status after manage subscription sheet dismisses.
+        do {
+            try await backend.updateStorekitStatus(transactionId: checkout.transactionId, storekitStatus: 1)
+        } catch {
+            ZSLogger.error("[MigrationManager] Failed to set default storekit_status: \(error)", category: .migration)
+        }
+
+        return (URL(string: checkout.checkoutUrl), checkout.transactionId)
     }
 
     // MARK: - StoreKit Tenure

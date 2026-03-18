@@ -53,6 +53,8 @@ public struct MigrationTipView: View {
     @State private var confettiTrigger = 0
     @State private var checkoutURL: URL?
     @State private var hasApplePay = false
+    @StateObject private var preloader = MigrationCheckoutPreloader()
+    @State private var preloadTriggered = false
 
     private var renewalDateString: String? {
         guard let date = manager.offerData?.storekitSubscriptionEnd else { return nil }
@@ -182,6 +184,21 @@ public struct MigrationTipView: View {
             if newState == .dismissed {
                 onEvent?(.dismissed)
             }
+            // Trigger preloading when becoming eligible
+            if newState == .eligible && !preloadTriggered {
+                triggerPreload()
+            }
+            // Reset preloader when leaving eligible/presented
+            if newState != .eligible && newState != .presented {
+                preloader.reset()
+                preloadTriggered = false
+            }
+        }
+        .task {
+            // Trigger preloading if already eligible when view appears
+            if manager.state == .eligible && !preloadTriggered {
+                triggerPreload()
+            }
         }
     }
 
@@ -243,6 +260,8 @@ public struct MigrationTipView: View {
                     CheckoutWebView(
                         url: checkoutURLValue,
                         backgroundColor: UIColor(backgroundColor),
+                        preloadedWebView: preloader.isReady ? preloader.webView : nil,
+                        preloadedMessageRouter: preloader.isReady ? preloader.messageRouter : nil,
                         onLoaded: {
                             webViewLoaded = true
                         },
@@ -307,6 +326,11 @@ public struct MigrationTipView: View {
             }
         }
         .background(backgroundColor)
+        .background(
+            MigrationPreloaderHost(webView: preloader.webView)
+                .frame(width: 1, height: 1)
+                .allowsHitTesting(false)
+        )
         .cornerRadius(16)
         .overlay(
             Group {
@@ -527,6 +551,17 @@ public struct MigrationTipView: View {
 
     private func startWebViewCheckout() {
         Task {
+            // Fast path: preloader has URL and WebView ready
+            if preloader.isReady, let url = manager.consumePreloadedURL() {
+                checkoutURL = url
+                hasApplePay = preloader.hasApplePay
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    isExpanded = true
+                }
+                return
+            }
+
+            // Slow path: PI creation on-demand (also awaits in-flight preload)
             if let baseURL = ZeroSettle.shared.effectiveBaseURL {
                 let checkoutURL = baseURL.appendingPathComponent("iap/payment-intents/")
                 ZSLogger.info("[MigrateTipView] Checkout endpoint: \(checkoutURL.absoluteString)", category: .migration)
@@ -540,6 +575,25 @@ public struct MigrationTipView: View {
             } else {
                 ctaTapped = false
             }
+        }
+    }
+
+    private func triggerPreload() {
+        let iap = ZeroSettle.shared
+        let checkoutType = iap.checkoutType
+
+        // Only preload for inline WebView checkout types
+        guard checkoutType == .webView || checkoutType == .nativePay else { return }
+
+        // Respect the kill switch
+        guard iap.currentConfig?.maxPreloadedWebViews != 0 else { return }
+
+        preloadTriggered = true
+        WebKitWarmup.warmIfNeeded()
+
+        Task {
+            guard let url = await manager.preloadCheckout(stripeCustomerId: stripeCustomerId) else { return }
+            preloader.preload(url: url, backgroundColor: UIColor(backgroundColor))
         }
     }
 
@@ -565,6 +619,8 @@ public struct MigrationTipView: View {
 struct CheckoutWebView: UIViewRepresentable {
     let url: URL
     let backgroundColor: UIColor
+    let preloadedWebView: WKWebView?
+    let preloadedMessageRouter: MessageRouter?
     let onLoaded: () -> Void
     let onPaymentMethodChanged: (String) -> Void
     let onCheckoutSuccess: (String?) -> Void
@@ -579,7 +635,25 @@ struct CheckoutWebView: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> WKWebView {
+        // Fast path: reuse preloaded WebView (content already rendered)
+        if let preloaded = preloadedWebView {
+            preloaded.removeFromSuperview()
+            preloaded.navigationDelegate = context.coordinator
+
+            // Rewire message router to live coordinator
+            preloadedMessageRouter?.onMessage = { [weak coordinator = context.coordinator] message in
+                guard let coordinator else { return }
+                coordinator.userContentController(WKUserContentController(), didReceive: message)
+            }
+
+            // Content already rendered — fire onLoaded immediately
+            DispatchQueue.main.async { self.onLoaded() }
+            return preloaded
+        }
+
+        // Standard path: create a new WebView
         let configuration = WKWebViewConfiguration()
+        configuration.processPool = WebKitWarmup.processPool
         configuration.allowsInlineMediaPlayback = true
 
         // Add script message handlers for payment method changes, checkout completion, and debug logs
@@ -596,7 +670,7 @@ struct CheckoutWebView: UIViewRepresentable {
         // So we inject as a WKUserScript with `forMainFrameOnly: false` to run in *all frames*.
         configuration.userContentController.addUserScript(
             WKUserScript(
-                source: context.coordinator.buildInjectedJavaScript(),
+                source: buildMigrationCheckoutJS(backgroundColor: backgroundColor),
                 injectionTime: .atDocumentEnd,
                 forMainFrameOnly: false
             )
@@ -671,268 +745,6 @@ struct CheckoutWebView: UIViewRepresentable {
             }
         }
 
-        private func rgbString() -> (r: Int, g: Int, b: Int) {
-            var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
-            backgroundColor.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
-            return (Int(red * 255), Int(green * 255), Int(blue * 255))
-        }
-
-        func buildInjectedJavaScript() -> String {
-            let rgb = rgbString()
-            let r = rgb.r, g = rgb.g, b = rgb.b
-
-            // NOTE: This script is idempotent (guarded) because it may run multiple times
-            // across navigations/frames.
-            return """
-            (function() {
-              if (window.__divecastPaymentDetectionInstalled) { return; }
-              window.__divecastPaymentDetectionInstalled = true;
-
-              function log(msg) {
-                try {
-                  var href = (window.location && window.location.href) ? window.location.href : '(no-href)';
-                  window.webkit.messageHandlers.debugLog.postMessage('[frame=' + href + '] ' + msg);
-                } catch (e) {}
-              }
-
-              function safeStr(x) { try { return String(x); } catch (e) { return '[unstringifiable]'; } }
-
-              log('Installing payment method detection (all-frames user script).');
-
-              // Inject custom CSS (ok if duplicated across frames)
-              // Detect which Stripe sub-frame we're inside
-              var isStripePaymentFrame = window.location.href.indexOf('js.stripe.com') !== -1
-                  && window.location.href.indexOf('componentName=payment') !== -1;
-              var isStripeExpressCheckoutFrame = window.location.href.indexOf('js.stripe.com') !== -1
-                  && window.location.href.indexOf('componentName=expressCheckout') !== -1;
-
-              try {
-                var style = document.createElement('style');
-                if (isStripePaymentFrame) {
-                  // Inside the Stripe payment iframe — force light background
-                  style.innerHTML = `
-                    html, body {
-                      background-color: #f2f2f6 !important;
-                      background: #f2f2f6 !important;
-                    }
-                  `;
-                } else if (isStripeExpressCheckoutFrame) {
-                  // Inside the Stripe express checkout iframe — show plain Apple Pay button
-                  style.innerHTML = `
-                    .p-ApplePayButton--subscribe {
-                      -apple-pay-button-type: plain !important;
-                    }
-                  `;
-                } else {
-                  style.innerHTML = `
-                    html, body, .payment-sheet, .checkout-container, .container, #root, #app, main {
-                      background-color: rgb(\(r), \(g), \(b)) !important;
-                      background: rgb(\(r), \(g), \(b)) !important;
-                    }
-
-                  /* Hide loading checkout spinner */
-                  #loading-state,
-                  .loading-container,
-                  .loading-spinner,
-                  .loading-text {
-                    display: none !important;
-                    visibility: hidden !important;
-                  }
-
-                  /* Hide embedded close/back buttons inside checkout */
-                  .close-btn,
-                  button.close-btn {
-                    display: none !important;
-                    visibility: hidden !important;
-                    opacity: 0 !important;
-                    pointer-events: none !important;
-                  }
-
-                  /* Style submit button with green color */
-                  .submit-btn,
-                  #submit,
-                  button[type="submit"] {
-                    background-color: #34C759 !important;
-                    background: #34C759 !important;
-                  }
-
-                  .submit-btn:hover,
-                  #submit:hover,
-                  button[type="submit"]:hover {
-                    background-color: #30B350 !important;
-                    background: #30B350 !important;
-                  }
-
-                  /* Style loading text white */
-                  .loading-text {
-                    color: white !important;
-                  }
-
-                  /* Style "or" divider white */
-                  .or-divider,
-                  #or-divider,
-                  .or-divider span {
-                    color: white !important;
-                    border-color: rgba(255, 255, 255, 0.3) !important;
-                  }
-                  .or-divider::before,
-                  .or-divider::after,
-                  #or-divider::before,
-                  #or-divider::after {
-                    background-color: rgba(255, 255, 255, 0.3) !important;
-                  }
-
-                  /* Style "Secured by Stripe" and footer text white */
-                  [class*="secured"],
-                  [class*="stripe-badge"],
-                  [class*="footer"],
-                  [class*="branding"],
-                  .stripe-secured,
-                  .powered-by-stripe,
-                  .secure-badge,
-                  .security-text {
-                    color: white !important;
-                    fill: white !important;
-                  }
-                  [class*="secured"] span,
-                  [class*="footer"] span,
-                  [class*="branding"] span {
-                    color: white !important;
-                  }
-                `;
-                }
-                document.head && document.head.appendChild(style);
-              } catch (e) {
-                log('CSS inject failed: ' + safeStr(e));
-              }
-
-              function findButton(dataValue) {
-                return document.querySelector('.p-AccordionButton[data-value="' + dataValue + '"]')
-                    || document.querySelector('[data-value="' + dataValue + '"]');
-              }
-
-              function isButtonExpanded(dataValue) {
-                var btn = findButton(dataValue);
-                if (btn) {
-                  return btn.getAttribute('aria-expanded') === 'true';
-                }
-                return false;
-              }
-
-              var lastPaymentMethod = null;
-
-              function computeActivePaymentMethod() {
-                // Check Stripe accordion buttons (only present when Apple Pay is available)
-                if (isButtonExpanded('card')) {
-                  return 'card';
-                }
-                if (isButtonExpanded('apple_pay')) {
-                  return 'apple_pay';
-                }
-                return null;
-              }
-
-              function report(reason) {
-                var applePayBtn = findButton('apple_pay');
-                var cardBtn = findButton('card');
-
-                var applePayState = applePayBtn ? applePayBtn.getAttribute('aria-expanded') : null;
-                var cardState = cardBtn ? cardBtn.getAttribute('aria-expanded') : null;
-
-                var paymentMethod = computeActivePaymentMethod();
-
-                log('[report:' + reason + '] apple_pay=' + safeStr(applePayState)
-                  + ' card=' + safeStr(cardState)
-                  + ' => paymentMethod=' + safeStr(paymentMethod));
-
-                // null means no accordion buttons found (no-Apple-Pay case);
-                // that path is handled by expandSheet/collapseSheet instead.
-                if (paymentMethod === null) { return; }
-                if (lastPaymentMethod === paymentMethod) { return; }
-                lastPaymentMethod = paymentMethod;
-
-                log('Sending paymentMethodChanged -> ' + safeStr(paymentMethod));
-                try { window.webkit.messageHandlers.paymentMethodChanged.postMessage(paymentMethod); } catch (e) {}
-              }
-
-              function isPaymentMethodTap(event) {
-                var t = event && event.target ? event.target : null;
-                if (!t || !t.closest) { return false; }
-                return !!t.closest('[data-value="apple_pay"]') || !!t.closest('[data-value="card"]');
-              }
-
-              // Detect custom Apple Pay container (non-accordion checkout)
-              // Supports both legacy #apple-pay-container and the new Express Checkout
-              // Element layout where #express-checkout-container.visible holds Apple Pay.
-              var applePayDetected = false;
-              function detectCustomApplePay(reason) {
-                if (applePayDetected) { return; }
-                // Legacy: dedicated Apple Pay container
-                var container = document.getElementById('apple-pay-container');
-                if (container && container.classList.contains('visible')) {
-                  applePayDetected = true;
-                  log('[' + reason + '] Custom Apple Pay container detected.');
-                  try { window.webkit.messageHandlers.paymentMethodChanged.postMessage('apple_pay_detected'); } catch (e) {}
-                  return;
-                }
-                // New: Stripe Express Checkout Element (Apple Pay + Google Pay + Link)
-                var expressContainer = document.getElementById('express-checkout-container');
-                if (expressContainer && expressContainer.classList.contains('visible')) {
-                  // Verify that the container actually rendered content (has a visible iframe)
-                  var iframe = expressContainer.querySelector('iframe');
-                  if (iframe && iframe.offsetHeight > 0) {
-                    applePayDetected = true;
-                    log('[' + reason + '] Express Checkout container with Apple Pay detected.');
-                    try { window.webkit.messageHandlers.paymentMethodChanged.postMessage('apple_pay_detected'); } catch (e) {}
-                  }
-                }
-              }
-
-              // Initial probing (Stripe often hydrates late)
-              setTimeout(function() { detectCustomApplePay('t+300ms'); report('t+300ms'); }, 300);
-              setTimeout(function() { detectCustomApplePay('t+800ms'); report('t+800ms'); }, 800);
-              setTimeout(function() { detectCustomApplePay('t+1500ms'); report('t+1500ms'); }, 1500);
-              setTimeout(function() { detectCustomApplePay('t+3000ms'); report('t+3000ms'); }, 3000);
-
-              // Tap detection: when a payment method is tapped, re-check after animation/hydration.
-              document.addEventListener('click', function(e) {
-                if (!isPaymentMethodTap(e)) { return; }
-                log('Payment method tap detected (event delegation).');
-                setTimeout(function() { report('tap+0ms'); }, 0);
-                setTimeout(function() { report('tap+120ms'); }, 120);
-                setTimeout(function() { report('tap+300ms'); }, 300);
-                setTimeout(function() { report('tap+600ms'); }, 600);
-              }, true);
-
-              // Observe aria-expanded changes on any payment method button.
-              var observer = new MutationObserver(function(muts) {
-                for (var i = 0; i < muts.length; i++) {
-                  var m = muts[i];
-                  if (m.type === 'attributes' && m.attributeName === 'aria-expanded') {
-                    var target = m.target;
-                    var dataValue = target && target.getAttribute ? target.getAttribute('data-value') : null;
-                    if (dataValue === 'apple_pay' || dataValue === 'card') {
-                      log('Observed aria-expanded mutation on ' + dataValue + ' button.');
-                      report('mutation:aria-expanded');
-                      return;
-                    }
-                  }
-                }
-              });
-              try {
-                observer.observe(document.body, { subtree: true, attributes: true, attributeFilter: ['aria-expanded'] });
-              } catch (e) {
-                log('MutationObserver attach failed: ' + safeStr(e));
-              }
-
-              // Poll fallback
-              setInterval(function() { report('poll'); }, 2000);
-
-              log('Payment method detection installed.');
-            })();
-            """
-        }
-
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
             guard let url = navigationAction.request.url else {
                 decisionHandler(.allow)
@@ -999,6 +811,414 @@ struct CheckoutWebView: UIViewRepresentable {
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             // Script is injected via WKUserScript (all frames). We just mark loaded.
             onLoaded()
+        }
+    }
+}
+
+// MARK: - Migration Checkout JS
+
+/// Builds the injected JavaScript for the migration checkout WebView.
+///
+/// Handles CSS injection (background color, Stripe styling), payment method detection
+/// (accordion buttons, Apple Pay), checkout completion, and expand/collapse signals.
+/// Shared by both `CheckoutWebView.Coordinator` and `MigrationCheckoutPreloader`.
+private func buildMigrationCheckoutJS(backgroundColor: UIColor) -> String {
+    var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+    backgroundColor.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+    let r = Int(red * 255), g = Int(green * 255), b = Int(blue * 255)
+
+    // NOTE: This script is idempotent (guarded) because it may run multiple times
+    // across navigations/frames.
+    return """
+    (function() {
+      if (window.__divecastPaymentDetectionInstalled) { return; }
+      window.__divecastPaymentDetectionInstalled = true;
+
+      function log(msg) {
+        try {
+          var href = (window.location && window.location.href) ? window.location.href : '(no-href)';
+          window.webkit.messageHandlers.debugLog.postMessage('[frame=' + href + '] ' + msg);
+        } catch (e) {}
+      }
+
+      function safeStr(x) { try { return String(x); } catch (e) { return '[unstringifiable]'; } }
+
+      log('Installing payment method detection (all-frames user script).');
+
+      // Inject custom CSS (ok if duplicated across frames)
+      // Detect which Stripe sub-frame we're inside
+      var isStripePaymentFrame = window.location.href.indexOf('js.stripe.com') !== -1
+          && window.location.href.indexOf('componentName=payment') !== -1;
+      var isStripeExpressCheckoutFrame = window.location.href.indexOf('js.stripe.com') !== -1
+          && window.location.href.indexOf('componentName=expressCheckout') !== -1;
+
+      try {
+        var style = document.createElement('style');
+        if (isStripePaymentFrame) {
+          // Inside the Stripe payment iframe — force light background
+          style.innerHTML = `
+            html, body {
+              background-color: #f2f2f6 !important;
+              background: #f2f2f6 !important;
+            }
+          `;
+        } else if (isStripeExpressCheckoutFrame) {
+          // Inside the Stripe express checkout iframe — show plain Apple Pay button
+          style.innerHTML = `
+            .p-ApplePayButton--subscribe {
+              -apple-pay-button-type: plain !important;
+            }
+          `;
+        } else {
+          style.innerHTML = `
+            html, body, .payment-sheet, .checkout-container, .container, #root, #app, main {
+              background-color: rgb(\(r), \(g), \(b)) !important;
+              background: rgb(\(r), \(g), \(b)) !important;
+            }
+
+          /* Hide loading checkout spinner */
+          #loading-state,
+          .loading-container,
+          .loading-spinner,
+          .loading-text {
+            display: none !important;
+            visibility: hidden !important;
+          }
+
+          /* Hide embedded close/back buttons inside checkout */
+          .close-btn,
+          button.close-btn {
+            display: none !important;
+            visibility: hidden !important;
+            opacity: 0 !important;
+            pointer-events: none !important;
+          }
+
+          /* Style submit button with green color */
+          .submit-btn,
+          #submit,
+          button[type="submit"] {
+            background-color: #34C759 !important;
+            background: #34C759 !important;
+          }
+
+          .submit-btn:hover,
+          #submit:hover,
+          button[type="submit"]:hover {
+            background-color: #30B350 !important;
+            background: #30B350 !important;
+          }
+
+          /* Style loading text white */
+          .loading-text {
+            color: white !important;
+          }
+
+          /* Style "or" divider white */
+          .or-divider,
+          #or-divider,
+          .or-divider span {
+            color: white !important;
+            border-color: rgba(255, 255, 255, 0.3) !important;
+          }
+          .or-divider::before,
+          .or-divider::after,
+          #or-divider::before,
+          #or-divider::after {
+            background-color: rgba(255, 255, 255, 0.3) !important;
+          }
+
+          /* Style "Secured by Stripe" and footer text white */
+          [class*="secured"],
+          [class*="stripe-badge"],
+          [class*="footer"],
+          [class*="branding"],
+          .stripe-secured,
+          .powered-by-stripe,
+          .secure-badge,
+          .security-text {
+            color: white !important;
+            fill: white !important;
+          }
+          [class*="secured"] span,
+          [class*="footer"] span,
+          [class*="branding"] span {
+            color: white !important;
+          }
+        `;
+        }
+        document.head && document.head.appendChild(style);
+      } catch (e) {
+        log('CSS inject failed: ' + safeStr(e));
+      }
+
+      function findButton(dataValue) {
+        return document.querySelector('.p-AccordionButton[data-value="' + dataValue + '"]')
+            || document.querySelector('[data-value="' + dataValue + '"]');
+      }
+
+      function isButtonExpanded(dataValue) {
+        var btn = findButton(dataValue);
+        if (btn) {
+          return btn.getAttribute('aria-expanded') === 'true';
+        }
+        return false;
+      }
+
+      var lastPaymentMethod = null;
+
+      function computeActivePaymentMethod() {
+        // Check Stripe accordion buttons (only present when Apple Pay is available)
+        if (isButtonExpanded('card')) {
+          return 'card';
+        }
+        if (isButtonExpanded('apple_pay')) {
+          return 'apple_pay';
+        }
+        return null;
+      }
+
+      function report(reason) {
+        var applePayBtn = findButton('apple_pay');
+        var cardBtn = findButton('card');
+
+        var applePayState = applePayBtn ? applePayBtn.getAttribute('aria-expanded') : null;
+        var cardState = cardBtn ? cardBtn.getAttribute('aria-expanded') : null;
+
+        var paymentMethod = computeActivePaymentMethod();
+
+        log('[report:' + reason + '] apple_pay=' + safeStr(applePayState)
+          + ' card=' + safeStr(cardState)
+          + ' => paymentMethod=' + safeStr(paymentMethod));
+
+        // null means no accordion buttons found (no-Apple-Pay case);
+        // that path is handled by expandSheet/collapseSheet instead.
+        if (paymentMethod === null) { return; }
+        if (lastPaymentMethod === paymentMethod) { return; }
+        lastPaymentMethod = paymentMethod;
+
+        log('Sending paymentMethodChanged -> ' + safeStr(paymentMethod));
+        try { window.webkit.messageHandlers.paymentMethodChanged.postMessage(paymentMethod); } catch (e) {}
+      }
+
+      function isPaymentMethodTap(event) {
+        var t = event && event.target ? event.target : null;
+        if (!t || !t.closest) { return false; }
+        return !!t.closest('[data-value="apple_pay"]') || !!t.closest('[data-value="card"]');
+      }
+
+      // Detect custom Apple Pay container (non-accordion checkout)
+      // Supports both legacy #apple-pay-container and the new Express Checkout
+      // Element layout where #express-checkout-container.visible holds Apple Pay.
+      var applePayDetected = false;
+      function detectCustomApplePay(reason) {
+        if (applePayDetected) { return; }
+        // Legacy: dedicated Apple Pay container
+        var container = document.getElementById('apple-pay-container');
+        if (container && container.classList.contains('visible')) {
+          applePayDetected = true;
+          log('[' + reason + '] Custom Apple Pay container detected.');
+          try { window.webkit.messageHandlers.paymentMethodChanged.postMessage('apple_pay_detected'); } catch (e) {}
+          return;
+        }
+        // New: Stripe Express Checkout Element (Apple Pay + Google Pay + Link)
+        var expressContainer = document.getElementById('express-checkout-container');
+        if (expressContainer && expressContainer.classList.contains('visible')) {
+          // Verify that the container actually rendered content (has a visible iframe)
+          var iframe = expressContainer.querySelector('iframe');
+          if (iframe && iframe.offsetHeight > 0) {
+            applePayDetected = true;
+            log('[' + reason + '] Express Checkout container with Apple Pay detected.');
+            try { window.webkit.messageHandlers.paymentMethodChanged.postMessage('apple_pay_detected'); } catch (e) {}
+          }
+        }
+      }
+
+      // Initial probing (Stripe often hydrates late)
+      setTimeout(function() { detectCustomApplePay('t+300ms'); report('t+300ms'); }, 300);
+      setTimeout(function() { detectCustomApplePay('t+800ms'); report('t+800ms'); }, 800);
+      setTimeout(function() { detectCustomApplePay('t+1500ms'); report('t+1500ms'); }, 1500);
+      setTimeout(function() { detectCustomApplePay('t+3000ms'); report('t+3000ms'); }, 3000);
+
+      // Tap detection: when a payment method is tapped, re-check after animation/hydration.
+      document.addEventListener('click', function(e) {
+        if (!isPaymentMethodTap(e)) { return; }
+        log('Payment method tap detected (event delegation).');
+        setTimeout(function() { report('tap+0ms'); }, 0);
+        setTimeout(function() { report('tap+120ms'); }, 120);
+        setTimeout(function() { report('tap+300ms'); }, 300);
+        setTimeout(function() { report('tap+600ms'); }, 600);
+      }, true);
+
+      // Observe aria-expanded changes on any payment method button.
+      var observer = new MutationObserver(function(muts) {
+        for (var i = 0; i < muts.length; i++) {
+          var m = muts[i];
+          if (m.type === 'attributes' && m.attributeName === 'aria-expanded') {
+            var target = m.target;
+            var dataValue = target && target.getAttribute ? target.getAttribute('data-value') : null;
+            if (dataValue === 'apple_pay' || dataValue === 'card') {
+              log('Observed aria-expanded mutation on ' + dataValue + ' button.');
+              report('mutation:aria-expanded');
+              return;
+            }
+          }
+        }
+      });
+      try {
+        observer.observe(document.body, { subtree: true, attributes: true, attributeFilter: ['aria-expanded'] });
+      } catch (e) {
+        log('MutationObserver attach failed: ' + safeStr(e));
+      }
+
+      // Poll fallback
+      setInterval(function() { report('poll'); }, 2000);
+
+      log('Payment method detection installed.');
+    })();
+    """
+}
+
+// MARK: - Migration Checkout Preloader
+
+/// Pre-creates and renders a WKWebView off-screen for the migration checkout.
+///
+/// When the migration tip enters `.eligible` state, this preloader creates a WKWebView
+/// with the checkout URL and lets it render in the background. By the time the user taps
+/// the CTA, the Stripe payment buttons are already painted.
+@MainActor
+private final class MigrationCheckoutPreloader: ObservableObject {
+    @Published var webView: WKWebView?
+    @Published private(set) var isReady = false
+    @Published private(set) var hasApplePay = false
+    let messageRouter = MessageRouter()
+    private var loadedURL: URL?
+    private var navigationDelegate: PreloadNavigationDelegate?
+    private var timeoutTask: Task<Void, Never>?
+
+    func preload(url: URL, backgroundColor: UIColor) {
+        // Skip redundant loads
+        if loadedURL == url && isReady { return }
+
+        reset()
+        loadedURL = url
+
+        let config = WKWebViewConfiguration()
+        config.processPool = WebKitWarmup.processPool
+        config.allowsInlineMediaPlayback = true
+
+        // Register message handlers via the shared router
+        config.userContentController.add(messageRouter, name: "paymentMethodChanged")
+        config.userContentController.add(messageRouter, name: "checkoutComplete")
+        config.userContentController.add(messageRouter, name: "debugLog")
+
+        // Inject the same JS as the live CheckoutWebView
+        config.userContentController.addUserScript(
+            WKUserScript(
+                source: buildMigrationCheckoutJS(backgroundColor: backgroundColor),
+                injectionTime: .atDocumentEnd,
+                forMainFrameOnly: false
+            )
+        )
+
+        let wv = WKWebView(
+            frame: CGRect(x: 0, y: 0, width: 393, height: 600),
+            configuration: config
+        )
+        wv.isOpaque = false
+        wv.backgroundColor = backgroundColor
+        wv.scrollView.backgroundColor = backgroundColor
+        wv.scrollView.isScrollEnabled = false
+        wv.layer.cornerRadius = 12
+        wv.clipsToBounds = true
+
+        // Lightweight navigation delegate to detect load completion
+        let navDelegate = PreloadNavigationDelegate { [weak self] in
+            self?.timeoutTask?.cancel()
+            self?.isReady = true
+        }
+        self.navigationDelegate = navDelegate
+        wv.navigationDelegate = navDelegate
+
+        // Preload handler: capture Apple Pay detection silently
+        messageRouter.onMessage = { [weak self] message in
+            guard let self else { return }
+            if message.name == "paymentMethodChanged",
+               let body = message.body as? String,
+               body == "apple_pay_detected" {
+                self.hasApplePay = true
+            }
+        }
+
+        wv.load(URLRequest(url: url))
+        self.webView = wv
+
+        // Timeout fallback (same pattern as CheckoutPreloader)
+        timeoutTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            guard let self, !self.isReady else { return }
+            ZSLogger.error("[MigrationPreloader] Timed out waiting for page load — marking ready anyway", category: .migration)
+            self.isReady = true
+        }
+    }
+
+    func reset() {
+        timeoutTask?.cancel()
+        timeoutTask = nil
+        messageRouter.onMessage = nil
+        // Remove message handlers to break the WKUserContentController → messageRouter
+        // retain cycle before releasing the WebView.
+        webView?.configuration.userContentController.removeAllScriptMessageHandlers()
+        webView = nil
+        navigationDelegate = nil
+        isReady = false
+        hasApplePay = false
+        loadedURL = nil
+    }
+}
+
+/// Minimal WKNavigationDelegate that fires a callback on `didFinish`.
+@MainActor
+private final class PreloadNavigationDelegate: NSObject, WKNavigationDelegate {
+    let onFinish: () -> Void
+
+    init(onFinish: @escaping () -> Void) {
+        self.onFinish = onFinish
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        onFinish()
+    }
+}
+
+// MARK: - Migration Preloader Host
+
+/// Hosts the preloaded WKWebView off-screen in the SwiftUI view hierarchy.
+///
+/// WKWebView requires being in a window to lay out and render content.
+/// This invisible container keeps the preloaded view alive and rendering
+/// at 393x600 while taking no visible space.
+private struct MigrationPreloaderHost: UIViewRepresentable {
+    let webView: WKWebView?
+
+    func makeUIView(context: Context) -> UIView {
+        let container = UIView()
+        container.clipsToBounds = true
+        container.accessibilityElementsHidden = true
+        return container
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        // Remove stale subviews
+        for subview in uiView.subviews {
+            if webView == nil || subview !== webView {
+                subview.removeFromSuperview()
+            }
+        }
+        // Add the preloaded WebView if not already hosted
+        if let wv = webView, wv.superview == nil {
+            wv.frame = CGRect(x: 0, y: 0, width: 393, height: 600)
+            uiView.addSubview(wv)
         }
     }
 }
