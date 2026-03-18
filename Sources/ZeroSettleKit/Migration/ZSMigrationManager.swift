@@ -148,6 +148,14 @@ public final class ZSMigrationManager: ObservableObject {
     /// Resets the dismissed state, allowing the migration offer to be shown again.
     public static func resetDismissedState() {
         isPermanentlyDismissed = false
+        // Also clear per-user dismissed keys (prefix + ".userId")
+        let defaults = UserDefaults.standard
+        var clearedCount = 0
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(dismissedKeyPrefix + ".") {
+            defaults.removeObject(forKey: key)
+            clearedCount += 1
+        }
+        ZSLogger.info("[MigrationManager] resetDismissedState() — cleared global key + \(clearedCount) per-user key(s)", category: .migration)
     }
 
     // MARK: - Initialization
