@@ -61,9 +61,9 @@
 //     SOLUTION: Trust the preloader measurement only if 0 < measured < 500.
 //     Untrusted → isLoading=true, webContentHeight=0, wait for live observer.
 //     Trusted → webContentHeight=measured, but still isLoading=true (the
-//     WebView needs at least one frame to composite after being moved to the
-//     sheet's view hierarchy). The loading overlay clears on the first accepted
-//     contentHeight from the live observer.
+//     overlay masks compositing delays and prevents visible height jumps
+//     while the settle guard evaluates the first live measurements).
+//     The overlay clears on the first accepted contentHeight.
 //
 //  4. ANIMATION GATING
 //     ─────────────────
@@ -153,13 +153,22 @@ private let measureContentJS = "window.__zsMeasure()"
 /// Installs height tracking that continuously reports content height to native.
 /// Uses ResizeObserver on `#checkout-content` + polling fallback for CSS transitions.
 /// Fires immediately on install. Evaluate `setupMeasureJS` first.
+///
+/// **Re-report behavior**: Every 5th poll (~1s), the height is reported regardless
+/// of whether it changed. This prevents the observer from going silent after the
+/// Swift settle guard rejects a height — without periodic re-reports, the observer
+/// would set `lastHeight` and never report again (same value = no change), leaving
+/// `isLoading` stuck forever. The 1s interval ensures Swift gets another chance
+/// after the 0.8s settle deadline expires.
 private let heightObserverJS = """
 (function() {
     if (window.__zsHeightObserver) return;
     var lastHeight = 0;
+    var pollCount = 0;
     function measureAndReport() {
         var height = window.__zsMeasure();
-        if (height > 0 && Math.abs(height - lastHeight) > 1) {
+        pollCount++;
+        if (height > 0 && (Math.abs(height - lastHeight) > 1 || pollCount % 5 === 0)) {
             lastHeight = height;
             window.webkit.messageHandlers.checkoutComplete.postMessage({
                 action: 'contentHeight',
@@ -541,11 +550,9 @@ public struct CheckoutSheet<Header: View>: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var checkoutURL: URL?
-    /// Whether the loading overlay is shown. Always starts `true` for preloaded
-    /// views — even when the preloader measurement is trusted — because the
-    /// WKWebView needs at least one frame to composite after being moved from
-    /// the off-screen pool into the sheet's view hierarchy. Without this, Stripe
-    /// buttons may not be visually rendered when the sheet first appears.
+    /// Whether the loading overlay (`Color(.systemBackground)`) is shown over the
+    /// WebView. Always starts `true` for preloaded views to mask the brief
+    /// compositing delay when the WKWebView moves from the off-screen pool.
     /// Cleared by `handleWebViewAction(.contentHeight)` on the first accepted height.
     @State private var isLoading: Bool
     @State private var loadError: Error?
@@ -658,10 +665,6 @@ public struct CheckoutSheet<Header: View>: View {
         self.initialContentHeight = trustworthy ? measured : 0
         self._webContentHeight = State(initialValue: trustworthy ? measured : 0)
 
-        // Always start with loading overlay, even for trusted measurements.
-        // The WKWebView is being moved from the off-screen pool into the sheet's
-        // view hierarchy — it needs at least one frame to composite. Without this,
-        // Stripe buttons can appear blank/missing on the first frame.
         self._isLoading = State(initialValue: true)
 
         // Start the settling window to protect against the Stripe iframe feedback
@@ -933,10 +936,6 @@ extension CheckoutSheet {
                     )
                     .accessibilityLabel("Payment form")
 
-                    if isLoading {
-                        Color(.systemBackground)
-                            .accessibilityHidden(true)
-                    }
                 }
                 // WebView frame height. CAUTION: changing this resizes the WKWebView
                 // viewport, which triggers Stripe iframe re-layouts. The settle deadline
@@ -1010,6 +1009,23 @@ extension CheckoutSheet {
         .presentationDragIndicator(.hidden)
         .presentationBackground(.clear)
         .interactiveDismissDisabled(!dismissible)
+        .onDisappear {
+            // Reset card form to collapsed state so the next present starts
+            // clean. The WebView persists in the preloader pool — without this,
+            // the expanded card DOM state carries over to the next sheet.
+            preloadedWebView?.evaluateJavaScript("""
+                if(typeof cardExpanded!=='undefined'&&cardExpanded){
+                    var ce=document.getElementById('card-entry');
+                    ce.style.transition='none';
+                    ce.classList.remove('visible');
+                    ce.offsetHeight;
+                    ce.style.transition='';
+                    document.getElementById('pay-button').classList.add('hidden');
+                    document.getElementById('card-chevron').classList.remove('expanded');
+                    cardExpanded=false;
+                }
+                """, completionHandler: nil)
+        }
         .task {
             // Validate userId for subscription/non-consumable products
             if userId == nil {
@@ -1135,7 +1151,13 @@ extension CheckoutSheet {
             ZSLogger.debug("[Sheet] contentHeight: \(height) (was=\(webContentHeight) isLoading=\(isLoading) settling=\(isSettling))", category: .checkout)
             webContentHeight = height
             if height > 0 && isLoading {
-                isLoading = false
+                // Fade out the overlay (150ms) instead of removing instantly.
+                // The contentHeight confirms correct layout, but the Stripe
+                // iframe may not have painted its buttons yet. The fade gives
+                // the WebView an extra few frames to composite.
+                withAnimation(.easeOut(duration: 0.15)) {
+                    isLoading = false
+                }
                 ZSLogger.debug("[Sheet] contentHeight cleared isLoading", category: .checkout)
             }
 
