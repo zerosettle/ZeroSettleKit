@@ -168,7 +168,9 @@ private let heightObserverJS = """
     function measureAndReport() {
         var height = window.__zsMeasure();
         pollCount++;
-        if (height > 0 && (Math.abs(height - lastHeight) > 1 || pollCount % 5 === 0)) {
+        var delta = Math.abs(height - lastHeight);
+        var isReReport = pollCount % 5 === 0;
+        if (height > 0 && (delta > 1 || isReReport)) {
             lastHeight = height;
             window.webkit.messageHandlers.checkoutComplete.postMessage({
                 action: 'contentHeight',
@@ -180,7 +182,7 @@ private let heightObserverJS = """
     var ro = new ResizeObserver(function() { measureAndReport(); });
     ro.observe(target);
     // Poll as fallback — ResizeObserver can miss CSS grid transitions in WKWebView
-    setInterval(measureAndReport, 200);
+    setInterval(function() { measureAndReport(); }, 200);
     window.__zsHeightObserver = ro;
     measureAndReport();
 })();
@@ -272,7 +274,12 @@ internal final class CheckoutPreloader: ObservableObject {
     func loadAndWait(url: URL) async {
         // Reuse the existing WebView if it already loaded this URL
         if let wv = webView, isReady, loadedURL == url {
-            return
+            if wv.url == nil {
+                // Content process was terminated while orphaned — need full reload
+                reset()
+            } else {
+                return
+            }
         }
 
         // Cancel any in-flight load by resuming its continuation
@@ -325,9 +332,6 @@ internal final class CheckoutPreloader: ObservableObject {
                         DispatchQueue.main.async {
                             if let height = parseJSHeight(result) {
                                 self.measuredContentHeight = height
-                                ZSLogger.debug("[Preloader] ready → measured=\(height)", category: .checkout)
-                            } else {
-                                ZSLogger.debug("[Preloader] ready → measurement failed (result=\(String(describing: result)))", category: .checkout)
                             }
                             self.isReady = true
                             self.loadedURL = url
@@ -476,7 +480,7 @@ internal final class CheckoutPreloaderPool: ObservableObject {
         refreshWebViews()
     }
 
-    private func refreshWebViews() {
+    func refreshWebViews() {
         webViews = preloaders.values.compactMap(\.webView)
     }
 }
@@ -550,10 +554,9 @@ public struct CheckoutSheet<Header: View>: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var checkoutURL: URL?
-    /// Whether the loading overlay (`Color(.systemBackground)`) is shown over the
-    /// WebView. Always starts `true` for preloaded views to mask the brief
-    /// compositing delay when the WKWebView moves from the off-screen pool.
-    /// Cleared by `handleWebViewAction(.contentHeight)` on the first accepted height.
+    /// Gates animation and the inflation guard. While `true`, geometry changes are
+    /// instant and heights ≥ 500 are rejected. Cleared on the first accepted
+    /// `contentHeight`. Always starts `true` for preloaded views.
     @State private var isLoading: Bool
     @State private var loadError: Error?
     @State private var transactionId: String?
@@ -672,8 +675,6 @@ public struct CheckoutSheet<Header: View>: View {
         // since we already have a correct webContentHeight that could be inflated
         // by a live observer update. For untrusted, start on first accepted height.
         self._settleDeadline = State(initialValue: trustworthy ? Date().addingTimeInterval(0.8) : nil)
-
-        ZSLogger.debug("[Sheet] init preloaded: measured=\(measured) trustworthy=\(trustworthy) → webContentHeight=\(trustworthy ? measured : 0) isLoading=true", category: .checkout)
 
         self.header = header()
         self.onComplete = onComplete
@@ -925,32 +926,22 @@ extension CheckoutSheet {
                         .padding(.bottom, 8)
                 }
 
-                ZStack {
-                    PaymentWebView(
-                        url: url,
-                        isLoading: $isLoading,
-                        preloadedWebView: preloadedWebView,
-                        messageRouter: messageRouter,
-                        scrollEnabled: webContentHeight > maxWebViewHeight,
-                        onAction: handleWebViewAction
-                    )
-                    .accessibilityLabel("Payment form")
-
-                }
+                PaymentWebView(
+                    url: url,
+                    isLoading: $isLoading,
+                    preloadedWebView: preloadedWebView,
+                    messageRouter: messageRouter,
+                    scrollEnabled: webContentHeight > maxWebViewHeight,
+                    onAction: handleWebViewAction
+                )
+                .accessibilityLabel("Payment form")
                 // WebView frame height. CAUTION: changing this resizes the WKWebView
                 // viewport, which triggers Stripe iframe re-layouts. The settle deadline
                 // protects against the resulting feedback loop (see file header §2).
                 .frame(height: {
-                    let h: CGFloat
-                    if webContentHeight > 0 {
-                        h = min(webContentHeight, maxWebViewHeight)
-                        ZSLogger.debug("[Sheet] frame: webContentHeight=\(webContentHeight) → \(h)", category: .checkout)
-                    } else {
-                        let fallback = initialContentHeight > 0 ? initialContentHeight : 300.0
-                        h = min(fallback, maxWebViewHeight)
-                        ZSLogger.debug("[Sheet] frame: fallback initialContentHeight=\(initialContentHeight) → \(h)", category: .checkout)
-                    }
-                    return h
+                    if webContentHeight > 0 { return min(webContentHeight, maxWebViewHeight) }
+                    let fallback = initialContentHeight > 0 ? initialContentHeight : 300.0
+                    return min(fallback, maxWebViewHeight)
                 }())
             } else {
                 ProgressView()
@@ -971,12 +962,10 @@ extension CheckoutSheet {
         } action: { newHeight in
             guard newHeight > 0, newHeight != sheetHeight else { return }
             if hasInitialHeight && !isLoading {
-                ZSLogger.debug("[Sheet] geometry: \(sheetHeight) → \(newHeight) (animated)", category: .checkout)
                 withAnimation(.easeInOut(duration: 0.3)) {
                     sheetHeight = newHeight
                 }
             } else {
-                ZSLogger.debug("[Sheet] geometry: \(sheetHeight) → \(newHeight) (instant, hasInitial=\(hasInitialHeight) isLoading=\(isLoading))", category: .checkout)
                 sheetHeight = newHeight
                 if !isLoading {
                     hasInitialHeight = true
@@ -1133,32 +1122,25 @@ extension CheckoutSheet {
             // The correct height is always the minimum because inflated
             // values come from unsettled Stripe iframes filling the viewport.
             // After the deadline, increases are accepted normally (card expand).
-            let isSettling = settleDeadline.map { Date() < $0 } ?? false
-            if isSettling && webContentHeight > 0 && height > webContentHeight {
-                ZSLogger.debug("[Sheet] contentHeight REJECTED: \(height) > \(webContentHeight) (settling)", category: .checkout)
-                return
+            // ── Settle guard (file header §2) ──────────────────────────
+            if let deadline = settleDeadline {
+                if Date() < deadline {
+                    if webContentHeight > 0 && height > webContentHeight {
+                        return
+                    }
+                } else {
+                    settleDeadline = nil
+                }
             }
 
             // ── Inflation guard ────────────────────────────────────────
-            // While loading, skip clearly inflated measurements (≥500px).
-            // No real checkout layout exceeds ~450px. These are viewport-
-            // sized measurements from Stripe iframes that haven't settled.
             if isLoading && height >= 500 {
-                ZSLogger.debug("[Sheet] contentHeight SKIPPED: \(height) (≥500 while isLoading)", category: .checkout)
                 return
             }
 
-            ZSLogger.debug("[Sheet] contentHeight: \(height) (was=\(webContentHeight) isLoading=\(isLoading) settling=\(isSettling))", category: .checkout)
             webContentHeight = height
             if height > 0 && isLoading {
-                // Fade out the overlay (150ms) instead of removing instantly.
-                // The contentHeight confirms correct layout, but the Stripe
-                // iframe may not have painted its buttons yet. The fade gives
-                // the WebView an extra few frames to composite.
-                withAnimation(.easeOut(duration: 0.15)) {
-                    isLoading = false
-                }
-                ZSLogger.debug("[Sheet] contentHeight cleared isLoading", category: .checkout)
+                isLoading = false
             }
 
             // Start the settling window on the first accepted height
@@ -1677,7 +1659,9 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
             .task {
                 WebKitWarmup.warmIfNeeded()
                 if let preload {
-                    await preloadProducts(preload)
+                    Task { @MainActor in
+                        await preloadProducts(preload)
+                    }
                 }
             }
             .task(id: isPresented) {
@@ -1721,6 +1705,7 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
                     onDismissed: {
                         overlayWindow?.isHidden = true
                         overlayWindow = nil
+                        pool.refreshWebViews()
                         isPresented = false
                         showSheet = false
                     }
@@ -1836,7 +1821,9 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
             .task {
                 WebKitWarmup.warmIfNeeded()
                 if let preload {
-                    await preloadProducts(preload)
+                    Task { @MainActor in
+                        await preloadProducts(preload)
+                    }
                 }
             }
             .task(id: item?.id) {
@@ -1886,6 +1873,7 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
                     onDismissed: {
                         overlayWindow?.isHidden = true
                         overlayWindow = nil
+                        pool.refreshWebViews()
                         item = nil
                         showSheet = false
                     }
