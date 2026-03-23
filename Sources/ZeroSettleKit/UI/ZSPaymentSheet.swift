@@ -6,6 +6,90 @@
 //  in a WKWebView. The WebView is preloaded off-screen before the
 //  sheet appears, so the user sees a fully-rendered checkout instantly.
 //
+//  ═══════════════════════════════════════════════════════════════════
+//  HEIGHT MANAGEMENT — READ THIS BEFORE MODIFYING SHEET SIZING
+//  ═══════════════════════════════════════════════════════════════════
+//
+//  The sheet height is driven by the WebView's measured content height.
+//  This sounds simple, but three subsystems interact in non-obvious ways
+//  that have caused regressions. Understand all three before changing anything.
+//
+//  1. MEASUREMENT PIPELINE
+//     ─────────────────────
+//     JS (`__zsMeasure()`) measures `#checkout-content`'s bounding rect.
+//     A ResizeObserver + 200ms poll sends `contentHeight` messages to Swift
+//     via `WKScriptMessageHandler`. The measured height flows:
+//
+//       JS __zsMeasure() → postMessage({action:'contentHeight', height:H})
+//         → MessageRouter → Coordinator → handleWebViewAction(.contentHeight(H))
+//           → @State webContentHeight = H
+//             → .frame(height: webContentHeight) on the ZStack
+//               → VStack re-measures → .onGeometryChange fires
+//                 → @State sheetHeight updates → .presentationDetents re-evaluates
+//
+//     PITFALL: The JS fallback (`return maxBottom > 0 ? maxBottom : 0`)
+//     returns 0 when `#checkout-content` isn't found (e.g. still display:none).
+//     Previously this returned 400, which was silently trusted as a real measurement.
+//
+//  2. STRIPE IFRAME FEEDBACK LOOP
+//     ────────────────────────────
+//     When `webContentHeight` changes → the WebView's `.frame(height:)` changes
+//     → the WKWebView viewport resizes → Stripe iframes re-layout and temporarily
+//     inflate → `__zsMeasure()` reports a larger height → webContentHeight grows
+//     → frame grows → viewport grows → Stripe re-layouts again...
+//
+//     This creates an oscillation: correct(178) → inflated(572) → settling(478)
+//     → correct(178). Each step animates the sheet, causing visible bouncing.
+//
+//     SOLUTION: `settleDeadline` — for 0.8s after the first contentHeight is
+//     accepted, height INCREASES are rejected. The correct height is always the
+//     minimum (inflated values are always larger than real content). This breaks
+//     the feedback loop. After the deadline, increases are accepted normally
+//     for user interactions (card expand, error messages, etc.).
+//
+//  3. PRELOADER MEASUREMENT TIMING
+//     ─────────────────────────────
+//     The preloader measures content height right after the JS "ready" signal,
+//     which fires after Stripe's `expressCheckoutElement.on('ready')`. However:
+//
+//     a) On FIRST load (Stripe.js not cached), the Stripe iframes haven't
+//        settled their intrinsic heights yet → measurement is inflated (~600).
+//     b) If `#checkout-content` is still `display:none` at measurement time,
+//        `__zsMeasure()` falls through to the drill-through path and may
+//        return 0 (the fallback).
+//
+//     SOLUTION: Trust the preloader measurement only if 0 < measured < 500.
+//     Untrusted → isLoading=true, webContentHeight=0, wait for live observer.
+//     Trusted → webContentHeight=measured, but still isLoading=true (the
+//     WebView needs at least one frame to composite after being moved to the
+//     sheet's view hierarchy). The loading overlay clears on the first accepted
+//     contentHeight from the live observer.
+//
+//  4. ANIMATION GATING
+//     ─────────────────
+//     Two flags gate animation of sheet height changes:
+//
+//     - `hasInitialHeight`: Set to true on the first geometry change that occurs
+//       AFTER isLoading becomes false. All geometry changes before this are instant
+//       (no animation). This prevents the sheet's initial layout pass from animating.
+//
+//     - `isLoading`: While true, geometry changes are always instant AND
+//       hasInitialHeight is not set. This keeps the sheet in "instant mode" until
+//       content is actually visible.
+//
+//     Together, these ensure: initial layout → instant, content appear → instant,
+//     subsequent user-triggered changes (card expand/collapse) → animated.
+//
+//  TESTING CHECKLIST (after any height-related change):
+//  □ First tap after entering store — no visible resize/bounce
+//  □ Subsequent taps — content appears instantly, correct size
+//  □ Back out of store, re-enter, first tap — still no bounce
+//  □ Expand card form — smooth animated grow
+//  □ Collapse card form — smooth animated shrink
+//  □ Different products (consumable, subscription with trial) — correct sizes
+//  □ Slow network / first Stripe load — loading overlay, then correct size
+//  ═══════════════════════════════════════════════════════════════════
+//
 
 import SwiftUI
 import WebKit
@@ -16,8 +100,15 @@ internal import ZeroSettleCore
 
 // MARK: - Shared JS & Helpers
 
-/// Defines `window.__zsMeasure()` — drills past full-viewport wrappers
-/// to find the bottom of the actual content elements.
+/// Defines `window.__zsMeasure()` — measures checkout content height for native sheet sizing.
+///
+/// Primary path: reads `#checkout-content` bounding rect (the container in native-checkout.html).
+/// Fallback path: drills past full-viewport wrapper divs to find actual content bottom.
+///
+/// **IMPORTANT**: The fallback returns 0 (not a guessed value) when content can't be measured.
+/// Returning a non-zero fallback (e.g. 400) caused the Swift side to trust it as a real
+/// measurement, leading to incorrect initial sheet sizing. Zero signals "not ready yet" and
+/// the Swift side falls back to `initialContentHeight` or the 300px default.
 private let setupMeasureJS = """
 (function() {
     if (window.__zsMeasure) return;
@@ -50,7 +141,8 @@ private let setupMeasureJS = """
                 if (bottom > maxBottom) maxBottom = bottom;
             }
         }
-        return maxBottom > 0 ? maxBottom : 400;
+        // Return 0 when nothing measurable — never guess. See header comment.
+        return maxBottom > 0 ? maxBottom : 0;
     };
 })();
 """
@@ -224,6 +316,9 @@ internal final class CheckoutPreloader: ObservableObject {
                         DispatchQueue.main.async {
                             if let height = parseJSHeight(result) {
                                 self.measuredContentHeight = height
+                                ZSLogger.debug("[Preloader] ready → measured=\(height)", category: .checkout)
+                            } else {
+                                ZSLogger.debug("[Preloader] ready → measurement failed (result=\(String(describing: result)))", category: .checkout)
                             }
                             self.isReady = true
                             self.loadedURL = url
@@ -239,10 +334,26 @@ internal final class CheckoutPreloader: ObservableObject {
                     try? await Task.sleep(nanoseconds: 8_000_000_000)
                     guard let self, self.loadToken == myToken, self.continuation != nil else { return }
                     ZSLogger.error("Preloader timed out waiting for JS ready signal — presenting sheet anyway", category: .checkout)
-                    self.isReady = true
-                    self.loadedURL = url
-                    self.continuation?.resume()
-                    self.continuation = nil
+                    // Try to measure even on timeout — content may be partially rendered
+                    guard let wv = self.webView else {
+                        self.isReady = true
+                        self.loadedURL = url
+                        self.continuation?.resume()
+                        self.continuation = nil
+                        return
+                    }
+                    wv.evaluateJavaScript(setupMeasureJS + "\n" + measureContentJS) { [weak self] result, _ in
+                        guard let self, self.loadToken == myToken else { return }
+                        DispatchQueue.main.async {
+                            if let height = parseJSHeight(result), height > 0 {
+                                self.measuredContentHeight = height
+                            }
+                            self.isReady = true
+                            self.loadedURL = url
+                            self.continuation?.resume()
+                            self.continuation = nil
+                        }
+                    }
                 }
             }
         } onCancel: { [weak self] in
@@ -425,18 +536,39 @@ public struct CheckoutSheet<Header: View>: View {
     private let header: Header
     private let onComplete: (Result<CheckoutTransaction, Error>) -> Void
 
-    // MARK: - State
+    // MARK: - State (see file header for height management documentation)
 
     @Environment(\.dismiss) private var dismiss
 
     @State private var checkoutURL: URL?
+    /// Whether the loading overlay is shown. Always starts `true` for preloaded
+    /// views — even when the preloader measurement is trusted — because the
+    /// WKWebView needs at least one frame to composite after being moved from
+    /// the off-screen pool into the sheet's view hierarchy. Without this, Stripe
+    /// buttons may not be visually rendered when the sheet first appears.
+    /// Cleared by `handleWebViewAction(.contentHeight)` on the first accepted height.
     @State private var isLoading: Bool
     @State private var loadError: Error?
     @State private var transactionId: String?
+    /// The measured content height from the JS height observer. Drives the WebView
+    /// frame via `.frame(height: webContentHeight)`. Changes to this value resize the
+    /// WebView's viewport, which can trigger Stripe iframe re-layouts — see the
+    /// "STRIPE IFRAME FEEDBACK LOOP" section in the file header.
     @State private var webContentHeight: CGFloat
+    /// The sheet's presentation detent height. Updated by the geometry observer
+    /// to match the VStack's measured height. Animation is gated by `hasInitialHeight`
+    /// and `isLoading` — see "ANIMATION GATING" in the file header.
     @State private var sheetHeight: CGFloat = 480
+    /// Set to `true` after the first geometry change where `isLoading` is false.
+    /// All geometry changes before this point are applied instantly (no animation).
+    @State private var hasInitialHeight = false
+    /// Deadline until which height *increases* are rejected. Prevents the Stripe
+    /// iframe feedback loop (see file header §2). Set in the preloaded init (0.8s
+    /// from now) or on the first accepted contentHeight for non-preloaded views.
+    /// After the deadline, all height changes are accepted for user interactions.
+    @State private var settleDeadline: Date?
 
-    /// Maximum WebView height — leave room for header, safe areas, and grab indicator.
+    /// Maximum WebView height — leave room for header, safe areas, and status bar.
     private var maxWebViewHeight: CGFloat {
         UIScreen.main.bounds.height - 180
     }
@@ -507,11 +639,41 @@ public struct CheckoutSheet<Header: View>: View {
         self.prefetchedTransactionId = transactionId
         self.preloadedWebView = preloader.webView
         self.messageRouter = preloader.messageRouter
-        self.initialContentHeight = preloader.measuredContentHeight
+
+        // Set checkoutURL/transactionId directly so the FIRST render shows the
+        // WebView branch, not the ProgressView placeholder. Without this, the
+        // first frame renders ProgressView (height=400), then .task sets the URL
+        // and the second frame renders the WebView — causing an animated 400→342
+        // sheet resize on every presentation.
+        self._checkoutURL = State(initialValue: checkoutURL)
+        self._transactionId = State(initialValue: transactionId)
+
+        // Trust the preloader's measurement only when reasonable (0 < measured < 500).
+        // Why 500: no real checkout content exceeds ~450px (Apple Pay + divider + card
+        // option + security footer ≈ 178px; expanded card form ≈ 400px). Values ≥ 500
+        // indicate the Stripe iframe hasn't settled (viewport-sized measurement).
+        // Why > 0: the JS fallback returns 0 when #checkout-content isn't found.
+        let measured = preloader.measuredContentHeight
+        let trustworthy = measured > 0 && measured < 500
+        self.initialContentHeight = trustworthy ? measured : 0
+        self._webContentHeight = State(initialValue: trustworthy ? measured : 0)
+
+        // Always start with loading overlay, even for trusted measurements.
+        // The WKWebView is being moved from the off-screen pool into the sheet's
+        // view hierarchy — it needs at least one frame to composite. Without this,
+        // Stripe buttons can appear blank/missing on the first frame.
+        self._isLoading = State(initialValue: true)
+
+        // Start the settling window to protect against the Stripe iframe feedback
+        // loop (see file header §2). For trusted measurements, start immediately
+        // since we already have a correct webContentHeight that could be inflated
+        // by a live observer update. For untrusted, start on first accepted height.
+        self._settleDeadline = State(initialValue: trustworthy ? Date().addingTimeInterval(0.8) : nil)
+
+        ZSLogger.debug("[Sheet] init preloaded: measured=\(measured) trustworthy=\(trustworthy) → webContentHeight=\(trustworthy ? measured : 0) isLoading=true", category: .checkout)
+
         self.header = header()
         self.onComplete = onComplete
-        self._isLoading = State(initialValue: false)
-        self._webContentHeight = State(initialValue: preloader.measuredContentHeight)
     }
 }
 
@@ -776,7 +938,21 @@ extension CheckoutSheet {
                             .accessibilityHidden(true)
                     }
                 }
-                .frame(height: webContentHeight > 0 ? min(webContentHeight, maxWebViewHeight) : 400)
+                // WebView frame height. CAUTION: changing this resizes the WKWebView
+                // viewport, which triggers Stripe iframe re-layouts. The settle deadline
+                // protects against the resulting feedback loop (see file header §2).
+                .frame(height: {
+                    let h: CGFloat
+                    if webContentHeight > 0 {
+                        h = min(webContentHeight, maxWebViewHeight)
+                        ZSLogger.debug("[Sheet] frame: webContentHeight=\(webContentHeight) → \(h)", category: .checkout)
+                    } else {
+                        let fallback = initialContentHeight > 0 ? initialContentHeight : 300.0
+                        h = min(fallback, maxWebViewHeight)
+                        ZSLogger.debug("[Sheet] frame: fallback initialContentHeight=\(initialContentHeight) → \(h)", category: .checkout)
+                    }
+                    return h
+                }())
             } else {
                 ProgressView()
                     .accessibilityLabel("Loading payment form")
@@ -786,12 +962,26 @@ extension CheckoutSheet {
         }
         .frame(maxWidth: .infinity)
         .fixedSize(horizontal: false, vertical: true)
+        // Geometry observer → sheetHeight → .presentationDetents.
+        // Animation gating (see file header §4):
+        //   isLoading=true  → always instant, don't set hasInitialHeight
+        //   hasInitialHeight=false → instant (first real layout), then set flag
+        //   both false → animated (user-triggered: card expand/collapse)
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.height
         } action: { newHeight in
             guard newHeight > 0, newHeight != sheetHeight else { return }
-            withAnimation(.easeInOut(duration: 0.3)) {
+            if hasInitialHeight && !isLoading {
+                ZSLogger.debug("[Sheet] geometry: \(sheetHeight) → \(newHeight) (animated)", category: .checkout)
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    sheetHeight = newHeight
+                }
+            } else {
+                ZSLogger.debug("[Sheet] geometry: \(sheetHeight) → \(newHeight) (instant, hasInitial=\(hasInitialHeight) isLoading=\(isLoading))", category: .checkout)
                 sheetHeight = newHeight
+                if !isLoading {
+                    hasInitialHeight = true
+                }
             }
         }
         .overlay(alignment: .topTrailing) {
@@ -814,7 +1004,9 @@ extension CheckoutSheet {
         }
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .ignoresSafeArea(edges: .bottom)
-        .presentationDetents([.height(sheetHeight), .large])
+        .presentationDetents(sheetHeight > UIScreen.main.bounds.height * 0.55
+            ? [.height(sheetHeight), .large]
+            : [.height(sheetHeight)])
         .presentationDragIndicator(.hidden)
         .presentationBackground(.clear)
         .interactiveDismissDisabled(!dismissible)
@@ -828,10 +1020,9 @@ extension CheckoutSheet {
                 }
             }
 
-            if let url = prefetchedCheckoutURL {
-                self.checkoutURL = url
-                self.transactionId = prefetchedTransactionId
-            } else {
+            // For preloaded views, checkoutURL and transactionId are set in init
+            // (avoids a ProgressView flash on the first frame). Only fetch if missing.
+            if checkoutURL == nil {
                 ZSLogger.info("[Checkout] Cache miss for \(product.id) — calling initiateCheckout()", category: .checkout)
                 await initiateCheckout()
             }
@@ -919,7 +1110,40 @@ extension CheckoutSheet {
             break
 
         case .contentHeight(let height):
+            // ── Settle guard (file header §2) ──────────────────────────
+            // During the 0.8s settling window, reject height INCREASES.
+            // Stripe iframe re-layouts cause a feedback loop where the
+            // measured height oscillates: correct → inflated → correct.
+            // The correct height is always the minimum because inflated
+            // values come from unsettled Stripe iframes filling the viewport.
+            // After the deadline, increases are accepted normally (card expand).
+            let isSettling = settleDeadline.map { Date() < $0 } ?? false
+            if isSettling && webContentHeight > 0 && height > webContentHeight {
+                ZSLogger.debug("[Sheet] contentHeight REJECTED: \(height) > \(webContentHeight) (settling)", category: .checkout)
+                return
+            }
+
+            // ── Inflation guard ────────────────────────────────────────
+            // While loading, skip clearly inflated measurements (≥500px).
+            // No real checkout layout exceeds ~450px. These are viewport-
+            // sized measurements from Stripe iframes that haven't settled.
+            if isLoading && height >= 500 {
+                ZSLogger.debug("[Sheet] contentHeight SKIPPED: \(height) (≥500 while isLoading)", category: .checkout)
+                return
+            }
+
+            ZSLogger.debug("[Sheet] contentHeight: \(height) (was=\(webContentHeight) isLoading=\(isLoading) settling=\(isSettling))", category: .checkout)
             webContentHeight = height
+            if height > 0 && isLoading {
+                isLoading = false
+                ZSLogger.debug("[Sheet] contentHeight cleared isLoading", category: .checkout)
+            }
+
+            // Start the settling window on the first accepted height
+            // (non-preloaded path; preloaded views set this in init).
+            if settleDeadline == nil && height > 0 {
+                settleDeadline = Date().addingTimeInterval(0.8)
+            }
 
         case .complete(let txnId):
             Task {
@@ -1070,7 +1294,14 @@ private struct PaymentWebView: UIViewRepresentable {
         // The idempotency guards in the JS make this safe to call multiple times.
         if preloadedWebView != nil && !context.coordinator.hasReinstalledObserver {
             context.coordinator.hasReinstalledObserver = true
-            uiView.evaluateJavaScript(setupMeasureJS + "\n" + heightObserverJS, completionHandler: nil)
+            // Re-inject observer (idempotent) AND force an immediate measurement
+            // so the sheet gets the correct height even if the ResizeObserver guard
+            // prevented re-installation.
+            uiView.evaluateJavaScript(
+                setupMeasureJS + "\n" + heightObserverJS + "\n" +
+                "if(window.__zsMeasure){var h=window.__zsMeasure();" +
+                "if(h>0)window.webkit.messageHandlers.checkoutComplete.postMessage({action:'contentHeight',height:h});}"
+            , completionHandler: nil)
         }
 
         // Only allow scrolling when content overflows the visible frame
@@ -1507,7 +1738,9 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
             productId: product.id, userId: userId
         ) else {
             guard !Task.isCancelled else { return }
-            showSheet = true
+            // Preload failed — don't present an empty sheet.
+            onComplete(.failure(ZeroSettleError.checkoutFailed(reason: .other("Failed to create payment"))))
+            isPresented = false
             return
         }
 
@@ -1669,7 +1902,9 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
             productId: product.id, userId: userId
         ) else {
             guard !Task.isCancelled else { return }
-            showSheet = true
+            // Preload failed — don't present an empty sheet.
+            onComplete(.failure(ZeroSettleError.checkoutFailed(reason: .other("Failed to create payment"))))
+            item = nil
             return
         }
 
