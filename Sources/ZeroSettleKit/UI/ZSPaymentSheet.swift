@@ -257,30 +257,6 @@ private func migrationEndDate(for productId: String) -> Date? {
     return offer.storekitSubscriptionEnd
 }
 
-/// JS injected at document start to capture page load milestones.
-/// Posts DOMContentLoaded and load event timings to native via the checkoutComplete message handler.
-/// Also reports document.visibilityState to diagnose off-screen WebView throttling.
-private let pagePerfJS = """
-(function() {
-    var t0 = performance.now();
-    document.addEventListener('DOMContentLoaded', function() {
-        window.webkit.messageHandlers.checkoutComplete.postMessage({
-            action: 'perf', label: 'DOMContentLoaded', ms: Math.round(performance.now() - t0)
-        });
-    });
-    window.addEventListener('load', function() {
-        var vis = document.visibilityState || 'unknown';
-        window.webkit.messageHandlers.checkoutComplete.postMessage({
-            action: 'perf', label: 'resourcesLoaded (visibility=' + vis + ')', ms: Math.round(performance.now() - t0)
-        });
-    });
-    document.addEventListener('visibilitychange', function() {
-        window.webkit.messageHandlers.checkoutComplete.postMessage({
-            action: 'perf', label: 'visibilityChange=' + document.visibilityState, ms: Math.round(performance.now() - t0)
-        });
-    });
-})();
-"""
 
 // MARK: - Checkout Preloader
 
@@ -324,10 +300,6 @@ internal final class CheckoutPreloader: ObservableObject {
         config.processPool = WebKitWarmup.processPool
         config.allowsInlineMediaPlayback = true
         config.userContentController.add(messageRouter, name: "checkoutComplete")
-
-        // Install page-load perf instrumentation at document start (before any resources load).
-        let perfScript = WKUserScript(source: pagePerfJS, injectionTime: .atDocumentStart, forMainFrameOnly: true)
-        config.userContentController.addUserScript(perfScript)
 
         // Install height observer at document end — runs automatically when page loads.
         // This is more reliable than evaluateJavaScript after page load.
@@ -1189,7 +1161,9 @@ extension CheckoutSheet {
 
             webContentHeight = height
             if height > 0 && isLoading {
-                isLoading = false
+                withAnimation(.easeOut(duration: 0.15)) {
+                    isLoading = false
+                }
             }
 
             // Start the settling window on the first accepted height
@@ -1317,10 +1291,6 @@ private struct PaymentWebView: UIViewRepresentable {
             })();
             """, injectionTime: .atDocumentStart, forMainFrameOnly: true)
         configuration.userContentController.addUserScript(consoleScript)
-
-        // Page-load perf instrumentation (DOMContentLoaded, resources loaded)
-        let perfScript = WKUserScript(source: pagePerfJS, injectionTime: .atDocumentStart, forMainFrameOnly: true)
-        configuration.userContentController.addUserScript(perfScript)
 
         // Install height observer at document end — runs automatically when page loads.
         let heightScript = WKUserScript(
