@@ -303,6 +303,18 @@ public final class ZeroSettle: ObservableObject {
     /// Starts in `.loading` and transitions after bootstrap completes.
     public private(set) var migrationManager: ZSMigrationManager?
 
+    // MARK: - Customer Info
+
+    /// Customer name included in all subsequent checkout requests.
+    /// Set via ``bootstrap(userId:name:email:)`` or ``setCustomer(name:email:)``.
+    /// Cleared by ``logout()``.
+    public private(set) var customerName: String?
+
+    /// Customer email included in all subsequent checkout requests.
+    /// Set via ``bootstrap(userId:name:email:)`` or ``setCustomer(name:email:)``.
+    /// Cleared by ``logout()``.
+    public private(set) var customerEmail: String?
+
     // MARK: - Async Observation
 
     /// An `AsyncStream` that emits **all** entitlements (including expired) whenever they change.
@@ -387,6 +399,62 @@ public final class ZeroSettle: ObservableObject {
             return remote
         }
         return nil
+    }
+
+    // MARK: - Customer Info API
+
+    /// Update customer name and/or email for subsequent checkout requests.
+    ///
+    /// Use this for mid-session updates (e.g., user edits their profile).
+    /// For initial setup, prefer passing `name`/`email` to ``bootstrap(userId:name:email:)``.
+    /// Both values are cleared by ``logout()``.
+    ///
+    /// - Parameters:
+    ///   - name: Customer name, or `nil` to leave unchanged
+    ///   - email: Customer email, or `nil` to leave unchanged
+    public func setCustomer(name: String? = nil, email: String? = nil) {
+        if let name { self.customerName = name }
+        if let email { self.customerEmail = email }
+    }
+
+    // MARK: - Logout
+
+    /// Clears all user-scoped state, resetting the SDK to pre-bootstrap condition.
+    ///
+    /// Call this when the current user logs out of your app. After `logout()`,
+    /// the SDK is still configured — call ``bootstrap(userId:name:email:)`` for
+    /// the next user.
+    ///
+    /// **What is cleared** (user-scoped):
+    /// - `customerName`, `customerEmail`
+    /// - `isBootstrapped`, `entitlements`, `remoteConfig`, `cancelFlowConfig`
+    /// - `migrationManager`
+    /// - Cached checkout sessions (PaymentIntents for the previous user)
+    /// - StoreKit listener userId
+    ///
+    /// **What is preserved** (app-scoped):
+    /// - `products` (same catalog for all users)
+    /// - `detectedJurisdiction` (device-level storefront)
+    /// - SDK configuration (`isConfigured`, publishable key)
+    public func logout() {
+        // User identity
+        customerName = nil
+        customerEmail = nil
+
+        // Bootstrap state
+        isBootstrapped = false
+        entitlements = []
+        entitlementContinuation?.yield([])
+        delegate?.zeroSettleEntitlementsDidUpdate([])
+        remoteConfig = nil
+        cancelFlowConfig = nil
+        migrationManager = nil
+
+        // Cached checkout sessions (PaymentIntents for previous user)
+        Task { await CheckoutResponseCache.shared.clearAll() }
+
+        // StoreKit listener userId
+        storeKitManager?.setUserId(nil)
     }
 
     // MARK: - Delegate
@@ -529,17 +597,41 @@ public final class ZeroSettle: ObservableObject {
     /// To preload payment sheets, use the `preload` parameter on `.checkoutSheet()`:
     /// ```swift
     /// ZeroSettle.shared.configure(.init(publishableKey: "zs_pk_live_..."))
-    /// try await ZeroSettle.shared.bootstrap(userId: currentUser.id)
+    /// try await ZeroSettle.shared.bootstrap(
+    ///     userId: currentUser.id,
+    ///     name: "Jane Doe",
+    ///     email: "jane@example.com"
+    /// )
     /// ```
     ///
-    /// - Parameter userId: Your app's user identifier for fetching entitlements and migration data
+    /// - Parameters:
+    ///   - userId: Your app's user identifier for fetching entitlements and migration data
+    ///   - name: Optional customer name to associate with the Stripe Customer
+    ///   - email: Optional customer email to associate with the Stripe Customer
     /// - Returns: A ``ProductCatalog`` containing products and remote configuration
     @discardableResult
-    public func bootstrap(userId: String) async throws -> ProductCatalog {
+    public func bootstrap(userId: String, name: String? = nil, email: String? = nil) async throws -> ProductCatalog {
         guard !userId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             ZSLogger.error("bootstrap() called with empty userId — this is a no-op. Pass a valid user identifier.", category: .entitlements)
             throw ZeroSettleError.invalidUserId
         }
+
+        // Reset user-scoped state so back-to-back bootstrap() calls (with or
+        // without an intervening logout()) never leak data across users.
+        customerName = nil
+        customerEmail = nil
+        isBootstrapped = false
+        entitlements = []
+        entitlementContinuation?.yield([])
+        delegate?.zeroSettleEntitlementsDidUpdate([])
+        remoteConfig = nil
+        cancelFlowConfig = nil
+        migrationManager = nil
+        Task { await CheckoutResponseCache.shared.clearAll() }
+
+        // Store customer info for subsequent checkout requests.
+        self.customerName = name
+        self.customerEmail = email
 
         // 1. Sync StoreKit transactions to the backend so the Identity and
         //    Entitlement records exist before we check migration eligibility.

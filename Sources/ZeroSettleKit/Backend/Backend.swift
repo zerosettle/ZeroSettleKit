@@ -166,11 +166,16 @@ internal final class Backend: @unchecked Sendable {
         rcAppUserId: String? = nil
     ) async throws -> CheckoutSession {
         let url = apiURL("iap/checkout-sessions/")
+        let (name, email) = await MainActor.run {
+            (ZeroSettle.shared.customerName, ZeroSettle.shared.customerEmail)
+        }
         let body = CreateCheckoutSessionRequest(
             productId: productId,
             userId: userId,
             externalUserId: externalUserId,
-            rcAppUserId: rcAppUserId
+            rcAppUserId: rcAppUserId,
+            customerName: name,
+            customerEmail: email
         )
         return try await httpClient.post(
             url,
@@ -212,17 +217,24 @@ internal final class Backend: @unchecked Sendable {
                     .storekitOriginalTransactionId
             }
         }
-        let body = InitiateCheckoutRequest(productId: productId, userId: userId, stripeCustomerId: stripeCustomerId, storekitSubscriptionEnd: iso8601End, storekitOriginalTransactionId: resolvedOriginalTxnId, checkoutMode: checkoutMode)
-        return try await wrapped {
+        let (custName, custEmail) = await MainActor.run {
+            (ZeroSettle.shared.customerName, ZeroSettle.shared.customerEmail)
+        }
+        let body = InitiateCheckoutRequest(productId: productId, userId: userId, stripeCustomerId: stripeCustomerId, storekitSubscriptionEnd: iso8601End, storekitOriginalTransactionId: resolvedOriginalTxnId, checkoutMode: checkoutMode, customerName: custName, customerEmail: custEmail)
+        let response = try await wrapped {
             try await httpClient.post(url, body: body, headers: authHeaders, responseType: CheckoutResponse.self)
         }
+        return response
     }
 
     /// Initiate checkouts for multiple products in a single request.
     /// Shares expensive work (Stripe customer, connect account) across all products.
     func initiateCheckoutBatch(products: [BatchCheckoutRequest.ProductEntry], userId: String? = nil, stripeCustomerId: String? = nil) async throws -> BatchCheckoutResponse {
         let url = apiURL("iap/payment-intents/batch/")
-        let body = BatchCheckoutRequest(products: products, userId: userId, stripeCustomerId: stripeCustomerId)
+        let (batchName, batchEmail) = await MainActor.run {
+            (ZeroSettle.shared.customerName, ZeroSettle.shared.customerEmail)
+        }
+        let body = BatchCheckoutRequest(products: products, userId: userId, stripeCustomerId: stripeCustomerId, customerName: batchName, customerEmail: batchEmail)
         return try await wrapped {
             try await httpClient.post(url, body: body, headers: authHeaders, responseType: BatchCheckoutResponse.self)
         }
@@ -609,6 +621,8 @@ internal struct CreateCheckoutSessionRequest: Encodable {
     let externalUserId: String?
     let rcAppUserId: String?
     let platform: String = "ios"
+    let customerName: String?
+    let customerEmail: String?
 }
 
 internal struct InitiateCheckoutRequest: Encodable {
@@ -619,6 +633,8 @@ internal struct InitiateCheckoutRequest: Encodable {
     let storekitOriginalTransactionId: String?
     let checkoutMode: String?
     let platform: String = "ios"
+    let customerName: String?
+    let customerEmail: String?
 }
 
 internal struct UpdateStorekitStatusRequest: Encodable {
@@ -664,6 +680,8 @@ internal struct BatchCheckoutRequest: Encodable {
     let userId: String?
     let stripeCustomerId: String?
     let platform: String = "ios"
+    let customerName: String?
+    let customerEmail: String?
 }
 
 internal struct BatchCheckoutResponse: Decodable {

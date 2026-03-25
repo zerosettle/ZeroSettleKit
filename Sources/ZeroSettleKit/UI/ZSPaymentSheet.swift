@@ -165,6 +165,9 @@ private let heightObserverJS = """
     if (window.__zsHeightObserver) return;
     var lastHeight = 0;
     var pollCount = 0;
+    var intervalId = null;
+    var target = document.getElementById('checkout-content') || document.body;
+    var ro = new ResizeObserver(function() { measureAndReport(); });
     function measureAndReport() {
         var height = window.__zsMeasure();
         pollCount++;
@@ -178,13 +181,17 @@ private let heightObserverJS = """
             });
         }
     }
-    var target = document.getElementById('checkout-content') || document.body;
-    var ro = new ResizeObserver(function() { measureAndReport(); });
-    ro.observe(target);
-    // Poll as fallback — ResizeObserver can miss CSS grid transitions in WKWebView
-    setInterval(function() { measureAndReport(); }, 200);
+    window.__zsStartObserver = function() {
+        ro.observe(target);
+        if (!intervalId) intervalId = setInterval(measureAndReport, 200);
+        measureAndReport();
+    };
+    window.__zsStopObserver = function() {
+        ro.disconnect();
+        if (intervalId) { clearInterval(intervalId); intervalId = null; }
+    };
     window.__zsHeightObserver = ro;
-    measureAndReport();
+    window.__zsStartObserver();
 })();
 """
 
@@ -250,6 +257,31 @@ private func migrationEndDate(for productId: String) -> Date? {
     return offer.storekitSubscriptionEnd
 }
 
+/// JS injected at document start to capture page load milestones.
+/// Posts DOMContentLoaded and load event timings to native via the checkoutComplete message handler.
+/// Also reports document.visibilityState to diagnose off-screen WebView throttling.
+private let pagePerfJS = """
+(function() {
+    var t0 = performance.now();
+    document.addEventListener('DOMContentLoaded', function() {
+        window.webkit.messageHandlers.checkoutComplete.postMessage({
+            action: 'perf', label: 'DOMContentLoaded', ms: Math.round(performance.now() - t0)
+        });
+    });
+    window.addEventListener('load', function() {
+        var vis = document.visibilityState || 'unknown';
+        window.webkit.messageHandlers.checkoutComplete.postMessage({
+            action: 'perf', label: 'resourcesLoaded (visibility=' + vis + ')', ms: Math.round(performance.now() - t0)
+        });
+    });
+    document.addEventListener('visibilitychange', function() {
+        window.webkit.messageHandlers.checkoutComplete.postMessage({
+            action: 'perf', label: 'visibilityChange=' + document.visibilityState, ms: Math.round(performance.now() - t0)
+        });
+    });
+})();
+"""
+
 // MARK: - Checkout Preloader
 
 /// Manages off-screen WKWebView creation and preloading.
@@ -293,6 +325,10 @@ internal final class CheckoutPreloader: ObservableObject {
         config.allowsInlineMediaPlayback = true
         config.userContentController.add(messageRouter, name: "checkoutComplete")
 
+        // Install page-load perf instrumentation at document start (before any resources load).
+        let perfScript = WKUserScript(source: pagePerfJS, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        config.userContentController.addUserScript(perfScript)
+
         // Install height observer at document end — runs automatically when page loads.
         // This is more reliable than evaluateJavaScript after page load.
         let heightScript = WKUserScript(
@@ -310,6 +346,11 @@ internal final class CheckoutPreloader: ObservableObject {
         wv.scrollView.backgroundColor = .clear
 
         self.webView = wv
+
+        // Add to PoolPreloaderHost immediately so the WebView is in a visible UIWindow.
+        // Without this, WebKit treats the page as hidden (document.visibilityState='hidden'),
+        // and Stripe's Payment Element never fires "ready" — causing an 8s timeout.
+        CheckoutPreloaderPool.shared.refreshWebViews()
 
         let request = URLRequest(url: url)
         wv.load(request)
@@ -346,7 +387,8 @@ internal final class CheckoutPreloader: ObservableObject {
                 Task { [weak self] in
                     try? await Task.sleep(nanoseconds: 8_000_000_000)
                     guard let self, self.loadToken == myToken, self.continuation != nil else { return }
-                    ZSLogger.error("Preloader timed out waiting for JS ready signal — presenting sheet anyway", category: .checkout)
+                    let inWindow = self.webView?.window != nil
+                    ZSLogger.error("Preloader timed out waiting for JS ready signal — presenting sheet anyway (inWindow=\(inWindow))", category: .checkout)
                     // Try to measure even on timeout — content may be partially rendered
                     guard let wv = self.webView else {
                         self.isReady = true
@@ -375,6 +417,9 @@ internal final class CheckoutPreloader: ObservableObject {
                 self.cancelCurrentLoad()
             }
         }
+        // Pause the height observer while the WebView sits idle in the pool.
+        // It will be resumed when the sheet presents (PaymentWebView.updateUIView).
+        webView?.evaluateJavaScript("window.__zsStopObserver && window.__zsStopObserver()", completionHandler: nil)
     }
 
     /// Resume and nil the current continuation (if any), clear WebView state.
@@ -999,6 +1044,11 @@ extension CheckoutSheet {
         .presentationBackground(.clear)
         .interactiveDismissDisabled(!dismissible)
         .onDisappear {
+            // Pause the height observer while the WebView sits idle in the pool.
+            // Prevents 200ms polling on a hidden WebView. Resumed in updateUIView
+            // when the sheet presents again.
+            preloadedWebView?.evaluateJavaScript("window.__zsStopObserver && window.__zsStopObserver()", completionHandler: nil)
+
             // Reset card form to collapsed state so the next present starts
             // clean. The WebView persists in the preloader pool — without this,
             // the expanded card DOM state carries over to the next sheet.
@@ -1028,7 +1078,6 @@ extension CheckoutSheet {
             // For preloaded views, checkoutURL and transactionId are set in init
             // (avoids a ProgressView flash on the first frame). Only fetch if missing.
             if checkoutURL == nil {
-                ZSLogger.info("[Checkout] Cache miss for \(product.id) — calling initiateCheckout()", category: .checkout)
                 await initiateCheckout()
             }
         }
@@ -1269,6 +1318,10 @@ private struct PaymentWebView: UIViewRepresentable {
             """, injectionTime: .atDocumentStart, forMainFrameOnly: true)
         configuration.userContentController.addUserScript(consoleScript)
 
+        // Page-load perf instrumentation (DOMContentLoaded, resources loaded)
+        let perfScript = WKUserScript(source: pagePerfJS, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        configuration.userContentController.addUserScript(perfScript)
+
         // Install height observer at document end — runs automatically when page loads.
         let heightScript = WKUserScript(
             source: setupMeasureJS + "\n" + heightObserverJS,
@@ -1293,16 +1346,14 @@ private struct PaymentWebView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {
-        // For preloaded WebViews, JS timers may have been suspended while the
-        // view was off-screen. Re-kick the observer now that the view is visible.
-        // The idempotency guards in the JS make this safe to call multiple times.
+        // For preloaded WebViews, the height observer was paused while the
+        // WebView sat idle in the pool. Resume it now that the sheet is visible.
         if preloadedWebView != nil && !context.coordinator.hasReinstalledObserver {
             context.coordinator.hasReinstalledObserver = true
-            // Re-inject observer (idempotent) AND force an immediate measurement
-            // so the sheet gets the correct height even if the ResizeObserver guard
-            // prevented re-installation.
+            // Resume the observer and force an immediate measurement so the
+            // sheet gets the correct height right away.
             uiView.evaluateJavaScript(
-                setupMeasureJS + "\n" + heightObserverJS + "\n" +
+                "window.__zsStartObserver && window.__zsStartObserver();" +
                 "if(window.__zsMeasure){var h=window.__zsMeasure();" +
                 "if(h>0)window.webkit.messageHandlers.checkoutComplete.postMessage({action:'contentHeight',height:h});}"
             , completionHandler: nil)

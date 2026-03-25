@@ -111,7 +111,8 @@ internal final class StoreKitManager {
     }
 
     /// Update the user ID for subsequent sync operations.
-    func setUserId(_ userId: String) {
+    /// Pass `nil` to clear (e.g., on logout).
+    func setUserId(_ userId: String?) {
         self.userId = userId
     }
 
