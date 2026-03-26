@@ -65,8 +65,6 @@ public struct MigrationTipView: View {
 
     static let collapsedHeight: CGFloat = 180
     static let applePayCollapsedHeight: CGFloat = 180
-    static let applePayCardExpandedHeight: CGFloat = 820
-    static let noApplePayExpandedHeight: CGFloat = 800
     static let noApplePayCollapsedHeight: CGFloat = 90
 
     /// Creates a new migrate tip view.
@@ -269,31 +267,28 @@ public struct MigrationTipView: View {
                             switch paymentMethod {
                             case "apple_pay_detected":
                                 hasApplePay = true
-                                ZSLogger.debug("[MigrateTip] apple_pay_detected → applePayCollapsed (\(Self.applePayCollapsedHeight))", category: .migration)
                                 withAnimation(.easeInOut(duration: 0.25)) {
                                     contentHeight = Self.applePayCollapsedHeight
                                 }
                             case "card_expanded":
-                                let newHeight = hasApplePay
-                                    ? Self.applePayCardExpandedHeight
-                                    : Self.noApplePayExpandedHeight
-                                ZSLogger.debug("[MigrateTip] card_expanded (hasApplePay=\(hasApplePay)) → \(newHeight)", category: .migration)
-                                withAnimation(.easeInOut(duration: 0.25)) {
-                                    contentHeight = newHeight
-                                }
+                                break // Expansion height is driven by onContentHeightChanged
                             case "card_collapsed":
-                                let newHeight = hasApplePay
+                                let collapsed = hasApplePay
                                     ? Self.applePayCollapsedHeight
                                     : Self.noApplePayCollapsedHeight
-                                ZSLogger.debug("[MigrateTip] card_collapsed (hasApplePay=\(hasApplePay)) → \(newHeight)", category: .migration)
                                 withAnimation(.easeInOut(duration: 0.25)) {
-                                    contentHeight = newHeight
+                                    contentHeight = collapsed
                                 }
                             default:
-                                ZSLogger.debug("[MigrateTip] unknown state '\(paymentMethod)' → collapsedHeight (\(Self.collapsedHeight))", category: .migration)
                                 withAnimation(.easeInOut(duration: 0.25)) {
                                     contentHeight = Self.collapsedHeight
                                 }
+                            }
+                        },
+                        onContentHeightChanged: { height in
+                            guard height > 50 else { return }
+                            withAnimation(.easeInOut(duration: 0.25)) {
+                                contentHeight = height
                             }
                         },
                         onCheckoutSuccess: { transactionId in
@@ -311,7 +306,7 @@ public struct MigrationTipView: View {
                     )
                     .frame(height: contentHeight)
                     .cornerRadius(12)
-                    .padding(.horizontal, 12)
+                    .padding(.horizontal, 4)
                     .accessibilityLabel("Payment form")
 
                     Text("You won't be billed until the end of your current cycle\(renewalDateString.map { " (\($0))" } ?? ""). Cancel anytime.")
@@ -623,6 +618,7 @@ struct CheckoutWebView: UIViewRepresentable {
     let preloadedMessageRouter: MessageRouter?
     let onLoaded: () -> Void
     let onPaymentMethodChanged: (String) -> Void
+    let onContentHeightChanged: (CGFloat) -> Void
     let onCheckoutSuccess: (String?) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -630,6 +626,7 @@ struct CheckoutWebView: UIViewRepresentable {
             backgroundColor: backgroundColor,
             onLoaded: onLoaded,
             onPaymentMethodChanged: onPaymentMethodChanged,
+            onContentHeightChanged: onContentHeightChanged,
             onCheckoutSuccess: onCheckoutSuccess
         )
     }
@@ -656,9 +653,9 @@ struct CheckoutWebView: UIViewRepresentable {
         configuration.processPool = WebKitWarmup.processPool
         configuration.allowsInlineMediaPlayback = true
 
-        // Add script message handlers for payment method changes, checkout completion, and debug logs
         configuration.userContentController.add(context.coordinator, name: "paymentMethodChanged")
         configuration.userContentController.add(context.coordinator, name: "checkoutComplete")
+        configuration.userContentController.add(context.coordinator, name: "contentHeight")
         configuration.userContentController.add(context.coordinator, name: "debugLog")
 
         // IMPORTANT:
@@ -692,13 +689,14 @@ struct CheckoutWebView: UIViewRepresentable {
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
-        // No updates needed
+        // No updates needed.
     }
 
     class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         let backgroundColor: UIColor
         let onLoaded: () -> Void
         let onPaymentMethodChanged: (String) -> Void
+        let onContentHeightChanged: (CGFloat) -> Void
         let onCheckoutSuccess: (String?) -> Void
         private var hasCompleted = false
 
@@ -706,11 +704,13 @@ struct CheckoutWebView: UIViewRepresentable {
             backgroundColor: UIColor,
             onLoaded: @escaping () -> Void,
             onPaymentMethodChanged: @escaping (String) -> Void,
+            onContentHeightChanged: @escaping (CGFloat) -> Void,
             onCheckoutSuccess: @escaping (String?) -> Void
         ) {
             self.backgroundColor = backgroundColor
             self.onLoaded = onLoaded
             self.onPaymentMethodChanged = onPaymentMethodChanged
+            self.onContentHeightChanged = onContentHeightChanged
             self.onCheckoutSuccess = onCheckoutSuccess
         }
 
@@ -718,6 +718,10 @@ struct CheckoutWebView: UIViewRepresentable {
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             if message.name == "debugLog" {
                 // Intentionally ignore verbose WebView logging.
+            } else if message.name == "contentHeight", let height = message.body as? Double, height > 0 {
+                DispatchQueue.main.async {
+                    self.onContentHeightChanged(CGFloat(height))
+                }
             } else if message.name == "paymentMethodChanged", let paymentMethod = message.body as? String {
                 DispatchQueue.main.async {
                     self.onPaymentMethodChanged(paymentMethod)
@@ -826,6 +830,11 @@ private func buildMigrationCheckoutJS(backgroundColor: UIColor) -> String {
     var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
     backgroundColor.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
     let r = Int(red * 255), g = Int(green * 255), b = Int(blue * 255)
+    let luminance = 0.299 * red + 0.587 * green + 0.114 * blue
+    let applePayButtonStyle = luminance < 0.5 ? "white" : "black"
+    let submitBg = luminance < 0.5 ? "white" : "#34C759"
+    let submitText = luminance < 0.5 ? "black" : "white"
+    let submitHoverBg = luminance < 0.5 ? "#e5e5ea" : "#30B350"
 
     // NOTE: This script is idempotent (guarded) because it may run multiple times
     // across navigations/frames.
@@ -864,9 +873,11 @@ private func buildMigrationCheckoutJS(backgroundColor: UIColor) -> String {
           `;
         } else if (isStripeExpressCheckoutFrame) {
           // Inside the Stripe express checkout iframe — show plain Apple Pay button
+          // with a style that contrasts against the host background color
           style.innerHTML = `
             .p-ApplePayButton--subscribe {
               -apple-pay-button-type: plain !important;
+              -apple-pay-button-style: \(applePayButtonStyle) !important;
             }
           `;
         } else {
@@ -894,19 +905,28 @@ private func buildMigrationCheckoutJS(backgroundColor: UIColor) -> String {
             pointer-events: none !important;
           }
 
-          /* Style submit button with green color */
+          /* Style submit button to contrast against host background */
           .submit-btn,
           #submit,
-          button[type="submit"] {
-            background-color: #34C759 !important;
-            background: #34C759 !important;
+          #submit-button,
+          button[type="submit"],
+          [class*="SubmitButton"],
+          [class*="submit-btn"],
+          [class*="submit-button"] {
+            background-color: \(submitBg) !important;
+            background: \(submitBg) !important;
+            color: \(submitText) !important;
           }
 
           .submit-btn:hover,
           #submit:hover,
-          button[type="submit"]:hover {
-            background-color: #30B350 !important;
-            background: #30B350 !important;
+          #submit-button:hover,
+          button[type="submit"]:hover,
+          [class*="SubmitButton"]:hover,
+          [class*="submit-btn"]:hover,
+          [class*="submit-button"]:hover {
+            background-color: \(submitHoverBg) !important;
+            background: \(submitHoverBg) !important;
           }
 
           /* Style loading text white */
@@ -1074,6 +1094,26 @@ private func buildMigrationCheckoutJS(backgroundColor: UIColor) -> String {
       // Poll fallback
       setInterval(function() { report('poll'); }, 2000);
 
+      // Dynamic content height reporting (main frame only)
+      if (window.self === window.top) {
+        var lastReportedHeight = 0;
+        function reportContentHeight() {
+          var h = document.body ? document.body.scrollHeight : 0;
+          if (h > 0 && h !== lastReportedHeight) {
+            lastReportedHeight = h;
+            try { window.webkit.messageHandlers.contentHeight.postMessage(h); } catch (e) {}
+          }
+        }
+        // Observe body resize (catches iframe expansions, accordion toggles, etc.)
+        if (typeof ResizeObserver !== 'undefined' && document.body) {
+          new ResizeObserver(reportContentHeight).observe(document.body);
+        }
+        // Poll fallback for late-loading iframes
+        setInterval(reportContentHeight, 500);
+        // Early reports during Stripe hydration (before the first poll tick)
+        setTimeout(reportContentHeight, 100);
+      }
+
       log('Payment method detection installed.');
     })();
     """
@@ -1110,6 +1150,7 @@ private final class MigrationCheckoutPreloader: ObservableObject {
         // Register message handlers via the shared router
         config.userContentController.add(messageRouter, name: "paymentMethodChanged")
         config.userContentController.add(messageRouter, name: "checkoutComplete")
+        config.userContentController.add(messageRouter, name: "contentHeight")
         config.userContentController.add(messageRouter, name: "debugLog")
 
         // Inject the same JS as the live CheckoutWebView

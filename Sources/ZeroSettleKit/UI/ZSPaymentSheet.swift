@@ -589,16 +589,17 @@ public struct CheckoutSheet<Header: View>: View {
     /// Set to `true` after the first geometry change where `isLoading` is false.
     /// All geometry changes before this point are applied instantly (no animation).
     @State private var hasInitialHeight = false
+    /// The measured visible frame height of the ScrollView. Compared against
+    /// `sheetHeight` (content height) to disable scrolling when content fits.
+    @State private var scrollFrameHeight: CGFloat = 0
     /// Deadline until which height *increases* are rejected. Prevents the Stripe
     /// iframe feedback loop (see file header §2). Set in the preloaded init (0.8s
     /// from now) or on the first accepted contentHeight for non-preloaded views.
     /// After the deadline, all height changes are accepted for user interactions.
     @State private var settleDeadline: Date?
-
-    /// Maximum WebView height — leave room for header, safe areas, and status bar.
-    private var maxWebViewHeight: CGFloat {
-        UIScreen.main.bounds.height - 180
-    }
+    /// Non-nil while the settle guard is bypassed for card expansion.
+    /// Heights are animated and the settle guard won't re-arm until this expires.
+    @State private var settleBypassExpiry: Date?
 
     // MARK: - Public Initialization (without preloading)
 
@@ -930,64 +931,72 @@ extension CheckoutSheet {
     // MARK: - Body
 
     public var body: some View {
-        VStack(spacing: 0) {
-            if let error = loadError {
-                errorView(error)
-            } else if let url = checkoutURL {
-                if Header.self == EmptyView.self {
-                    defaultHeader
-                        .frame(minHeight: dismissible ? 60 : 0)
-                } else {
-                    header
-                        .frame(maxWidth: .infinity, minHeight: dismissible ? 60 : 0)
-                        .padding(.bottom, 8)
-                }
+        ScrollView {
+            VStack(spacing: 0) {
+                if let error = loadError {
+                    errorView(error)
+                } else if let url = checkoutURL {
+                    if Header.self == EmptyView.self {
+                        defaultHeader
+                            .frame(minHeight: dismissible ? 60 : 0)
+                    } else {
+                        header
+                            .frame(maxWidth: .infinity, minHeight: dismissible ? 60 : 0)
+                            .padding(.bottom, 8)
+                    }
 
-                PaymentWebView(
-                    url: url,
-                    isLoading: $isLoading,
-                    preloadedWebView: preloadedWebView,
-                    messageRouter: messageRouter,
-                    scrollEnabled: webContentHeight > maxWebViewHeight,
-                    onAction: handleWebViewAction
-                )
-                .accessibilityLabel("Payment form")
-                // WebView frame height. CAUTION: changing this resizes the WKWebView
-                // viewport, which triggers Stripe iframe re-layouts. The settle deadline
-                // protects against the resulting feedback loop (see file header §2).
-                .frame(height: {
-                    if webContentHeight > 0 { return min(webContentHeight, maxWebViewHeight) }
-                    let fallback = initialContentHeight > 0 ? initialContentHeight : 300.0
-                    return min(fallback, maxWebViewHeight)
-                }())
-            } else {
-                ProgressView()
-                    .accessibilityLabel("Loading payment form")
-                    .frame(height: 400)
-                    .frame(maxWidth: .infinity)
+                    PaymentWebView(
+                        url: url,
+                        isLoading: $isLoading,
+                        preloadedWebView: preloadedWebView,
+                        messageRouter: messageRouter,
+                        scrollEnabled: false,
+                        onAction: handleWebViewAction
+                    )
+                    .accessibilityLabel("Payment form")
+                    // WebView frame height. CAUTION: changing this resizes the WKWebView
+                    // viewport, which triggers Stripe iframe re-layouts. The settle deadline
+                    // protects against the resulting feedback loop (see file header §2).
+                    .frame(height: {
+                        if webContentHeight > 0 { return webContentHeight }
+                        return initialContentHeight > 0 ? initialContentHeight : 300.0
+                    }())
+                } else {
+                    ProgressView()
+                        .accessibilityLabel("Loading payment form")
+                        .frame(height: 400)
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            // Geometry observer → sheetHeight → .presentationDetents.
+            // Animation gating (see file header §4):
+            //   isLoading=true  → always instant, don't set hasInitialHeight
+            //   hasInitialHeight=false → instant (first real layout), then set flag
+            //   both false → animated (user-triggered: card expand/collapse)
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.height
+            } action: { newHeight in
+                guard newHeight > 0, newHeight != sheetHeight else { return }
+                if hasInitialHeight && !isLoading {
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        sheetHeight = newHeight
+                    }
+                } else {
+                    sheetHeight = newHeight
+                    if !isLoading {
+                        hasInitialHeight = true
+                    }
+                }
             }
         }
-        .frame(maxWidth: .infinity)
-        .fixedSize(horizontal: false, vertical: true)
-        // Geometry observer → sheetHeight → .presentationDetents.
-        // Animation gating (see file header §4):
-        //   isLoading=true  → always instant, don't set hasInitialHeight
-        //   hasInitialHeight=false → instant (first real layout), then set flag
-        //   both false → animated (user-triggered: card expand/collapse)
+        .scrollBounceBehavior(.basedOnSize)
+        .scrollDisabled(sheetHeight <= scrollFrameHeight)
+        .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: 20) }
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.height
         } action: { newHeight in
-            guard newHeight > 0, newHeight != sheetHeight else { return }
-            if hasInitialHeight && !isLoading {
-                withAnimation(.easeInOut(duration: 0.3)) {
-                    sheetHeight = newHeight
-                }
-            } else {
-                sheetHeight = newHeight
-                if !isLoading {
-                    hasInitialHeight = true
-                }
-            }
+            scrollFrameHeight = newHeight
         }
         .overlay(alignment: .topTrailing) {
             if dismissible {
@@ -1008,7 +1017,6 @@ extension CheckoutSheet {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .ignoresSafeArea(edges: .bottom)
         .presentationDetents(sheetHeight > UIScreen.main.bounds.height * 0.55
             ? [.height(sheetHeight), .large]
             : [.height(sheetHeight)])
@@ -1135,6 +1143,12 @@ extension CheckoutSheet {
         case .ready:
             break
 
+        case .expandSheet:
+            // Clear the settle guard so CSS transition heights are accepted.
+            // The 1s window covers the ~0.4s CSS transition plus Stripe settling.
+            settleDeadline = nil
+            settleBypassExpiry = Date().addingTimeInterval(1.0)
+
         case .contentHeight(let height):
             // ── Settle guard (file header §2) ──────────────────────────
             // During the 0.8s settling window, reject height INCREASES.
@@ -1159,7 +1173,16 @@ extension CheckoutSheet {
                 return
             }
 
-            webContentHeight = height
+            let bypassing = settleBypassExpiry.map { Date() < $0 } ?? false
+            if bypassing {
+                withAnimation(.easeInOut(duration: 0.35)) {
+                    webContentHeight = height
+                }
+            } else {
+                webContentHeight = height
+                // Expire a stale bypass window.
+                if settleBypassExpiry != nil { settleBypassExpiry = nil }
+            }
             if height > 0 && isLoading {
                 withAnimation(.easeOut(duration: 0.15)) {
                     isLoading = false
@@ -1168,7 +1191,9 @@ extension CheckoutSheet {
 
             // Start the settling window on the first accepted height
             // (non-preloaded path; preloaded views set this in init).
-            if settleDeadline == nil && height > 0 {
+            // Skip re-arming during an active expand bypass — the CSS
+            // transition sends increasing heights that would be rejected.
+            if settleDeadline == nil && height > 0 && !bypassing {
                 settleDeadline = Date().addingTimeInterval(0.8)
             }
 
@@ -1230,6 +1255,7 @@ extension CheckoutSheet {
 private enum WebViewAction {
     case ready
     case contentHeight(CGFloat)
+    case expandSheet
     case complete(transactionId: String)
     case cancelled
     case error(String)
@@ -1375,7 +1401,9 @@ private struct PaymentWebView: UIViewRepresentable {
                     onAction(.contentHeight(height))
                 }
 
-            case "expandSheet", "collapseSheet":
+            case "expandSheet":
+                onAction(.expandSheet)
+            case "collapseSheet":
                 break // Height handled by ResizeObserver → contentHeight
 
             case "complete":
@@ -1724,11 +1752,16 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
                         onComplete(result)
                     },
                     onDismissed: {
-                        overlayWindow?.isHidden = true
+                        // Delay teardown so the system's dismiss animation
+                        // can finish before the overlay window disappears.
+                        let window = overlayWindow
                         overlayWindow = nil
-                        pool.refreshWebViews()
                         isPresented = false
                         showSheet = false
+                        pool.refreshWebViews()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                            window?.isHidden = true
+                        }
                     }
                 )
 
@@ -1892,11 +1925,14 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
                         onComplete(result)
                     },
                     onDismissed: {
-                        overlayWindow?.isHidden = true
+                        let window = overlayWindow
                         overlayWindow = nil
-                        pool.refreshWebViews()
                         item = nil
                         showSheet = false
+                        pool.refreshWebViews()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                            window?.isHidden = true
+                        }
                     }
                 )
 
