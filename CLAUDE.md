@@ -20,7 +20,7 @@
 | Wrapper | Location | Bridge File |
 |---------|----------|-------------|
 | Flutter (`zerosettle`) | `../ZeroSettle-Flutter/` | `ios/Classes/ZeroSettlePlugin.swift` |
-| React Native (`react-native-zerosettle-kit`) | `react-native-zerosettle-kit/` | `ios/RNZeroSettleKit.swift` |
+| React Native (`react-native-zerosettle`) | `../ZeroSettle-ReactNative/` | `ios/ZeroSettleKitModule.swift` |
 
 ### Before changing any public API:
 1. **Audit impact** — Identify which wrapper bridge files reference the type/method being changed

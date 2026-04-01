@@ -682,8 +682,8 @@ struct CheckoutWebView: UIViewRepresentable {
         webView.clipsToBounds = true
         webView.navigationDelegate = context.coordinator
 
-        let request = URLRequest(url: url)
-        webView.load(request)
+        let themedURL = applyThemeParam(to: url, containerBackground: backgroundColor)
+        webView.load(URLRequest(url: themedURL))
 
         return webView
     }
@@ -1191,7 +1191,7 @@ private final class MigrationCheckoutPreloader: ObservableObject {
             }
         }
 
-        wv.load(URLRequest(url: url))
+        wv.load(URLRequest(url: applyThemeParam(to: url, containerBackground: backgroundColor)))
         self.webView = wv
 
         // Timeout fallback (same pattern as CheckoutPreloader)

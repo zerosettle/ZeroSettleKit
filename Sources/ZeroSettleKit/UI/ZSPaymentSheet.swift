@@ -247,6 +247,42 @@ internal enum WebKitWarmup {
     }
 }
 
+/// Appends `&dark=0` or `&dark=1` to a checkout URL based on the container background.
+/// When a `containerBackground` is provided, its brightness determines the theme.
+/// Otherwise falls back to the system appearance (light device → light checkout).
+///
+/// Note: the preloader bakes the theme at preload time using the system-appearance
+/// fallback. If the user toggles dark mode between preload and presentation, the
+/// preloaded WebView will use the stale theme. This is acceptable since the page
+/// content is already rendered.
+@MainActor
+internal func applyThemeParam(to url: URL, containerBackground: UIColor? = nil) -> URL {
+    let isDark: Bool
+    if let bg = containerBackground {
+        var brightness: CGFloat = 0
+        if !bg.getHue(nil, saturation: nil, brightness: &brightness, alpha: nil) {
+            brightness = 0 // Unsupported color space — default to dark
+        }
+        isDark = brightness < 0.5
+    } else if let windowScene = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene })
+                .first(where: { $0.activationState == .foregroundActive })
+                ?? UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene }).first {
+        isDark = windowScene.traitCollection.userInterfaceStyle != .light
+    } else {
+        isDark = true
+    }
+    guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+        return url
+    }
+    var items = components.queryItems ?? []
+    items.removeAll { $0.name == "dark" }
+    items.append(URLQueryItem(name: "dark", value: isDark ? "1" : "0"))
+    components.queryItems = items
+    return components.url ?? url
+}
+
 /// Returns the StoreKit subscription end date if the given product matches
 /// the active migration offer. Used to tell the backend to create a trial subscription.
 @MainActor
@@ -324,8 +360,8 @@ internal final class CheckoutPreloader: ObservableObject {
         // and Stripe's Payment Element never fires "ready" — causing an 8s timeout.
         CheckoutPreloaderPool.shared.refreshWebViews()
 
-        let request = URLRequest(url: url)
-        wv.load(request)
+        let themedURL = applyThemeParam(to: url)
+        wv.load(URLRequest(url: themedURL))
 
         await withTaskCancellationHandler {
             await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
@@ -569,6 +605,7 @@ public struct CheckoutSheet<Header: View>: View {
     // MARK: - State (see file header for height management documentation)
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
 
     @State private var checkoutURL: URL?
     /// Gates animation and the inflation guard. While `true`, geometry changes are
@@ -951,6 +988,7 @@ extension CheckoutSheet {
                         preloadedWebView: preloadedWebView,
                         messageRouter: messageRouter,
                         scrollEnabled: false,
+                        containerBackground: colorScheme == .dark ? .black : .white,
                         onAction: handleWebViewAction
                     )
                     .accessibilityLabel("Payment form")
@@ -1269,6 +1307,7 @@ private struct PaymentWebView: UIViewRepresentable {
     var preloadedWebView: WKWebView?
     var messageRouter: MessageRouter?
     var scrollEnabled: Bool = true
+    var containerBackground: UIColor?
     let onAction: (WebViewAction) -> Void
 
     func makeUIView(context: Context) -> WKWebView {
@@ -1335,8 +1374,8 @@ private struct PaymentWebView: UIViewRepresentable {
         webView.scrollView.backgroundColor = .clear
         context.coordinator.webView = webView
 
-        let request = URLRequest(url: url)
-        webView.load(request)
+        let themedURL = applyThemeParam(to: url, containerBackground: containerBackground)
+        webView.load(URLRequest(url: themedURL))
 
         return webView
     }
