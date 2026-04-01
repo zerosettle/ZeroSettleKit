@@ -52,6 +52,14 @@ Breaking changes (require explicit approval):
 * Removing API response fields that clients depend on
 * Changing default values in ways that alter existing behavior
 
+## Release Propagation
+When a new tag is pushed to this repo, **you must also update and tag all downstream wrappers**:
+1. **Flutter** (`../ZeroSettle-Flutter/`) — bump `ios/zerosettle.podspec` → `s.dependency 'ZeroSettleKit', '~> X.Y.Z'`, update bridge code if API changed, bump `pubspec.yaml` version, commit, tag, push
+2. **React Native** (`../ZeroSettle-ReactNative/`) — bump `RNZeroSettleKit.podspec` → SPM `minimumVersion`, update bridge code if API changed, bump `package.json` version, commit, tag, push
+3. **Docs** — update version numbers in `/Users/ryanelliott/dev/docs/iap/installation.mdx`
+
+This is not optional — stale wrappers break downstream developer builds.
+
 ## Coding Standards
 * **Access Control:** `public` for developer-facing API, `internal` for helpers. Be deliberate — every new `public` symbol is a commitment across all wrappers.
 * **Error Handling:** Use `ZSError` enum. Never crash silently.
