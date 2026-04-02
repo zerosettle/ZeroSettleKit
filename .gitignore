@@ -59,3 +59,5 @@ fastlane/test_output
 # IDE
 .vscode/
 .idea/
+
+docs/
