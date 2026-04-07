@@ -67,6 +67,12 @@ public struct MigrationTipView: View {
     static let applePayCollapsedHeight: CGFloat = 180
     static let noApplePayCollapsedHeight: CGFloat = 90
 
+    /// Server-provided display copy (from the unified `offer` field), if available.
+    /// When non-nil, overrides the hardcoded migration copy strings.
+    private var serverDisplay: Offer.Display? {
+        ZeroSettle.shared.remoteConfig?.offer?.display
+    }
+
     /// Creates a new migrate tip view.
     ///
     /// Uses the shared ``ZSMigrationManager`` from ``ZeroSettle/shared/migrationManager``
@@ -219,8 +225,13 @@ public struct MigrationTipView: View {
                         .font(.largeTitle)
                         .accessibilityHidden(true)
                 },
-                title: "Thanks for being with us!",
-                message: manager.offerData?.prompt.message
+                title: serverDisplay?.offerTitleOrDefault("Thanks for being with us!") ?? "Thanks for being with us!",
+                message: serverDisplay?.offerMessageOrDefault(
+                    manager.offerData?.prompt.message
+                    ?? (discountPercent > 0
+                        ? "Switch to direct billing and get \(discountPercent)% off forever. Same features, fewer platform fees, and we pass the savings onto you."
+                        : "Switch to direct billing. Same features, fewer platform fees.")
+                ) ?? manager.offerData?.prompt.message
                     ?? (discountPercent > 0
                         ? "Switch to direct billing and get \(discountPercent)% off forever. Same features, fewer platform fees, and we pass the savings onto you."
                         : "Switch to direct billing. Same features, fewer platform fees."),
@@ -243,7 +254,7 @@ public struct MigrationTipView: View {
                                     .scaleEffect(0.8)
                                     .accessibilityHidden(true)
                             }
-                            Text(manager.isLoading ? "" : (manager.offerData?.prompt.ctaText ?? (discountPercent > 0 ? "Save \(discountPercent)% Forever" : "Switch Now")))
+                            Text(manager.isLoading ? "" : (serverDisplay?.offerCtaOrDefault(manager.offerData?.prompt.ctaText ?? (discountPercent > 0 ? "Save \(discountPercent)% Forever" : "Switch Now")) ?? manager.offerData?.prompt.ctaText ?? (discountPercent > 0 ? "Save \(discountPercent)% Forever" : "Switch Now")))
                                 .font(ctaFont ?? .body.weight(.bold))
                                 .foregroundColor(backgroundColor)
                         }
@@ -374,8 +385,8 @@ public struct MigrationTipView: View {
                     }
                     .accessibilityLabel("Success")
                 },
-                title: "Thanks for switching!",
-                message: "The last step is to cancel your Apple billing! Your card won't be charged until the end of your last Apple billing cycle. Pro features will continue uninterrupted.",
+                title: serverDisplay?.acceptedTitleOrDefault("Thanks for switching!") ?? "Thanks for switching!",
+                message: serverDisplay?.acceptedMessageOrDefault("The last step is to cancel your Apple billing! Your card won't be charged until the end of your last Apple billing cycle. Pro features will continue uninterrupted.") ?? "The last step is to cancel your Apple billing! Your card won't be charged until the end of your last Apple billing cycle. Pro features will continue uninterrupted.",
                 showCloseButton: false
             )
 
@@ -384,7 +395,7 @@ public struct MigrationTipView: View {
                     await openSubscriptionManagement()
                 }
             }) {
-                Text("Cancel Apple Billing")
+                Text(serverDisplay?.acceptedCtaOrDefault("Cancel Apple Billing") ?? "Cancel Apple Billing")
                     .font(ctaFont ?? .body.weight(.bold))
                     .foregroundColor(backgroundColor)
                     .frame(maxWidth: .infinity)
@@ -445,8 +456,8 @@ public struct MigrationTipView: View {
                         .font(.largeTitle)
                         .accessibilityHidden(true)
                 },
-                title: "Congratulations!",
-                message: "You are now saving \(discountPercent)% forever.",
+                title: serverDisplay?.completedTitleOrDefault("Congratulations!") ?? "Congratulations!",
+                message: serverDisplay?.completedMessageOrDefault("You are now saving \(discountPercent)% forever.") ?? "You are now saving \(discountPercent)% forever.",
                 showCloseButton: false
             )
         }
