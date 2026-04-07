@@ -567,7 +567,7 @@ public struct OfferTipView: View {
                 let rootVC = scene.windows.first(where: \.isKeyWindow)?
                     .rootViewController
             else {
-                UIApplication.shared.open(checkoutURL)
+                await UIApplication.shared.open(checkoutURL)
                 return
             }
 
