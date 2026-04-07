@@ -195,6 +195,81 @@ private let heightObserverJS = """
 })();
 """
 
+/// Detects when payment buttons (Apple Pay / Express Checkout, card accordion, or submit)
+/// are visually rendered with non-zero dimensions. Fires a one-shot `buttonsReady` action
+/// via `checkoutComplete` when any button passes the visibility check.
+///
+/// Uses a `MutationObserver` for immediate detection when Stripe hydrates, plus an
+/// immediate check for elements already present (preloaded WebView case).
+private let buttonReadyJS = """
+(function() {
+    if (window.__zsButtonReadySent) return;
+    window.__zsButtonReadySent = false;
+
+    function findAccordionButton(dataValue) {
+        return document.querySelector('.p-AccordionButton[data-value="' + dataValue + '"]')
+            || document.querySelector('[data-value="' + dataValue + '"]');
+    }
+
+    function checkButtonsReady(reason) {
+        if (window.__zsButtonReadySent) return;
+
+        // Check 1: Express Checkout / Apple Pay container with visible iframe
+        var expressContainer = document.getElementById('express-checkout-container');
+        if (expressContainer && expressContainer.classList.contains('visible')) {
+            var iframe = expressContainer.querySelector('iframe');
+            if (iframe && iframe.offsetHeight > 0 && iframe.offsetWidth > 0) {
+                window.__zsButtonReadySent = true;
+                try { window.webkit.messageHandlers.checkoutComplete.postMessage({ action: 'buttonsReady', reason: reason }); } catch (e) {}
+                if (window.__zsButtonReadyObserver) { window.__zsButtonReadyObserver.disconnect(); }
+                return;
+            }
+        }
+
+        // Check 1b: Legacy Apple Pay container
+        var applePayContainer = document.getElementById('apple-pay-container');
+        if (applePayContainer && applePayContainer.classList.contains('visible')) {
+            window.__zsButtonReadySent = true;
+            try { window.webkit.messageHandlers.checkoutComplete.postMessage({ action: 'buttonsReady', reason: reason }); } catch (e) {}
+            if (window.__zsButtonReadyObserver) { window.__zsButtonReadyObserver.disconnect(); }
+            return;
+        }
+
+        // Check 2: Card accordion button visible
+        var cardBtn = findAccordionButton('card');
+        if (cardBtn && cardBtn.offsetHeight > 0 && cardBtn.offsetWidth > 0) {
+            window.__zsButtonReadySent = true;
+            try { window.webkit.messageHandlers.checkoutComplete.postMessage({ action: 'buttonsReady', reason: reason }); } catch (e) {}
+            if (window.__zsButtonReadyObserver) { window.__zsButtonReadyObserver.disconnect(); }
+            return;
+        }
+
+        // Check 3: Submit button visible (simple card-only layout)
+        var submitBtn = document.querySelector('#submit, #submit-button, button[type="submit"]');
+        if (submitBtn && submitBtn.offsetHeight > 0 && submitBtn.offsetWidth > 0) {
+            window.__zsButtonReadySent = true;
+            try { window.webkit.messageHandlers.checkoutComplete.postMessage({ action: 'buttonsReady', reason: reason }); } catch (e) {}
+            if (window.__zsButtonReadyObserver) { window.__zsButtonReadyObserver.disconnect(); }
+            return;
+        }
+    }
+
+    // Immediate check for already-rendered elements (preloaded webview case)
+    checkButtonsReady('immediate');
+
+    // MutationObserver: fires when Stripe hydrates and paints payment buttons
+    try {
+        window.__zsButtonReadyObserver = new MutationObserver(function() {
+            checkButtonsReady('dom-mutation');
+        });
+        window.__zsButtonReadyObserver.observe(document.body, {
+            childList: true, subtree: true,
+            attributes: true, attributeFilter: ['class']
+        });
+    } catch (e) {}
+})();
+"""
+
 /// Parses a JS evaluation result into a CGFloat (handles both CGFloat and NSNumber).
 private func parseJSHeight(_ result: Any?) -> CGFloat? {
     if let height = result as? CGFloat, height > 0 {
@@ -303,6 +378,7 @@ private func migrationEndDate(for productId: String) -> Date? {
 internal final class CheckoutPreloader: ObservableObject {
     @Published var webView: WKWebView?
     @Published private(set) var isReady = false
+    private(set) var buttonsReady = false
     private(set) var measuredContentHeight: CGFloat = 0
     let messageRouter = MessageRouter()
 
@@ -311,6 +387,7 @@ internal final class CheckoutPreloader: ObservableObject {
     /// and avoid resuming a continuation that belongs to a newer cycle.
     private var loadToken: UInt = 0
     private var continuation: CheckedContinuation<Void, Never>?
+    private var buttonsReadyContinuation: CheckedContinuation<Void, Never>?
 
     private var loadedURL: URL?
 
@@ -337,10 +414,10 @@ internal final class CheckoutPreloader: ObservableObject {
         config.allowsInlineMediaPlayback = true
         config.userContentController.add(messageRouter, name: "checkoutComplete")
 
-        // Install height observer at document end — runs automatically when page loads.
+        // Install height observer + button detection at document end — runs automatically when page loads.
         // This is more reliable than evaluateJavaScript after page load.
         let heightScript = WKUserScript(
-            source: setupMeasureJS + "\n" + heightObserverJS,
+            source: setupMeasureJS + "\n" + heightObserverJS + "\n" + buttonReadyJS,
             injectionTime: .atDocumentEnd,
             forMainFrameOnly: true
         )
@@ -373,6 +450,13 @@ internal final class CheckoutPreloader: ObservableObject {
                     guard message.name == "checkoutComplete",
                           let body = message.body as? [String: Any],
                           let action = body["action"] as? String else { return }
+
+                    if action == "buttonsReady" {
+                        self.buttonsReady = true
+                        self.buttonsReadyContinuation?.resume()
+                        self.buttonsReadyContinuation = nil
+                        return
+                    }
 
                     guard action == "ready" else { return }
 
@@ -430,10 +514,36 @@ internal final class CheckoutPreloader: ObservableObject {
         webView?.evaluateJavaScript("window.__zsStopObserver && window.__zsStopObserver()", completionHandler: nil)
     }
 
+    /// Waits until the `buttonsReady` signal fires from JavaScript, confirming
+    /// payment buttons are visually rendered. Returns immediately if already ready.
+    /// Includes a 5-second safety timeout to prevent indefinite hangs.
+    @MainActor
+    func waitForButtonsReady() async {
+        if buttonsReady { return }
+
+        let myToken = loadToken
+
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            self.buttonsReadyContinuation = cont
+
+            // Safety timeout: present sheet after 5s even if buttonsReady never fires
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                guard let self, self.loadToken == myToken, self.buttonsReadyContinuation != nil else { return }
+                ZSLogger.info("[CheckoutPreloader] buttonsReady safety timeout — proceeding", category: .checkout)
+                self.buttonsReady = true
+                self.buttonsReadyContinuation?.resume()
+                self.buttonsReadyContinuation = nil
+            }
+        }
+    }
+
     /// Resume and nil the current continuation (if any), clear WebView state.
     private func cancelCurrentLoad() {
         continuation?.resume()
         continuation = nil
+        buttonsReadyContinuation?.resume()
+        buttonsReadyContinuation = nil
         messageRouter.onMessage = nil
     }
 
@@ -441,6 +551,7 @@ internal final class CheckoutPreloader: ObservableObject {
         cancelCurrentLoad()
         webView = nil
         isReady = false
+        buttonsReady = false
         loadedURL = nil
         measuredContentHeight = 0
     }
@@ -1357,9 +1468,9 @@ private struct PaymentWebView: UIViewRepresentable {
             """, injectionTime: .atDocumentStart, forMainFrameOnly: true)
         configuration.userContentController.addUserScript(consoleScript)
 
-        // Install height observer at document end — runs automatically when page loads.
+        // Install height observer + button detection at document end — runs automatically when page loads.
         let heightScript = WKUserScript(
-            source: setupMeasureJS + "\n" + heightObserverJS,
+            source: setupMeasureJS + "\n" + heightObserverJS + "\n" + buttonReadyJS,
             injectionTime: .atDocumentEnd,
             forMainFrameOnly: true
         )
@@ -1854,6 +1965,11 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
             await preloader.loadAndWait(url: result.checkoutURL)
         }
 
+        // Wait for payment buttons to be visually rendered before presenting
+        if !preloader.buttonsReady {
+            await preloader.waitForButtonsReady()
+        }
+
         guard !Task.isCancelled else { return }
         showSheet = true
     }
@@ -2021,6 +2137,11 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
         let preloader = pool.preloader(for: product.id)
         if !preloader.isReady {
             await preloader.loadAndWait(url: result.checkoutURL)
+        }
+
+        // Wait for payment buttons to be visually rendered before presenting
+        if !preloader.buttonsReady {
+            await preloader.waitForButtonsReady()
         }
 
         guard !Task.isCancelled else { return }
@@ -2444,6 +2565,12 @@ private struct UIKitSheetBridge<SheetHeader: View>: View {
         if !preloader.isReady {
             await preloader.loadAndWait(url: url)
         }
+
+        // Wait for payment buttons to be visually rendered before presenting
+        if !preloader.buttonsReady {
+            await preloader.waitForButtonsReady()
+        }
+
         showSheet = true
     }
 }
