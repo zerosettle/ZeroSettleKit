@@ -873,7 +873,7 @@ struct CheckoutWebView: UIViewRepresentable {
 /// Handles CSS injection (background color, Stripe styling), payment method detection
 /// (accordion buttons, Apple Pay), checkout completion, and expand/collapse signals.
 /// Shared by both `CheckoutWebView.Coordinator` and `MigrationCheckoutPreloader`.
-private func buildMigrationCheckoutJS(backgroundColor: UIColor) -> String {
+internal func buildMigrationCheckoutJS(backgroundColor: UIColor) -> String {
     var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
     backgroundColor.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
     let r = Int(red * 255), g = Int(green * 255), b = Int(blue * 255)
@@ -1221,7 +1221,7 @@ private func buildMigrationCheckoutJS(backgroundColor: UIColor) -> String {
 /// with the checkout URL and lets it render in the background. By the time the user taps
 /// the CTA, the Stripe payment buttons are already painted.
 @MainActor
-private final class MigrationCheckoutPreloader: ObservableObject {
+internal final class MigrationCheckoutPreloader: ObservableObject {
     @Published var webView: WKWebView?
     @Published private(set) var isReady = false
     @Published private(set) var hasApplePay = false
@@ -1319,7 +1319,7 @@ private final class MigrationCheckoutPreloader: ObservableObject {
 
 /// Minimal WKNavigationDelegate that fires a callback on `didFinish`.
 @MainActor
-private final class PreloadNavigationDelegate: NSObject, WKNavigationDelegate {
+internal final class PreloadNavigationDelegate: NSObject, WKNavigationDelegate {
     let onFinish: () -> Void
 
     init(onFinish: @escaping () -> Void) {
@@ -1338,7 +1338,7 @@ private final class PreloadNavigationDelegate: NSObject, WKNavigationDelegate {
 /// WKWebView requires being in a window to lay out and render content.
 /// This invisible container keeps the preloaded view alive and rendering
 /// at 393x600 while taking no visible space.
-private struct MigrationPreloaderHost: UIViewRepresentable {
+internal struct MigrationPreloaderHost: UIViewRepresentable {
     let webView: WKWebView?
 
     func makeUIView(context: Context) -> UIView {

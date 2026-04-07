@@ -1,5 +1,6 @@
 import SwiftUI
 import StoreKit
+import WebKit
 
 #if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
@@ -63,6 +64,24 @@ public struct OfferTipView: View {
     @State private var checkingCancellation = false
     @State private var confettiTrigger = 0
 
+    // WebView checkout state
+    @State private var isExpanded = false
+    @State private var ctaTapped = false
+    @State private var webViewLoaded = false
+    @State private var contentHeight: CGFloat = 180
+    @State private var checkoutURL: URL?
+    @State private var hasApplePay = false
+    @StateObject private var preloader = MigrationCheckoutPreloader()
+    @State private var preloadTriggered = false
+    /// True when performing a web-to-web upgrade (no WebView, just a spinner).
+    @State private var webToWebInProgress = false
+
+    // MARK: - Constants
+
+    private static let collapsedHeight: CGFloat = 180
+    private static let applePayCollapsedHeight: CGFloat = 180
+    private static let noApplePayCollapsedHeight: CGFloat = 90
+
     // MARK: - Computed Helpers
 
     private var savings: Int {
@@ -71,6 +90,11 @@ public struct OfferTipView: View {
 
     private var display: Offer.Display? {
         manager.display
+    }
+
+    /// Whether the current offer uses a WebView-based checkout (migration or storekit_to_web upgrade).
+    private var usesWebViewCheckout: Bool {
+        manager.offerData?.upgradeType != .webToWeb
     }
 
     // MARK: - Init
@@ -148,6 +172,28 @@ public struct OfferTipView: View {
             if newState == .dismissed {
                 onEvent?(.dismissed)
             }
+            // Trigger preloading when becoming eligible (WebView flows only)
+            if newState == .eligible && !preloadTriggered && usesWebViewCheckout {
+                triggerPreload()
+            }
+            // Reset preloader when leaving eligible/presented
+            if newState != .eligible && newState != .presented {
+                preloader.reset()
+                preloadTriggered = false
+            }
+        }
+        .onChange(of: preloader.buttonsReady) { _, ready in
+            if ready && !isExpanded && checkoutURL != nil {
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    isExpanded = true
+                }
+            }
+        }
+        .task {
+            // Trigger preloading if already eligible when view appears
+            if manager.state == .eligible && !preloadTriggered && usesWebViewCheckout {
+                triggerPreload()
+            }
         }
     }
 
@@ -168,13 +214,82 @@ public struct OfferTipView: View {
                 showCloseButton: true
             )
 
-            ctaButton(
-                label: display?.offerCtaOrDefault(defaultOfferCta) ?? defaultOfferCta,
-                accessibilityHint: "Opens the checkout to switch to direct billing",
-                action: handleCtaTapped
-            )
+            // CTA button (hidden when WebView is expanded)
+            if !isExpanded {
+                if ctaTapped {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                        .padding(.bottom, 16)
+                        .accessibilityLabel(
+                            webToWebInProgress ? "Processing upgrade" : "Loading checkout"
+                        )
+                } else {
+                    ctaButton(
+                        label: display?.offerCtaOrDefault(defaultOfferCta) ?? defaultOfferCta,
+                        accessibilityHint: "Opens the checkout to switch to direct billing",
+                        action: handleCtaTapped
+                    )
+                }
+            }
+
+            // Inline WebView -- created when URL is available, revealed when buttons are visible
+            if let checkoutURLValue = checkoutURL {
+                VStack(spacing: 8) {
+                    CheckoutWebView(
+                        url: checkoutURLValue,
+                        backgroundColor: UIColor(backgroundColor),
+                        preloadedWebView: preloader.isReady ? preloader.webView : nil,
+                        preloadedMessageRouter: preloader.isReady ? preloader.messageRouter : nil,
+                        onLoaded: {
+                            webViewLoaded = true
+                        },
+                        onPaymentMethodChanged: { paymentMethod in
+                            handlePaymentMethodChanged(paymentMethod)
+                        },
+                        onContentHeightChanged: { height in
+                            guard height > 50 else { return }
+                            withAnimation(.easeInOut(duration: 0.25)) {
+                                contentHeight = height
+                            }
+                        },
+                        onCheckoutSuccess: { transactionId in
+                            handleCheckoutSuccess(transactionId: transactionId)
+                        }
+                    )
+                    .frame(height: isExpanded ? contentHeight : 0)
+                    .opacity(isExpanded ? 1 : 0)
+                    .clipped()
+                    .allowsHitTesting(isExpanded)
+                    .cornerRadius(12)
+                    .padding(.horizontal, 4)
+                    .accessibilityLabel("Payment form")
+
+                    if isExpanded {
+                        Text("Cancel anytime.")
+                            .font(.caption)
+                            .foregroundColor(.white.opacity(0.7))
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 30)
+                    }
+                }
+                .padding(.bottom, isExpanded ? 16 : 0)
+                .zIndex(-1)
+                .transition(.opacity)
+            }
         }
-        .offerCard(backgroundColor: backgroundColor, borderColor: borderColor)
+        .background(backgroundColor)
+        .background(
+            MigrationPreloaderHost(webView: preloader.webView)
+                .frame(width: 1, height: 1)
+                .allowsHitTesting(false)
+        )
+        .cornerRadius(16)
+        .overlay {
+            if let borderColor {
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(borderColor, lineWidth: 2)
+            }
+        }
     }
 
     private var defaultOfferMessage: String {
@@ -359,42 +474,175 @@ public struct OfferTipView: View {
 
     private func handleCtaTapped() {
         onEvent?(.ctaTapped)
+        ctaTapped = true
 
-        Task {
-            let url = await manager.startCheckout(stripeCustomerId: stripeCustomerId)
+        // Web-to-web upgrades: no WebView, just a loading spinner
+        if manager.offerData?.upgradeType == .webToWeb {
+            webToWebInProgress = true
+            Task {
+                _ = await manager.startCheckout(stripeCustomerId: stripeCustomerId)
+                webToWebInProgress = false
+                ctaTapped = false
 
-            if manager.offerData?.upgradeType == .webToWeb {
-                // Web-to-web: no URL needed, manager transitions to .completed internally
+                guard manager.state == .completed else { return }
                 onEvent?(.checkoutCompleted)
                 transitionToCompleted()
+            }
+            return
+        }
+
+        // WebView-based checkout (migration or storekit_to_web upgrade)
+        startWebViewCheckout()
+    }
+
+    private func startWebViewCheckout() {
+        let iap = ZeroSettle.shared
+        let checkoutType = iap.checkoutType
+
+        switch checkoutType {
+        case .webView, .nativePay:
+            startInlineWebViewCheckout()
+        case .safari, .safariVC:
+            startBrowserCheckout()
+        }
+    }
+
+    private func startInlineWebViewCheckout() {
+        Task {
+            // Fast path: preloader has URL and WebView ready
+            if preloader.isReady, let url = await manager.preloadCheckout(stripeCustomerId: stripeCustomerId) {
+                checkoutURL = url
+                hasApplePay = preloader.hasApplePay
+                if preloader.buttonsReady {
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        isExpanded = true
+                    }
+                }
+                scheduleExpansionTimeout()
                 return
             }
 
-            guard let checkoutURL = url else { return }
-            onEvent?(.checkoutCompleted)
-
-            // Open checkout externally via SFSafariViewController
-            #if os(iOS)
-            await MainActor.run {
-                guard let scene = UIApplication.shared.connectedScenes
-                    .compactMap({ $0 as? UIWindowScene })
-                    .first,
-                    let rootVC = scene.windows.first(where: \.isKeyWindow)?
-                        .rootViewController
-                else {
-                    UIApplication.shared.open(checkoutURL)
-                    return
-                }
-
-                let config = SFSafariViewController.Configuration()
-                config.barCollapsingEnabled = false
-                let safari = SFSafariViewController(url: checkoutURL, configuration: config)
-                safari.preferredBarTintColor = UIColor(backgroundColor)
-                safari.preferredControlTintColor = .white
-                rootVC.present(safari, animated: true)
+            // Slow path: PI creation on-demand
+            let url = await manager.startCheckout(stripeCustomerId: stripeCustomerId)
+            if let url {
+                checkoutURL = url
+                scheduleExpansionTimeout()
+            } else {
+                ctaTapped = false
             }
-            #endif
         }
+    }
+
+    /// Safety timeout: expand after 5s even if buttons_ready never fires.
+    private func scheduleExpansionTimeout() {
+        Task {
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            if !isExpanded && checkoutURL != nil {
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    isExpanded = true
+                }
+            }
+        }
+    }
+
+    private func startBrowserCheckout() {
+        manager.present()
+
+        Task { @MainActor in
+            guard manager.offerData != nil else {
+                ctaTapped = false
+                return
+            }
+
+            let url = await manager.startCheckout(stripeCustomerId: stripeCustomerId)
+            guard let checkoutURL = url else {
+                ctaTapped = false
+                return
+            }
+
+            #if os(iOS)
+            guard let scene = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene })
+                .first,
+                let rootVC = scene.windows.first(where: \.isKeyWindow)?
+                    .rootViewController
+            else {
+                UIApplication.shared.open(checkoutURL)
+                return
+            }
+
+            let config = SFSafariViewController.Configuration()
+            config.barCollapsingEnabled = false
+            let safari = SFSafariViewController(url: checkoutURL, configuration: config)
+            safari.preferredBarTintColor = UIColor(backgroundColor)
+            safari.preferredControlTintColor = .white
+            rootVC.present(safari, animated: true)
+            #endif
+
+            // Wait for the manager to transition to .accepted or .completed
+            // after the checkout completes via deep link / universal link callback
+        }
+    }
+
+    private func triggerPreload() {
+        let iap = ZeroSettle.shared
+        let checkoutType = iap.checkoutType
+
+        // Only preload for inline WebView checkout types
+        guard checkoutType == .webView || checkoutType == .nativePay else { return }
+
+        // Respect the kill switch
+        guard iap.currentConfig?.maxPreloadedWebViews != 0 else { return }
+
+        preloadTriggered = true
+        WebKitWarmup.warmIfNeeded()
+
+        Task {
+            guard let url = await manager.preloadCheckout(stripeCustomerId: stripeCustomerId) else { return }
+            preloader.preload(url: url, backgroundColor: UIColor(backgroundColor))
+        }
+    }
+
+    private func handlePaymentMethodChanged(_ paymentMethod: String) {
+        switch paymentMethod {
+        case "buttons_ready":
+            if !isExpanded {
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    isExpanded = true
+                }
+            }
+        case "apple_pay_detected":
+            hasApplePay = true
+            withAnimation(.easeInOut(duration: 0.25)) {
+                contentHeight = Self.applePayCollapsedHeight
+            }
+        case "card_expanded":
+            break // Expansion height is driven by onContentHeightChanged
+        case "card_collapsed":
+            let collapsed = hasApplePay
+                ? Self.applePayCollapsedHeight
+                : Self.noApplePayCollapsedHeight
+            withAnimation(.easeInOut(duration: 0.25)) {
+                contentHeight = collapsed
+            }
+        default:
+            withAnimation(.easeInOut(duration: 0.25)) {
+                contentHeight = Self.collapsedHeight
+            }
+        }
+    }
+
+    private func handleCheckoutSuccess(transactionId: String?) {
+        withAnimation(.easeInOut(duration: 0.25)) {
+            isExpanded = false
+            webViewLoaded = false
+            contentHeight = Self.collapsedHeight
+            checkoutURL = nil
+        }
+        Task {
+            await manager.markCheckoutSucceeded(transactionId: transactionId)
+        }
+        onEvent?(.checkoutCompleted)
     }
 
     @MainActor
