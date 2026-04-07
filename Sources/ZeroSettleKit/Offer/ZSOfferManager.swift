@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import StoreKit
+internal import ZeroSettleCore
 
 /// Unified offer manager for both migration and upgrade flows.
 ///
@@ -350,11 +351,12 @@ public final class ZSOfferManager: ObservableObject {
     }
 
     private func makeBackend() throws -> Backend {
-        guard let iap = ZeroSettle.shared as? ZeroSettle,
-              iap.isConfigured else {
+        guard let config = ZeroSettle.shared.currentConfig,
+              let baseURL = ZeroSettle.shared.effectiveBaseURL else {
+            ZSLogger.error("[OfferManager] makeBackend() failed — SDK not configured", category: .migration)
             throw ZeroSettleError.notConfigured
         }
-        return iap.backend
+        return Backend(baseURL: baseURL, publishableKey: config.publishableKey)
     }
 
     // MARK: - Dismissal Persistence
