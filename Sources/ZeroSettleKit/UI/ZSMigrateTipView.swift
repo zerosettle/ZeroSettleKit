@@ -192,6 +192,13 @@ public struct MigrationTipView: View {
                 preloadTriggered = false
             }
         }
+        .onChange(of: preloader.buttonsReady) { _, ready in
+            if ready && !isExpanded && checkoutURL != nil {
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    isExpanded = true
+                }
+            }
+        }
         .task {
             // Trigger preloading if already eligible when view appears
             if manager.state == .eligible && !preloadTriggered {
@@ -252,8 +259,8 @@ public struct MigrationTipView: View {
                 }
             }
 
-            // Inline WebView (only when expanded)
-            if isExpanded, let checkoutURLValue = checkoutURL {
+            // Inline WebView — created when URL is available, revealed when buttons are visible
+            if let checkoutURLValue = checkoutURL {
                 VStack(spacing: 8) {
                     CheckoutWebView(
                         url: checkoutURLValue,
@@ -265,6 +272,12 @@ public struct MigrationTipView: View {
                         },
                         onPaymentMethodChanged: { paymentMethod in
                             switch paymentMethod {
+                            case "buttons_ready":
+                                if !isExpanded {
+                                    withAnimation(.easeInOut(duration: 0.3)) {
+                                        isExpanded = true
+                                    }
+                                }
                             case "apple_pay_detected":
                                 hasApplePay = true
                                 withAnimation(.easeInOut(duration: 0.25)) {
@@ -304,18 +317,23 @@ public struct MigrationTipView: View {
                             onEvent?(.checkoutCompleted)
                         }
                     )
-                    .frame(height: contentHeight)
+                    .frame(height: isExpanded ? contentHeight : 0)
+                    .opacity(isExpanded ? 1 : 0)
+                    .clipped()
+                    .allowsHitTesting(isExpanded)
                     .cornerRadius(12)
                     .padding(.horizontal, 4)
                     .accessibilityLabel("Payment form")
 
-                    Text("You won't be billed until the end of your current cycle\(renewalDateString.map { " (\($0))" } ?? ""). Cancel anytime.")
-                        .font(.caption)
-                        .foregroundColor(.white.opacity(0.7))
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 30)
+                    if isExpanded {
+                        Text("You won't be billed until the end of your current cycle\(renewalDateString.map { " (\($0))" } ?? ""). Cancel anytime.")
+                            .font(.caption)
+                            .foregroundColor(.white.opacity(0.7))
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 30)
+                    }
                 }
-                .padding(.bottom, 16)
+                .padding(.bottom, isExpanded ? 16 : 0)
                 .zIndex(-1)
                 .transition(.opacity)
             }
@@ -550,9 +568,15 @@ public struct MigrationTipView: View {
             if preloader.isReady, let url = manager.consumePreloadedURL() {
                 checkoutURL = url
                 hasApplePay = preloader.hasApplePay
-                withAnimation(.easeInOut(duration: 0.3)) {
-                    isExpanded = true
+                // Only expand immediately if buttons are already painted
+                if preloader.buttonsReady {
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        isExpanded = true
+                    }
                 }
+                // Otherwise the onChange(of: preloader.buttonsReady) or
+                // onPaymentMethodChanged("buttons_ready") will trigger expansion
+                scheduleExpansionTimeout()
                 return
             }
 
@@ -564,11 +588,23 @@ public struct MigrationTipView: View {
             let url = await manager.startCheckout(stripeCustomerId: stripeCustomerId)
             if let url {
                 checkoutURL = url
+                // Don't expand yet — wait for buttons_ready signal from the webview
+                scheduleExpansionTimeout()
+            } else {
+                ctaTapped = false
+            }
+        }
+    }
+
+    /// Safety timeout: expand after 5s even if buttons_ready never fires.
+    private func scheduleExpansionTimeout() {
+        Task {
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            if !isExpanded && checkoutURL != nil {
+                ZSLogger.info("[MigrateTipView] Expansion safety timeout — revealing payment area", category: .migration)
                 withAnimation(.easeInOut(duration: 0.3)) {
                     isExpanded = true
                 }
-            } else {
-                ctaTapped = false
             }
         }
     }
@@ -1054,11 +1090,58 @@ private func buildMigrationCheckoutJS(backgroundColor: UIColor) -> String {
         }
       }
 
-      // Initial probing (Stripe often hydrates late)
-      setTimeout(function() { detectCustomApplePay('t+300ms'); report('t+300ms'); }, 300);
-      setTimeout(function() { detectCustomApplePay('t+800ms'); report('t+800ms'); }, 800);
-      setTimeout(function() { detectCustomApplePay('t+1500ms'); report('t+1500ms'); }, 1500);
-      setTimeout(function() { detectCustomApplePay('t+3000ms'); report('t+3000ms'); }, 3000);
+      // Unified check: fire buttons_ready once any payment button is visually rendered.
+      var buttonsReadySent = false;
+      function checkButtonsReady(reason) {
+        if (buttonsReadySent) { return; }
+
+        // Check 1: Express Checkout / Apple Pay fully rendered (iframe visible)
+        detectCustomApplePay(reason);
+        if (applePayDetected) {
+          buttonsReadySent = true;
+          log('[' + reason + '] buttons_ready — Apple Pay visible');
+          try { window.webkit.messageHandlers.paymentMethodChanged.postMessage('buttons_ready'); } catch (e) {}
+          if (buttonReadyObserver) { buttonReadyObserver.disconnect(); }
+          return;
+        }
+
+        // Check 2: Card accordion button visible
+        var cardBtn = findButton('card');
+        if (cardBtn && cardBtn.offsetHeight > 0 && cardBtn.offsetWidth > 0) {
+          buttonsReadySent = true;
+          log('[' + reason + '] buttons_ready — card button visible');
+          try { window.webkit.messageHandlers.paymentMethodChanged.postMessage('buttons_ready'); } catch (e) {}
+          if (buttonReadyObserver) { buttonReadyObserver.disconnect(); }
+          return;
+        }
+
+        // Check 3: Submit button visible (simple card-only layout, no accordion)
+        var submitBtn = document.querySelector('#submit, #submit-button, button[type="submit"]');
+        if (submitBtn && submitBtn.offsetHeight > 0 && submitBtn.offsetWidth > 0) {
+          buttonsReadySent = true;
+          log('[' + reason + '] buttons_ready — submit button visible');
+          try { window.webkit.messageHandlers.paymentMethodChanged.postMessage('buttons_ready'); } catch (e) {}
+          if (buttonReadyObserver) { buttonReadyObserver.disconnect(); }
+          return;
+        }
+      }
+
+      // Immediate check for already-rendered elements (preloaded webview case)
+      checkButtonsReady('immediate');
+
+      // MutationObserver: fires when Stripe hydrates and paints payment buttons
+      var buttonReadyObserver = null;
+      try {
+        buttonReadyObserver = new MutationObserver(function() {
+          checkButtonsReady('dom-mutation');
+        });
+        buttonReadyObserver.observe(document.body, {
+          childList: true, subtree: true,
+          attributes: true, attributeFilter: ['class']
+        });
+      } catch (e) {
+        log('buttonReadyObserver attach failed: ' + safeStr(e));
+      }
 
       // Tap detection: when a payment method is tapped, re-check after animation/hydration.
       document.addEventListener('click', function(e) {
@@ -1131,6 +1214,7 @@ private final class MigrationCheckoutPreloader: ObservableObject {
     @Published var webView: WKWebView?
     @Published private(set) var isReady = false
     @Published private(set) var hasApplePay = false
+    @Published private(set) var buttonsReady = false
     let messageRouter = MessageRouter()
     private var loadedURL: URL?
     private var navigationDelegate: PreloadNavigationDelegate?
@@ -1181,13 +1265,16 @@ private final class MigrationCheckoutPreloader: ObservableObject {
         self.navigationDelegate = navDelegate
         wv.navigationDelegate = navDelegate
 
-        // Preload handler: capture Apple Pay detection silently
+        // Preload handler: capture Apple Pay detection and buttons-ready signal
         messageRouter.onMessage = { [weak self] message in
             guard let self else { return }
             if message.name == "paymentMethodChanged",
-               let body = message.body as? String,
-               body == "apple_pay_detected" {
-                self.hasApplePay = true
+               let body = message.body as? String {
+                if body == "apple_pay_detected" {
+                    self.hasApplePay = true
+                } else if body == "buttons_ready" {
+                    self.buttonsReady = true
+                }
             }
         }
 
@@ -1214,6 +1301,7 @@ private final class MigrationCheckoutPreloader: ObservableObject {
         navigationDelegate = nil
         isReady = false
         hasApplePay = false
+        buttonsReady = false
         loadedURL = nil
     }
 }
