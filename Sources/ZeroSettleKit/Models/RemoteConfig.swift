@@ -209,8 +209,12 @@ public struct RemoteConfig: Sendable, Equatable {
     /// Migration prompt data (nil if user not eligible or no active campaign)
     public let migration: MigrationPrompt?
 
-    public init(checkout: CheckoutConfig, migration: MigrationPrompt?) {
+    /// Unified offer data (new — preferred over `migration` when available)
+    public let offer: Offer.OfferData?
+
+    public init(checkout: CheckoutConfig, migration: MigrationPrompt?, offer: Offer.OfferData? = nil) {
         self.checkout = checkout
         self.migration = migration
+        self.offer = offer
     }
 }

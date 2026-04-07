@@ -142,7 +142,7 @@ internal final class Backend: @unchecked Sendable {
                 migration = nil
             }
 
-            remoteConfig = RemoteConfig(checkout: checkoutConfig, migration: migration)
+            remoteConfig = RemoteConfig(checkout: checkoutConfig, migration: migration, offer: configResponse.offer)
         } else {
             remoteConfig = nil
         }
@@ -572,6 +572,7 @@ private struct ProductsResponse: Decodable {
 private struct ConfigResponse: Decodable {
     let checkout: CheckoutConfigResponse
     let migration: MigrationPromptResponse?
+    let offer: Offer.OfferData?
 }
 
 private struct CheckoutConfigResponse: Decodable {
