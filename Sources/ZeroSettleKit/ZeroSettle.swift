@@ -301,7 +301,13 @@ public final class ZeroSettle: ObservableObject {
     /// Migration manager for the StoreKit → web checkout migration flow.
     /// Access via ``migrationManager(for:)`` to guarantee a single shared instance.
     /// Starts in `.loading` and transitions after bootstrap completes.
+    @available(*, deprecated, message: "Use offerManager(for:) instead")
     public private(set) var migrationManager: ZSMigrationManager?
+
+    /// Unified offer manager for migration, storekit_to_web, and web_to_web flows.
+    /// Access via ``offerManager(for:stripeCustomerId:)`` to guarantee a single shared instance.
+    /// Starts in `.loading` and transitions after bootstrap completes.
+    public private(set) var offerManager: ZSOfferManager?
 
     // MARK: - Customer Info
 
@@ -428,7 +434,7 @@ public final class ZeroSettle: ObservableObject {
     /// **What is cleared** (user-scoped):
     /// - `customerName`, `customerEmail`
     /// - `isBootstrapped`, `entitlements`, `remoteConfig`, `cancelFlowConfig`
-    /// - `migrationManager`
+    /// - `migrationManager`, `offerManager`
     /// - Cached checkout sessions (PaymentIntents for the previous user)
     /// - StoreKit listener userId
     ///
@@ -449,6 +455,7 @@ public final class ZeroSettle: ObservableObject {
         remoteConfig = nil
         cancelFlowConfig = nil
         migrationManager = nil
+        offerManager = nil
 
         // Cached checkout sessions (PaymentIntents for previous user)
         Task { await CheckoutResponseCache.shared.clearAll() }
@@ -627,6 +634,7 @@ public final class ZeroSettle: ObservableObject {
         remoteConfig = nil
         cancelFlowConfig = nil
         migrationManager = nil
+        offerManager = nil
         Task { await CheckoutResponseCache.shared.clearAll() }
 
         // Store customer info for subsequent checkout requests.
@@ -660,7 +668,10 @@ public final class ZeroSettle: ObservableObject {
         //    now that isBootstrapped is true. Otherwise create one with full data.
         _ = migrationManager(for: userId)
 
-        // 5. Pre-create PaymentIntents so the first checkout opens instantly.
+        // 5. Ensure unified offer manager exists alongside migration manager.
+        _ = offerManager(for: userId)
+
+        // 6. Pre-create PaymentIntents so the first checkout opens instantly.
         if currentConfig?.preloadCheckout != false {
             Task { await CheckoutSheet<EmptyView>.warmUpAll(userId: userId) }
         }
@@ -686,6 +697,27 @@ public final class ZeroSettle: ObservableObject {
         if let existing = migrationManager { return existing }
         let manager = ZSMigrationManager(userId: userId, stripeCustomerId: stripeCustomerId)
         migrationManager = manager
+        return manager
+    }
+
+    // MARK: - Offer Manager
+
+    /// Returns the shared offer manager, creating one if it doesn't exist yet.
+    ///
+    /// Both ``OfferTipView`` and ``bootstrap(userId:)`` call this to guarantee
+    /// a single shared instance. The manager starts in `.loading` and transitions
+    /// to `.eligible` or `.ineligible` once bootstrap completes (via notification).
+    ///
+    /// - Parameters:
+    ///   - userId: Your app's user identifier
+    ///   - stripeCustomerId: Optional existing Stripe Customer ID (`cus_xxx`)
+    ///     to attach the checkout to.
+    /// - Returns: The shared ``ZSOfferManager``
+    @discardableResult
+    public func offerManager(for userId: String, stripeCustomerId: String? = nil) -> ZSOfferManager {
+        if let existing = offerManager { return existing }
+        let manager = ZSOfferManager(userId: userId, stripeCustomerId: stripeCustomerId)
+        offerManager = manager
         return manager
     }
 

@@ -82,9 +82,25 @@ import SwiftUI
 // From Migration/ZSMigrationManager.swift:
 //   - ZSMigrationManager
 //
+// From Offer/ZSOfferManager.swift:
+//   - ZSOfferManager
+//
+// From Models/Offer.swift:
+//   - Offer (namespace enum)
+//   - Offer.FlowType
+//   - Offer.UpgradeType
+//   - Offer.State
+//   - Offer.Display
+//   - Offer.PerProductOffer
+//   - Offer.OfferData
+//
 // From UI/ZSMigrateTipView.swift:
 //   - MigrationTipView
 //   - MigrationTipView.Event
+//
+// From UI/OfferTipView.swift:
+//   - OfferTipView
+//   - OfferTipView.Event
 //
 // View Modifiers (on SwiftUI View):
 //   - .checkoutSheet(isPresented:product:userId:dismissible:preload:onComplete:)
