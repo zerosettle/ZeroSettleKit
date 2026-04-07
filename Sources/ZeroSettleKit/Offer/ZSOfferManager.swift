@@ -1,6 +1,6 @@
 import Foundation
-import Combine
 import StoreKit
+import CryptoKit
 internal import ZeroSettleCore
 
 /// Unified offer manager for both migration and upgrade flows.
@@ -42,7 +42,6 @@ public final class ZSOfferManager: ObservableObject {
 
     private var stripeCustomerId: String?
     private var checkoutTransactionId: String?
-    private var observation: AnyCancellable?
     private var preloadTask: Task<URL?, Never>?
 
     // Persistence keys
@@ -59,19 +58,16 @@ public final class ZSOfferManager: ObservableObject {
     // MARK: - Observation
 
     private func startObserving() {
-        // Re-evaluate eligibility when ZeroSettle state changes
-        observation = NotificationCenter.default.publisher(
-            for: NSNotification.Name("ZeroSettleStateDidChange")
-        ).receive(on: DispatchQueue.main)
-        .sink { [weak self] _ in
+        // Re-evaluate eligibility when ZeroSettle.shared properties change
+        // (isBootstrapped, remoteConfig, entitlements, products).
+        withObservationTracking {
+            evaluateEligibility()
+        } onChange: {
             Task { @MainActor [weak self] in
-                self?.evaluateEligibility()
+                guard let self,
+                      self.state == .loading || self.state == .ineligible || self.state == .eligible else { return }
+                self.startObserving()
             }
-        }
-
-        // Initial evaluation
-        Task { @MainActor [weak self] in
-            self?.evaluateEligibility()
         }
     }
 
@@ -106,11 +102,12 @@ public final class ZSOfferManager: ObservableObject {
     }
 
     private func resolveFromOffer(_ offer: Offer.OfferData, iap: ZeroSettle) {
-        // Rollout cohort check
+        // Rollout cohort check (SHA-256, consistent with ZSMigrationManager)
         if let rollout = offer.rolloutPercent, rollout < 100 {
-            let bucketKey = "\(userId):offer"
-            let hash = bucketKey.utf8.reduce(0) { $0 &+ Int($1) }
-            let bucket = abs(hash) % 100
+            let digest = SHA256.hash(data: Data(userId.utf8))
+            let firstBytes = digest.prefix(4)
+            let hashValue = firstBytes.reduce(0) { ($0 << 8) | UInt32($1) }
+            let bucket = Int(hashValue % 100)
             if bucket >= rollout {
                 state = .ineligible
                 return
@@ -245,8 +242,10 @@ public final class ZSOfferManager: ObservableObject {
         }
     }
 
-    /// Mark checkout as succeeded. Handles post-checkout state transitions.
+    /// Mark checkout as succeeded. Verifies transaction, refreshes entitlements,
+    /// and handles post-checkout state transitions.
     public func markCheckoutSucceeded(transactionId: String? = nil) async {
+        guard state == .presented else { return }
         guard let data = offerData else { return }
 
         checkoutTransactionId = transactionId
@@ -255,35 +254,84 @@ public final class ZSOfferManager: ObservableObject {
             storekitCancelRequired = true
             state = .accepted
         } else {
-            // Web-to-web: skip Apple cancel, go straight to completed
             state = .completed
         }
 
-        // Refresh entitlements
-        if let userId = offerData?.flowType == .migration ? self.userId : nil {
-            try? await ZeroSettle.shared.trackMigrationConversion(userId: userId)
+        // Verify transaction and refresh entitlements
+        if let transactionId {
+            do {
+                let backend = try makeBackend()
+                let transaction = try await backend.verifyTransaction(transactionId: transactionId)
+                await ZeroSettle.shared.delegate?.zeroSettleCheckoutDidComplete(transaction: transaction)
+                await ZeroSettle.shared.refreshEntitlementsAfterCheckout(transaction: transaction)
+            } catch {
+                ZSLogger.error("[OfferManager] Transaction verification failed: \(error)", category: .migration)
+            }
+        }
+
+        // Fire-and-forget conversion tracking (both migration and storekit_to_web upgrades)
+        if data.flowType == .migration || data.upgradeType == .storekitToWeb {
+            Task {
+                do {
+                    try await ZeroSettle.shared.trackMigrationConversion(userId: userId)
+                } catch {
+                    ZSLogger.error("[OfferManager] Conversion tracking failed: \(error)", category: .migration)
+                }
+            }
         }
     }
 
-    /// Open Apple subscription management sheet.
+    /// Open the Apple subscription management sheet, then verify cancellation
+    /// via server-side Apple API (real-time). Falls back to on-device StoreKit.
     public func showAppleSubscriptionManagement() async {
-        #if os(iOS)
-        if #available(iOS 15.0, *) {
-            guard let windowScene = UIApplication.shared.connectedScenes
-                .compactMap({ $0 as? UIWindowScene })
-                .first else { return }
+        guard state == .accepted else { return }
 
+        do {
+            guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene else {
+                ZSLogger.error("[OfferManager] No UIWindowScene available", category: .migration)
+                return
+            }
+            try await AppStore.showManageSubscriptions(in: windowScene)
+        } catch {
+            ZSLogger.error("[OfferManager] Failed to open subscription management: \(error)", category: .migration)
+            return
+        }
+
+        // Sheet dismissed — verify cancellation via server-side Apple API
+        let skEntitlement = ZeroSettle.shared.entitlements.first { $0.source == .storeKit && $0.isActive }
+        let origTxnId = skEntitlement?.storekitOriginalTransactionId
+        let txnId = checkoutTransactionId
+
+        // Try server-side first (real-time)
+        var appleStatus = 1 // default: still subscribed
+        var expirationDate: Date?
+        if let origTxnId {
             do {
-                try await AppStore.showManageSubscriptions(in: windowScene)
+                let backend = try makeBackend()
+                let statusResponse = try await backend.getStoreKitSubscriptionStatus(originalTransactionId: origTxnId)
+                appleStatus = statusResponse.status
+                expirationDate = statusResponse.expiresAt
             } catch {
-                ZSLogger.error("[OfferManager] Failed to open subscription management: \(error)", category: .migration)
+                ZSLogger.error("[OfferManager] Server-side Apple status check failed: \(error)", category: .migration)
             }
         }
-        #endif
 
-        // Check cancellation status via backend
-        storekitCancelRequired = false
-        state = .completed
+        if appleStatus == 5 /* expired */ || appleStatus == 2 /* cancelled */ {
+            storekitCancelRequired = false
+            state = .completed
+        } else {
+            storekitCancelRequired = true
+        }
+
+        // Sync status to backend
+        if let txnId {
+            do {
+                let backend = try makeBackend()
+                try await backend.updateStorekitStatus(transactionId: txnId, storekitStatus: appleStatus, storekitSubscriptionEnd: expirationDate)
+            } catch {
+                ZSLogger.error("[OfferManager] Failed to sync storekit_status: \(error)", category: .migration)
+            }
+        }
     }
 
     /// Dismiss the offer and persist dismissal.
@@ -329,7 +377,10 @@ public final class ZSOfferManager: ObservableObject {
         )
 
         checkoutTransactionId = checkout.transactionId
-        return URL(string: checkout.checkoutUrl)!
+        guard let url = URL(string: checkout.checkoutUrl) else {
+            throw ZeroSettleError.apiError(APIErrorDetail(statusCode: nil, serverMessage: "Invalid checkout URL", serverCode: nil, underlyingError: nil))
+        }
+        return url
     }
 
     private func executeWebToWebUpgrade(data: Offer.OfferData) async throws {
