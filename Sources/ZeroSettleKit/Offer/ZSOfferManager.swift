@@ -144,7 +144,8 @@ public final class ZSOfferManager: ObservableObject {
                         fromProductId: pid,
                         toProductId: override.productId,
                         variantId: offer.variantId,
-                        perProductPrompts: nil
+                        perProductPrompts: nil,
+                        checkoutPresentation: offer.checkoutPresentation
                     )
                     break
                 }
@@ -199,7 +200,8 @@ public final class ZSOfferManager: ObservableObject {
             fromProductId: nil,
             toProductId: nil,
             variantId: nil,
-            perProductPrompts: nil
+            perProductPrompts: nil,
+            checkoutPresentation: .inline
         )
         state = .eligible
     }

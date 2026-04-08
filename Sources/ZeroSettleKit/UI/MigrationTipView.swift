@@ -56,6 +56,14 @@ public struct MigrationTipView: View {
     @StateObject private var preloader = MigrationCheckoutPreloader()
     @State private var preloadTriggered = false
 
+    // Sheet checkout state (used when checkoutPresentation == .sheet)
+    @State private var sheetCheckoutProduct: ZSProduct?
+
+    /// Checkout presentation mode from the unified offer config.
+    private var checkoutPresentation: Offer.CheckoutPresentation {
+        ZeroSettle.shared.remoteConfig?.offer?.checkoutPresentation ?? .inline
+    }
+
     private var renewalDateString: String? {
         guard let date = manager.offerData?.storekitSubscriptionEnd else { return nil }
         let formatter = DateFormatter()
@@ -209,6 +217,43 @@ public struct MigrationTipView: View {
             // Trigger preloading if already eligible when view appears
             if manager.state == .eligible && !preloadTriggered {
                 triggerPreload()
+            }
+        }
+        // Sheet checkout path — presents the overlay checkout sheet instead of inline WebView.
+        .checkoutSheet(
+            item: $sheetCheckoutProduct,
+            userId: userId,
+            onPresent: { ctaTapped = false }
+        ) { result in
+            switch result {
+            case .success:
+                Task {
+                    await manager.markCheckoutSucceeded()
+                    onEvent?(.checkoutCompleted)
+                    if manager.state == .accepted {
+                        onEvent?(.appleSubscriptionManagementOpened)
+                        await manager.showAppleSubscriptionManagement()
+                    }
+                    guard manager.state == .completed else { return }
+                    showCongratulations = true
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        checkingCancellation = false
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        confettiTrigger += 1
+                    }
+                    onEvent?(.migrationCompleted)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            manager.dismiss()
+                        }
+                    }
+                }
+            case .failure(let error):
+                ctaTapped = false
+                if !ZeroSettleError.isCancellation(error) {
+                    ZSLogger.error("[MigrateTipView] Sheet checkout failed: \(error)", category: .checkout)
+                }
             }
         }
     }
@@ -497,15 +542,21 @@ public struct MigrationTipView: View {
                     if showCloseButton {
                         Button(action: {
                             withAnimation(.easeInOut(duration: 0.3)) {
-                                manager.dismiss()
+                                if isExpanded {
+                                    isExpanded = false
+                                    ctaTapped = false
+                                } else {
+                                    manager.dismiss()
+                                }
                             }
                         }) {
-                            Image(systemName: "xmark.circle.fill")
+                            Image(systemName: isExpanded ? "chevron.up.circle.fill" : "xmark.circle.fill")
                                 .font(.title2)
                                 .foregroundColor(.white.opacity(0.7))
+                                .contentTransition(.symbolEffect(.replace))
                         }
-                        .accessibilityLabel("Close")
-                        .accessibilityHint("Dismisses the migration offer")
+                        .accessibilityLabel(isExpanded ? "Minimize" : "Close")
+                        .accessibilityHint(isExpanded ? "Collapses the checkout form" : "Dismisses the migration offer")
                         .offset(y: -4)
                     }
                 }
@@ -562,6 +613,13 @@ public struct MigrationTipView: View {
 
     private func startCheckout() {
         onEvent?(.ctaTapped)
+
+        // Sheet mode: present via checkout sheet overlay instead of inline WebView
+        if checkoutPresentation == .sheet {
+            startSheetCheckout()
+            return
+        }
+
         let iap = ZeroSettle.shared
         let checkoutType = iap.checkoutType
 
@@ -573,8 +631,26 @@ public struct MigrationTipView: View {
         }
     }
 
+    private func startSheetCheckout() {
+        guard let productId = manager.offerData?.prompt.productId,
+              let product = ZeroSettle.shared.product(for: productId) else {
+            ctaTapped = false
+            return
+        }
+        manager.present()
+        sheetCheckoutProduct = product
+    }
+
     private func startWebViewCheckout() {
         Task {
+            // Fastest path: WebView already loaded (re-expanding after minimize)
+            if checkoutURL != nil {
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    isExpanded = true
+                }
+                return
+            }
+
             // Fast path: preloader has URL and WebView ready
             if preloader.isReady, let url = manager.consumePreloadedURL() {
                 checkoutURL = url

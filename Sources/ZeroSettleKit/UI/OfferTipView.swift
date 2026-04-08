@@ -76,6 +76,9 @@ public struct OfferTipView: View {
     /// True when performing a web-to-web upgrade (no WebView, just a spinner).
     @State private var webToWebInProgress = false
 
+    // Sheet checkout state (used when checkoutPresentation == .sheet)
+    @State private var sheetCheckoutProduct: ZSProduct?
+
     // MARK: - Constants
 
     private static let collapsedHeight: CGFloat = 180
@@ -193,6 +196,32 @@ public struct OfferTipView: View {
             // Trigger preloading if already eligible when view appears
             if manager.state == .eligible && !preloadTriggered && usesWebViewCheckout {
                 triggerPreload()
+            }
+        }
+        // Sheet checkout path — presents the overlay checkout sheet instead of inline WebView.
+        .checkoutSheet(
+            item: $sheetCheckoutProduct,
+            userId: userId,
+            onPresent: { ctaTapped = false }
+        ) { result in
+            switch result {
+            case .success(let txn):
+                Task {
+                    await manager.markCheckoutSucceeded(transactionId: txn.id)
+                    onEvent?(.checkoutCompleted)
+                    if manager.state == .accepted {
+                        onEvent?(.appleSubscriptionManagementOpened)
+                        await manager.showAppleSubscriptionManagement()
+                        transitionToCompleted()
+                    } else if manager.state == .completed {
+                        transitionToCompleted()
+                    }
+                }
+            case .failure(let error):
+                ctaTapped = false
+                if !ZeroSettleError.isCancellation(error) {
+                    ZSLogger.error("[OfferTipView] Sheet checkout failed: \(error)", category: .checkout)
+                }
             }
         }
     }
@@ -413,15 +442,21 @@ public struct OfferTipView: View {
                     if showCloseButton {
                         Button(action: {
                             withAnimation(.easeInOut(duration: 0.3)) {
-                                manager.dismiss()
+                                if isExpanded {
+                                    isExpanded = false
+                                    ctaTapped = false
+                                } else {
+                                    manager.dismiss()
+                                }
                             }
                         }) {
-                            Image(systemName: "xmark.circle.fill")
+                            Image(systemName: isExpanded ? "chevron.up.circle.fill" : "xmark.circle.fill")
                                 .font(.title2)
                                 .foregroundColor(.white.opacity(0.7))
+                                .contentTransition(.symbolEffect(.replace))
                         }
-                        .accessibilityLabel("Close")
-                        .accessibilityHint("Dismisses the offer")
+                        .accessibilityLabel(isExpanded ? "Minimize" : "Close")
+                        .accessibilityHint(isExpanded ? "Collapses the checkout form" : "Dismisses the offer")
                         .offset(y: -4)
                     }
                 }
@@ -491,8 +526,24 @@ public struct OfferTipView: View {
             return
         }
 
-        // WebView-based checkout (migration or storekit_to_web upgrade)
+        // Sheet mode: present via checkout sheet overlay instead of inline WebView
+        if manager.offerData?.checkoutPresentation == .sheet {
+            startSheetCheckout()
+            return
+        }
+
+        // Inline mode: expand WebView within the card
         startWebViewCheckout()
+    }
+
+    private func startSheetCheckout() {
+        guard let productId = manager.offerData?.checkoutProductId,
+              let product = ZeroSettle.shared.product(for: productId) else {
+            ctaTapped = false
+            return
+        }
+        manager.present()
+        sheetCheckoutProduct = product
     }
 
     private func startWebViewCheckout() {
@@ -509,6 +560,14 @@ public struct OfferTipView: View {
 
     private func startInlineWebViewCheckout() {
         Task {
+            // Fastest path: WebView already loaded (re-expanding after minimize)
+            if checkoutURL != nil {
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    isExpanded = true
+                }
+                return
+            }
+
             // Fast path: preloader has URL and WebView ready
             if preloader.isReady, let url = await manager.preloadCheckout(stripeCustomerId: stripeCustomerId) {
                 checkoutURL = url

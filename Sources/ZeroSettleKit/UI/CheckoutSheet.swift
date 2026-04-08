@@ -647,6 +647,62 @@ internal final class CheckoutPreloaderPool: ObservableObject {
     func refreshWebViews() {
         webViews = preloaders.values.compactMap(\.webView)
     }
+
+    // MARK: - Debug: Active Modifier Tracking
+
+    #if DEBUG
+    private var activeModifierCount = 0
+
+    func registerModifier() {
+        activeModifierCount += 1
+        if activeModifierCount > 1 {
+            ZSLogger.error(
+                "[Checkout] \(activeModifierCount) .checkoutSheet modifiers active simultaneously. " +
+                "This can cause payment failures. Use a single .checkoutSheet higher in the view hierarchy.",
+                category: .checkout
+            )
+        }
+    }
+
+    func unregisterModifier() {
+        activeModifierCount = max(0, activeModifierCount - 1)
+    }
+    #endif
+}
+
+// MARK: - Presentation Coordinator
+
+/// Prevents multiple checkout sheets from presenting simultaneously.
+/// Each modifier must `acquire` before creating the overlay window and
+/// `release` in its `onDismissed` closure.
+@MainActor
+internal final class CheckoutPresentationCoordinator {
+    static let shared = CheckoutPresentationCoordinator()
+
+    private(set) var isPresenting = false
+    private var activeProductId: String?
+
+    /// Attempt to acquire the presentation lock.
+    /// Returns `true` if this caller should proceed, `false` if another checkout is active.
+    func acquire(for productId: String) -> Bool {
+        guard !isPresenting else {
+            ZSLogger.error(
+                "[Checkout] Blocked concurrent presentation for \(productId) — " +
+                "another checkout is already active (product: \(activeProductId ?? "unknown"))",
+                category: .checkout
+            )
+            return false
+        }
+        isPresenting = true
+        activeProductId = productId
+        return true
+    }
+
+    /// Release the presentation lock. Must be called on every dismiss path.
+    func release() {
+        isPresenting = false
+        activeProductId = nil
+    }
 }
 
 /// Invisible view that hosts multiple WKWebViews in the hierarchy.
@@ -1855,6 +1911,16 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
 
     func body(content: Content) -> some View {
         content
+            .onAppear {
+                #if DEBUG
+                pool.registerModifier()
+                #endif
+            }
+            .onDisappear {
+                #if DEBUG
+                pool.unregisterModifier()
+                #endif
+            }
             .task {
                 WebKitWarmup.warmIfNeeded()
                 if let preload {
@@ -1872,7 +1938,15 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
             }
             .task(id: showSheet) {
                 guard showSheet else { return }
+
+                guard CheckoutPresentationCoordinator.shared.acquire(for: product.id) else {
+                    showSheet = false
+                    isPresented = false
+                    return
+                }
+
                 guard let scene = activeWindowScene() else {
+                    CheckoutPresentationCoordinator.shared.release()
                     showSheet = false
                     return
                 }
@@ -1895,22 +1969,28 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
                                 userId: userId,
                                 publishableKey: ZeroSettle.shared.currentConfig?.publishableKey ?? ""
                             ) }
-                            pool.reset(for: product.id)
-                            preloadedURL = nil
-                            preloadedTransactionId = nil
                         }
                         onComplete(result)
                     },
                     onDismissed: {
+                        CheckoutPresentationCoordinator.shared.release()
+                        // Always reset the preloader — stale Stripe JS state causes
+                        // failures when a WebView is reused for a subsequent checkout.
+                        pool.reset(for: product.id)
+                        preloadedURL = nil
+                        preloadedTransactionId = nil
                         // Delay teardown so the system's dismiss animation
                         // can finish before the overlay window disappears.
                         let window = overlayWindow
                         overlayWindow = nil
                         isPresented = false
                         showSheet = false
-                        pool.refreshWebViews()
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
                             window?.isHidden = true
+                            // Refresh AFTER the overlay window is hidden so the
+                            // WebView's old superview is gone and PoolPreloaderHost
+                            // can re-adopt it into a visible UIWindow.
+                            pool.refreshWebViews()
                         }
                     }
                 )
@@ -2027,6 +2107,16 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
 
     func body(content: Content) -> some View {
         content
+            .onAppear {
+                #if DEBUG
+                pool.registerModifier()
+                #endif
+            }
+            .onDisappear {
+                #if DEBUG
+                pool.unregisterModifier()
+                #endif
+            }
             .task {
                 WebKitWarmup.warmIfNeeded()
                 if let preload {
@@ -2047,7 +2137,15 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
                     showSheet = false
                     return
                 }
+
+                guard CheckoutPresentationCoordinator.shared.acquire(for: product.id) else {
+                    showSheet = false
+                    item = nil
+                    return
+                }
+
                 guard let scene = activeWindowScene() else {
+                    CheckoutPresentationCoordinator.shared.release()
                     showSheet = false
                     return
                 }
@@ -2073,20 +2171,26 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
                                 userId: userId,
                                 publishableKey: ZeroSettle.shared.currentConfig?.publishableKey ?? ""
                             ) }
-                            pool.reset(for: product.id)
-                            preloadedURL = nil
-                            preloadedTransactionId = nil
                         }
                         onComplete(result)
                     },
                     onDismissed: {
+                        CheckoutPresentationCoordinator.shared.release()
+                        // Always reset the preloader — stale Stripe JS state causes
+                        // failures when a WebView is reused for a subsequent checkout.
+                        pool.reset(for: product.id)
+                        preloadedURL = nil
+                        preloadedTransactionId = nil
                         let window = overlayWindow
                         overlayWindow = nil
                         item = nil
                         showSheet = false
-                        pool.refreshWebViews()
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
                             window?.isHidden = true
+                            // Refresh AFTER the overlay window is hidden so the
+                            // WebView's old superview is gone and PoolPreloaderHost
+                            // can re-adopt it into a visible UIWindow.
+                            pool.refreshWebViews()
                         }
                     }
                 )
@@ -2494,7 +2598,15 @@ private struct UIKitSheetBridge<SheetHeader: View>: View {
     var body: some View {
         Color.clear
             .task { await preloadAll() }
-            .sheet(isPresented: $showSheet, onDismiss: onDismissed) {
+            .sheet(isPresented: $showSheet, onDismiss: {
+                CheckoutPresentationCoordinator.shared.release()
+                // Always reset the preloader — stale Stripe JS state causes
+                // failures when a WebView is reused for a subsequent checkout.
+                pool.reset(for: product.id)
+                preloadedURL = nil
+                preloadedTransactionId = nil
+                onDismissed()
+            }) {
                 if let url = preloadedURL {
                     CheckoutSheet(
                         product: product,
@@ -2507,9 +2619,6 @@ private struct UIKitSheetBridge<SheetHeader: View>: View {
                     ) { result in
                         if case .success = result {
                             Task { await CheckoutResponseCache.shared.invalidate(productId: product.id, userId: userId, publishableKey: ZeroSettle.shared.currentConfig?.publishableKey ?? "") }
-                            pool.reset(for: product.id)
-                            preloadedURL = nil
-                            preloadedTransactionId = nil
                         }
                         onComplete(result)
                     }
@@ -2569,6 +2678,10 @@ private struct UIKitSheetBridge<SheetHeader: View>: View {
         // Wait for payment buttons to be visually rendered before presenting
         if !preloader.buttonsReady {
             await preloader.waitForButtonsReady()
+        }
+
+        guard CheckoutPresentationCoordinator.shared.acquire(for: product.id) else {
+            return
         }
 
         showSheet = true

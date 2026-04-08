@@ -16,6 +16,15 @@ public enum Offer {
         case webToWeb = "web_to_web"
     }
 
+    /// How the tip view presents checkout when the CTA is tapped.
+    /// Configurable from the dashboard to A/B test conversion.
+    public enum CheckoutPresentation: String, Codable, Sendable {
+        /// Expand checkout inline within the tip card (default).
+        case inline
+        /// Present the bottom checkout sheet overlay.
+        case sheet
+    }
+
     /// Lifecycle state of the offer.
     public enum State: Sendable, Equatable {
         case loading
@@ -99,6 +108,9 @@ public enum Offer {
         // Per-product overrides
         public let perProductPrompts: [String: PerProductOffer]?
 
+        // Checkout presentation mode
+        public let checkoutPresentation: CheckoutPresentation
+
         /// Whether this offer requires Apple subscription cancellation post-checkout.
         public var needsAppleCancel: Bool {
             switch flowType {
@@ -123,7 +135,7 @@ extension Offer.OfferData: Codable {
         case flowType, productId, eligibleProductIds, savingsPercent, display
         case freeTrialDays, minSubscriptionDays, maxSubscriptionDays, rolloutPercent
         case upgradeType, fromProductId, toProductId
-        case variantId, perProductPrompts
+        case variantId, perProductPrompts, checkoutPresentation
     }
 
     public init(from decoder: Decoder) throws {
@@ -142,5 +154,6 @@ extension Offer.OfferData: Codable {
         toProductId = try container.decodeIfPresent(String.self, forKey: .toProductId)
         variantId = try container.decodeIfPresent(Int.self, forKey: .variantId)
         perProductPrompts = try container.decodeIfPresent([String: Offer.PerProductOffer].self, forKey: .perProductPrompts)
+        checkoutPresentation = try container.decodeIfPresent(Offer.CheckoutPresentation.self, forKey: .checkoutPresentation) ?? .inline
     }
 }

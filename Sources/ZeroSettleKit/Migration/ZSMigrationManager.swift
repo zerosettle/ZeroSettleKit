@@ -773,18 +773,38 @@ public final class ZSMigrationManager: ObservableObject {
     private func createCheckout(stripeCustomerId: String?) async throws -> (url: URL?, transactionId: String) {
         guard let offerData else { throw ZeroSettleError.notConfigured }
 
-        let backend = try makeBackend()
-        let checkout = try await backend.initiateCheckout(
-            productId: offerData.prompt.productId,
+        let productId = offerData.prompt.productId
+        let publishableKey = ZeroSettle.shared.currentConfig?.publishableKey ?? ""
+        let resolvedCustomerId = stripeCustomerId ?? self.stripeCustomerId
+        let baseURL = ZeroSettle.shared.effectiveBaseURL
+
+        // Use the shared cache to coalesce with the batch preload. If warmUpAll()
+        // already created a PI for this product, we get an instant cache hit.
+        // If a batch request is in-flight, we join it instead of racing.
+        let checkout = await CheckoutResponseCache.shared.fetchOrJoin(
+            productId: productId,
             userId: userId,
-            stripeCustomerId: stripeCustomerId ?? self.stripeCustomerId,
-            storekitSubscriptionEnd: offerData.storekitSubscriptionEnd,
-            storekitOriginalTransactionId: offerData.activeStoreKitOriginalTransactionId
-        )
+            publishableKey: publishableKey
+        ) { [userId, offerData] in
+            guard let baseURL else { return nil }
+            let backend = Backend(baseURL: baseURL, publishableKey: publishableKey)
+            return try? await backend.initiateCheckout(
+                productId: productId,
+                userId: userId,
+                stripeCustomerId: resolvedCustomerId,
+                storekitSubscriptionEnd: offerData.storekitSubscriptionEnd,
+                storekitOriginalTransactionId: offerData.activeStoreKitOriginalTransactionId
+            )
+        }
+
+        guard let checkout else {
+            throw ZeroSettleError.checkoutFailed(reason: .other("PI creation failed"))
+        }
 
         // Default Apple subscription to active — "guilty until proven innocent".
         // Updated with real status after manage subscription sheet dismisses.
         do {
+            let backend = try makeBackend()
             try await backend.updateStorekitStatus(transactionId: checkout.transactionId, storekitStatus: 1)
         } catch {
             ZSLogger.error("[MigrationManager] Failed to set default storekit_status: \(error)", category: .migration)
