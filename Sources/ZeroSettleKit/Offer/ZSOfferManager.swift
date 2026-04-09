@@ -122,6 +122,17 @@ public final class ZSOfferManager: ObservableObject {
             return
         }
 
+        // Migration and storekit_to_web flows require an active StoreKit subscription
+        // to migrate from — skip if the user doesn't have one.
+        if offer.needsAppleCancel {
+            let skEntitlements = iap.entitlements.filter { $0.source == .storeKit && $0.isActive }
+            guard !skEntitlements.isEmpty else {
+                ZSLogger.info("[OfferManager] Skipping: no active StoreKit subscription to migrate", category: .migration)
+                state = .ineligible
+                return
+            }
+        }
+
         // Resolve per-product prompt if applicable
         var resolvedOffer = offer
         if let perProduct = offer.perProductPrompts {
