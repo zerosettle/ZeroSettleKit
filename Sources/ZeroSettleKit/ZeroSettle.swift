@@ -1650,7 +1650,27 @@ public final class ZeroSettle: ObservableObject {
             do {
                 let freshEntitlements = try await backend.getEntitlements(userId: userId)
                 let storeKitEnts = entitlements.filter { $0.source == .storeKit }
-                updateEntitlements(storeKitEnts + freshEntitlements)
+                var merged = storeKitEnts + freshEntitlements
+
+                // If the server didn't return an entitlement for this transaction
+                // (common for consumables — they're one-time and not persisted),
+                // append a local entitlement so newConsumableEntitlements(excluding:)
+                // can find it and the app can credit tokens.
+                let txnId = transaction.id
+                if !merged.contains(where: { $0.id == txnId || $0.id == "web_\(txnId)" }) {
+                    let local = Entitlement(
+                        id: "web_\(txnId)",
+                        productId: transaction.productId,
+                        source: .webCheckout,
+                        isActive: true,
+                        expiresAt: transaction.expiresAt,
+                        purchasedAt: transaction.purchasedAt
+                    )
+                    merged.append(local)
+                    ZSLogger.info("Appended local entitlement for \(transaction.productId) — server did not include it (consumable)", category: .entitlements)
+                }
+
+                updateEntitlements(merged)
                 ZSLogger.info("Refreshed entitlements after checkout: \(freshEntitlements.count) web entitlements", category: .entitlements)
             } catch {
                 ZSLogger.error("Failed to refresh entitlements after checkout: \(error)", category: .entitlements)

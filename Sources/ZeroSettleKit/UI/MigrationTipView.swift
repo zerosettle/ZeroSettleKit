@@ -59,11 +59,6 @@ public struct MigrationTipView: View {
     // Sheet checkout state (used when checkoutPresentation == .sheet)
     @State private var sheetCheckoutProduct: ZSProduct?
 
-    /// Checkout presentation mode from the unified offer config.
-    private var checkoutPresentation: Offer.CheckoutPresentation {
-        ZeroSettle.shared.remoteConfig?.offer?.checkoutPresentation ?? .inline
-    }
-
     private var renewalDateString: String? {
         guard let date = manager.offerData?.storekitSubscriptionEnd else { return nil }
         let formatter = DateFormatter()
@@ -614,15 +609,26 @@ public struct MigrationTipView: View {
     private func startCheckout() {
         onEvent?(.ctaTapped)
 
-        // Sheet mode: present via checkout sheet overlay instead of inline WebView
-        if checkoutPresentation == .sheet {
+        // Checkout presentation override from dashboard config.
+        // When set, takes priority over the global checkoutType.
+        // When nil, falls through to the global checkoutType switch.
+        let presentation = ZeroSettle.shared.remoteConfig?.offer?.checkoutPresentation
+
+        switch presentation {
+        case .inline:
+            startWebViewCheckout()
+            return
+        case .sheet:
             startSheetCheckout()
             return
+        case .safariVC, .safari:
+            startBrowserCheckout()
+            return
+        case nil:
+            break // No override — use global checkoutType below
         }
 
-        let iap = ZeroSettle.shared
-        let checkoutType = iap.checkoutType
-
+        let checkoutType = ZeroSettle.shared.checkoutType
         switch checkoutType {
         case .webView, .nativePay:
             startWebViewCheckout()

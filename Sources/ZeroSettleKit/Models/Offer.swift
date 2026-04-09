@@ -18,11 +18,16 @@ public enum Offer {
 
     /// How the tip view presents checkout when the CTA is tapped.
     /// Configurable from the dashboard to A/B test conversion.
+    /// When `nil`, the SDK uses the global `checkoutType` setting.
     public enum CheckoutPresentation: String, Codable, Sendable {
-        /// Expand checkout inline within the tip card (default).
+        /// Expand checkout inline within the tip card.
         case inline
         /// Present the bottom checkout sheet overlay.
         case sheet
+        /// Open an in-app browser (SFSafariViewController).
+        case safariVC = "safari_vc"
+        /// Open external Safari.
+        case safari
     }
 
     /// Lifecycle state of the offer.
@@ -108,8 +113,8 @@ public enum Offer {
         // Per-product overrides
         public let perProductPrompts: [String: PerProductOffer]?
 
-        // Checkout presentation mode
-        public let checkoutPresentation: CheckoutPresentation
+        // Checkout presentation mode (nil = use global checkoutType)
+        public let checkoutPresentation: CheckoutPresentation?
 
         /// Whether this offer requires Apple subscription cancellation post-checkout.
         public var needsAppleCancel: Bool {
@@ -154,6 +159,6 @@ extension Offer.OfferData: Codable {
         toProductId = try container.decodeIfPresent(String.self, forKey: .toProductId)
         variantId = try container.decodeIfPresent(Int.self, forKey: .variantId)
         perProductPrompts = try container.decodeIfPresent([String: Offer.PerProductOffer].self, forKey: .perProductPrompts)
-        checkoutPresentation = try container.decodeIfPresent(Offer.CheckoutPresentation.self, forKey: .checkoutPresentation) ?? .inline
+        checkoutPresentation = try container.decodeIfPresent(Offer.CheckoutPresentation.self, forKey: .checkoutPresentation)
     }
 }

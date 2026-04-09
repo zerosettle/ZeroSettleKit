@@ -526,13 +526,23 @@ public struct OfferTipView: View {
             return
         }
 
-        // Sheet mode: present via checkout sheet overlay instead of inline WebView
-        if manager.offerData?.checkoutPresentation == .sheet {
+        // Checkout presentation override from dashboard config.
+        // When set, takes priority over the global checkoutType.
+        // When nil, falls through to startWebViewCheckout() which uses checkoutType.
+        switch manager.offerData?.checkoutPresentation {
+        case .inline:
+            startInlineWebViewCheckout()
+            return
+        case .sheet:
             startSheetCheckout()
             return
+        case .safariVC, .safari:
+            startBrowserCheckout()
+            return
+        case nil:
+            break // No override — use global checkoutType below
         }
 
-        // Inline mode: expand WebView within the card
         startWebViewCheckout()
     }
 

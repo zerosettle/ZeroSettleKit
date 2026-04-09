@@ -389,7 +389,7 @@ internal final class CheckoutPreloader: ObservableObject {
     private var continuation: CheckedContinuation<Void, Never>?
     private var buttonsReadyContinuation: CheckedContinuation<Void, Never>?
 
-    private var loadedURL: URL?
+    private(set) var loadedURL: URL?
 
     @MainActor
     func loadAndWait(url: URL) async {
@@ -1913,12 +1913,12 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
         content
             .onAppear {
                 #if DEBUG
-                pool.registerModifier()
+                if preload != nil { pool.registerModifier() }
                 #endif
             }
             .onDisappear {
                 #if DEBUG
-                pool.unregisterModifier()
+                if preload != nil { pool.unregisterModifier() }
                 #endif
             }
             .task {
@@ -2011,7 +2011,7 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
         let checkoutType = ZeroSettle.shared.checkoutType
 
         // Safari / SafariVC — delegate to purchase() which opens the browser
-        guard checkoutType == .webView else {
+        guard checkoutType == .webView || checkoutType == .nativePay else {
             do {
                 let transaction = try await ZeroSettle.shared.purchase(
                     productId: product.id, userId: userId
@@ -2109,12 +2109,12 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
         content
             .onAppear {
                 #if DEBUG
-                pool.registerModifier()
+                if preload != nil { pool.registerModifier() }
                 #endif
             }
             .onDisappear {
                 #if DEBUG
-                pool.unregisterModifier()
+                if preload != nil { pool.unregisterModifier() }
                 #endif
             }
             .task {
@@ -2209,26 +2209,42 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
 
     private func preloadAll(product: ZSProduct) async {
         let checkoutType = ZeroSettle.shared.checkoutType
+        let jurisdiction = ZeroSettle.shared.detectedJurisdiction
+        ZSLogger.info("[Checkout] preloadAll: product=\(product.id), checkoutType=\(checkoutType.rawValue), jurisdiction=\(jurisdiction.map { String(describing: $0) } ?? "nil"), isBootstrapped=\(ZeroSettle.shared.isBootstrapped)", category: .checkout)
 
         // Safari / SafariVC — delegate to purchase() which opens the browser
-        guard checkoutType == .webView else {
+        guard checkoutType == .webView || checkoutType == .nativePay else {
+            ZSLogger.info("[Checkout] preloadAll: routing to purchase() for \(checkoutType.rawValue)", category: .checkout)
             do {
                 let transaction = try await ZeroSettle.shared.purchase(
                     productId: product.id, userId: userId
                 )
                 onComplete(.success(transaction))
             } catch {
+                ZSLogger.error("[Checkout] preloadAll: purchase() failed: \(error)", category: .checkout)
                 onComplete(.failure(error))
             }
             item = nil
             return
         }
 
+        // Fast path: if background preload already has the WebView ready with
+        // buttons painted, present immediately without any async hops.
+        let preloader = pool.preloader(for: product.id)
+        if preloader.isReady && preloader.buttonsReady,
+           let url = preloader.loadedURL {
+            ZSLogger.info("[Checkout] preloadAll: fast path — WebView ready, presenting immediately", category: .checkout)
+            preloadedURL = url
+            preloadedTransactionId = nil
+            showSheet = true
+            return
+        }
+
+        // Slow path: fetch PI from cache/server, load WebView if needed.
         guard let result = await CheckoutSheet<EmptyView>.preload(
             productId: product.id, userId: userId
         ) else {
             guard !Task.isCancelled else { return }
-            // Preload failed — don't present an empty sheet.
             onComplete(.failure(ZeroSettleError.checkoutFailed(reason: .other("Failed to create payment"))))
             item = nil
             return
@@ -2238,12 +2254,10 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
         preloadedURL = result.checkoutURL
         preloadedTransactionId = result.transactionId
 
-        let preloader = pool.preloader(for: product.id)
         if !preloader.isReady {
             await preloader.loadAndWait(url: result.checkoutURL)
         }
 
-        // Wait for payment buttons to be visually rendered before presenting
         if !preloader.buttonsReady {
             await preloader.waitForButtonsReady()
         }
@@ -2640,7 +2654,7 @@ private struct UIKitSheetBridge<SheetHeader: View>: View {
         let checkoutType = ZeroSettle.shared.checkoutType
 
         // Safari / SafariVC — delegate to purchase() which opens the browser
-        guard checkoutType == .webView else {
+        guard checkoutType == .webView || checkoutType == .nativePay else {
             do {
                 let transaction = try await ZeroSettle.shared.purchase(
                     productId: product.id, userId: userId
