@@ -2228,19 +2228,7 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
             return
         }
 
-        // Fast path: if background preload already has the WebView ready with
-        // buttons painted, present immediately without any async hops.
-        let preloader = pool.preloader(for: product.id)
-        if preloader.isReady && preloader.buttonsReady,
-           let url = preloader.loadedURL {
-            ZSLogger.info("[Checkout] preloadAll: fast path — WebView ready, presenting immediately", category: .checkout)
-            preloadedURL = url
-            preloadedTransactionId = nil
-            showSheet = true
-            return
-        }
-
-        // Slow path: fetch PI from cache/server, load WebView if needed.
+        // Fetch PI from cache (or server if cache miss), load WebView if needed.
         guard let result = await CheckoutSheet<EmptyView>.preload(
             productId: product.id, userId: userId
         ) else {
@@ -2254,6 +2242,7 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
         preloadedURL = result.checkoutURL
         preloadedTransactionId = result.transactionId
 
+        let preloader = pool.preloader(for: product.id)
         if !preloader.isReady {
             await preloader.loadAndWait(url: result.checkoutURL)
         }
