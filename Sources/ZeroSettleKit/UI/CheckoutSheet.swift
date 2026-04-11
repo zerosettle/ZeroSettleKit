@@ -1969,16 +1969,25 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
                                 userId: userId,
                                 publishableKey: ZeroSettle.shared.currentConfig?.publishableKey ?? ""
                             ) }
+                            pool.reset(for: product.id)
+                            preloadedURL = nil
+                            preloadedTransactionId = nil
+                            // Eagerly re-preload this product so the next checkout is instant.
+                            Task { @MainActor in
+                                let ct = ZeroSettle.shared.checkoutType
+                                guard ct == .webView || ct == .nativePay else { return }
+                                guard let fresh = await CheckoutSheet<EmptyView>.preload(
+                                    productId: product.id, userId: userId
+                                ) else { return }
+                                let p = pool.preloader(for: product.id)
+                                await p.loadAndWait(url: fresh.checkoutURL)
+                                pool.refreshWebViews()
+                            }
                         }
                         onComplete(result)
                     },
                     onDismissed: {
                         CheckoutPresentationCoordinator.shared.release()
-                        // Always reset the preloader — stale Stripe JS state causes
-                        // failures when a WebView is reused for a subsequent checkout.
-                        pool.reset(for: product.id)
-                        preloadedURL = nil
-                        preloadedTransactionId = nil
                         // Delay teardown so the system's dismiss animation
                         // can finish before the overlay window disappears.
                         let window = overlayWindow
@@ -1987,9 +1996,6 @@ private struct CheckoutSheetModifier<Header: View>: ViewModifier {
                         showSheet = false
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
                             window?.isHidden = true
-                            // Refresh AFTER the overlay window is hidden so the
-                            // WebView's old superview is gone and PoolPreloaderHost
-                            // can re-adopt it into a visible UIWindow.
                             pool.refreshWebViews()
                         }
                     }
@@ -2171,25 +2177,31 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
                                 userId: userId,
                                 publishableKey: ZeroSettle.shared.currentConfig?.publishableKey ?? ""
                             ) }
+                            pool.reset(for: product.id)
+                            preloadedURL = nil
+                            preloadedTransactionId = nil
+                            // Eagerly re-preload this product so the next checkout is instant.
+                            Task { @MainActor in
+                                let ct = ZeroSettle.shared.checkoutType
+                                guard ct == .webView || ct == .nativePay else { return }
+                                guard let fresh = await CheckoutSheet<EmptyView>.preload(
+                                    productId: product.id, userId: userId
+                                ) else { return }
+                                let p = pool.preloader(for: product.id)
+                                await p.loadAndWait(url: fresh.checkoutURL)
+                                pool.refreshWebViews()
+                            }
                         }
                         onComplete(result)
                     },
                     onDismissed: {
                         CheckoutPresentationCoordinator.shared.release()
-                        // Always reset the preloader — stale Stripe JS state causes
-                        // failures when a WebView is reused for a subsequent checkout.
-                        pool.reset(for: product.id)
-                        preloadedURL = nil
-                        preloadedTransactionId = nil
                         let window = overlayWindow
                         overlayWindow = nil
                         item = nil
                         showSheet = false
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
                             window?.isHidden = true
-                            // Refresh AFTER the overlay window is hidden so the
-                            // WebView's old superview is gone and PoolPreloaderHost
-                            // can re-adopt it into a visible UIWindow.
                             pool.refreshWebViews()
                         }
                     }
@@ -2208,9 +2220,11 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
     }
 
     private func preloadAll(product: ZSProduct) async {
+        let start = CFAbsoluteTimeGetCurrent()
         let checkoutType = ZeroSettle.shared.checkoutType
         let jurisdiction = ZeroSettle.shared.detectedJurisdiction
-        ZSLogger.info("[Checkout] preloadAll: product=\(product.id), checkoutType=\(checkoutType.rawValue), jurisdiction=\(jurisdiction.map { String(describing: $0) } ?? "nil"), isBootstrapped=\(ZeroSettle.shared.isBootstrapped)", category: .checkout)
+        let bootstrapped = ZeroSettle.shared.isBootstrapped
+        ZSLogger.info("[Checkout] preloadAll START: product=\(product.id), checkoutType=\(checkoutType.rawValue), jurisdiction=\(jurisdiction.map { String(describing: $0) } ?? "nil"), isBootstrapped=\(bootstrapped), hasURL=\(preloadedURL != nil), hasTxnId=\(preloadedTransactionId != nil), preloaderReady=\(pool.preloader(for: product.id).isReady)", category: .checkout)
 
         // Safari / SafariVC — delegate to purchase() which opens the browser
         guard checkoutType == .webView || checkoutType == .nativePay else {
@@ -2228,30 +2242,63 @@ private struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
             return
         }
 
+        // Fast path: URL, transaction ID, and WebView all still warm from a
+        // previous presentation (e.g., user dismissed without purchasing).
+        // Present immediately without any async hops.
+        // Requires bootstrap to be complete — pre-bootstrap PIs may be invalid.
+        if preloadedURL != nil, preloadedTransactionId != nil,
+           pool.preloader(for: product.id).isReady,
+           bootstrapped {
+            ZSLogger.info("[Checkout] preloadAll: FAST PATH — presenting in \(Int((CFAbsoluteTimeGetCurrent() - start) * 1000))ms", category: .checkout)
+            showSheet = true
+            return
+        }
+
         // Fetch PI from cache (or server if cache miss), load WebView if needed.
+        let preloadStart = CFAbsoluteTimeGetCurrent()
         guard let result = await CheckoutSheet<EmptyView>.preload(
             productId: product.id, userId: userId
         ) else {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else {
+                ZSLogger.info("[Checkout] preloadAll: cancelled during preload", category: .checkout)
+                return
+            }
+            ZSLogger.error("[Checkout] preloadAll: preload() returned nil after \(Int((CFAbsoluteTimeGetCurrent() - preloadStart) * 1000))ms — no PI created", category: .checkout)
             onComplete(.failure(ZeroSettleError.checkoutFailed(reason: .other("Failed to create payment"))))
             item = nil
             return
         }
+        ZSLogger.info("[Checkout] preloadAll: PI fetched in \(Int((CFAbsoluteTimeGetCurrent() - preloadStart) * 1000))ms (url=\(result.checkoutURL.absoluteString.prefix(80))...)", category: .checkout)
 
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled else {
+            ZSLogger.info("[Checkout] preloadAll: cancelled after PI fetch", category: .checkout)
+            return
+        }
         preloadedURL = result.checkoutURL
         preloadedTransactionId = result.transactionId
 
         let preloader = pool.preloader(for: product.id)
         if !preloader.isReady {
+            let wvStart = CFAbsoluteTimeGetCurrent()
             await preloader.loadAndWait(url: result.checkoutURL)
+            ZSLogger.info("[Checkout] preloadAll: WebView loaded in \(Int((CFAbsoluteTimeGetCurrent() - wvStart) * 1000))ms", category: .checkout)
+        } else {
+            ZSLogger.info("[Checkout] preloadAll: WebView already ready, skipping loadAndWait", category: .checkout)
         }
 
         if !preloader.buttonsReady {
+            let btnStart = CFAbsoluteTimeGetCurrent()
             await preloader.waitForButtonsReady()
+            ZSLogger.info("[Checkout] preloadAll: buttons ready in \(Int((CFAbsoluteTimeGetCurrent() - btnStart) * 1000))ms", category: .checkout)
+        } else {
+            ZSLogger.info("[Checkout] preloadAll: buttons already ready, skipping wait", category: .checkout)
         }
 
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled else {
+            ZSLogger.info("[Checkout] preloadAll: cancelled after WebView/buttons ready", category: .checkout)
+            return
+        }
+        ZSLogger.info("[Checkout] preloadAll DONE: presenting sheet, total \(Int((CFAbsoluteTimeGetCurrent() - start) * 1000))ms", category: .checkout)
         showSheet = true
     }
 
@@ -2603,11 +2650,6 @@ private struct UIKitSheetBridge<SheetHeader: View>: View {
             .task { await preloadAll() }
             .sheet(isPresented: $showSheet, onDismiss: {
                 CheckoutPresentationCoordinator.shared.release()
-                // Always reset the preloader — stale Stripe JS state causes
-                // failures when a WebView is reused for a subsequent checkout.
-                pool.reset(for: product.id)
-                preloadedURL = nil
-                preloadedTransactionId = nil
                 onDismissed()
             }) {
                 if let url = preloadedURL {
@@ -2622,6 +2664,19 @@ private struct UIKitSheetBridge<SheetHeader: View>: View {
                     ) { result in
                         if case .success = result {
                             Task { await CheckoutResponseCache.shared.invalidate(productId: product.id, userId: userId, publishableKey: ZeroSettle.shared.currentConfig?.publishableKey ?? "") }
+                            pool.reset(for: product.id)
+                            preloadedURL = nil
+                            preloadedTransactionId = nil
+                            Task { @MainActor in
+                                let ct = ZeroSettle.shared.checkoutType
+                                guard ct == .webView || ct == .nativePay else { return }
+                                guard let fresh = await CheckoutSheet<EmptyView>.preload(
+                                    productId: product.id, userId: userId
+                                ) else { return }
+                                let p = pool.preloader(for: product.id)
+                                await p.loadAndWait(url: fresh.checkoutURL)
+                                pool.refreshWebViews()
+                            }
                         }
                         onComplete(result)
                     }
