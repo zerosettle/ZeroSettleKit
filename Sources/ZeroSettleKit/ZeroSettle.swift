@@ -1775,7 +1775,14 @@ public final class ZeroSettle: ObservableObject {
 // MARK: - StoreKit Update Delegate
 
 extension ZeroSettle: StoreKitUpdateDelegate {
-    func storeKitDidSyncTransaction(productId: String, transactionId: UInt64) {
+    func storeKitDidSyncTransaction(productId: String, transactionId: UInt64, originalTransactionId: String?) {
+        // Add to the owned set so the ownership filter includes this new purchase.
+        // Without this, purchases made after bootstrap would be filtered out by
+        // storeKitEntitlementsDidChange because their originalTransactionId wasn't
+        // in the set built during bootstrap.
+        if let origId = originalTransactionId {
+            ownedStoreKitTransactionIds?.insert(origId)
+        }
         delegate?.zeroSettleDidSyncStoreKitTransaction(
             productId: productId,
             transactionId: transactionId

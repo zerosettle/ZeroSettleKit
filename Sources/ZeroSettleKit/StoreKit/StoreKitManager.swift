@@ -55,7 +55,7 @@ internal enum StoreKitPurchaseError: Error, LocalizedError {
 
 /// Internal delegate for receiving StoreKit sync events.
 protocol StoreKitUpdateDelegate: AnyObject {
-    @MainActor func storeKitDidSyncTransaction(productId: String, transactionId: UInt64)
+    @MainActor func storeKitDidSyncTransaction(productId: String, transactionId: UInt64, originalTransactionId: String?)
     @MainActor func storeKitSyncFailed(error: Error)
     @MainActor func storeKitEntitlementsDidChange(_ entitlements: [Entitlement])
 }
@@ -370,7 +370,8 @@ internal final class StoreKitManager {
             ZSLogger.info("StoreKit transaction synced: \(transaction.productID)", category: .entitlements)
             delegate?.storeKitDidSyncTransaction(
                 productId: transaction.productID,
-                transactionId: transaction.id
+                transactionId: transaction.id,
+                originalTransactionId: response.originalTransactionId
             )
         } catch {
             // Sync failed — enqueue for retry, do NOT finish (StoreKit will redeliver)
