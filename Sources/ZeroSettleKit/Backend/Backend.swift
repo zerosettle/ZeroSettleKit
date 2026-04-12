@@ -221,10 +221,26 @@ internal final class Backend: @unchecked Sendable {
             (ZeroSettle.shared.customerName, ZeroSettle.shared.customerEmail)
         }
         let body = InitiateCheckoutRequest(productId: productId, userId: userId, stripeCustomerId: stripeCustomerId, storekitSubscriptionEnd: iso8601End, storekitOriginalTransactionId: resolvedOriginalTxnId, checkoutMode: checkoutMode, customerName: custName, customerEmail: custEmail)
-        let response = try await wrapped {
-            try await httpClient.post(url, body: body, headers: authHeaders, responseType: CheckoutResponse.self)
+        do {
+            return try await httpClient.post(url, body: body, headers: authHeaders, responseType: CheckoutResponse.self)
+        } catch let error as HTTPError {
+            // Retry once on 409 with retry_after — server says a concurrent request
+            // (e.g. batch) is creating this PI right now.  Wait then retry; the
+            // server's dedup will return the completed transaction.
+            if case .httpError(statusCode: 409, body: let data) = error,
+               let data,
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let retryDelay = json["retry_after"] as? Double {
+                ZSLogger.info("[Backend] PI in-flight for \(productId), retrying in \(retryDelay)s", category: .checkout)
+                try await Task.sleep(nanoseconds: UInt64(retryDelay * 1_000_000_000))
+                return try await wrapped {
+                    try await httpClient.post(url, body: body, headers: authHeaders, responseType: CheckoutResponse.self)
+                }
+            }
+            throw Self.wrapError(error)
+        } catch {
+            throw Self.wrapError(error)
         }
-        return response
     }
 
     /// Initiate checkouts for multiple products in a single request.

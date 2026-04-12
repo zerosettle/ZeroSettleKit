@@ -58,9 +58,55 @@ internal enum WebKitWarmup {
 
 // MARK: - Checkout Preloader
 
-/// Manages off-screen WKWebView creation and preloading.
-/// Creates the WebView, loads the checkout URL, and waits for the
-/// JavaScript "ready" signal before resolving.
+/// Manages off-screen WKWebView creation and preloading for a single product.
+///
+/// ## Lifecycle & State Machine
+///
+/// A preloader progresses through these states:
+///
+/// ```
+/// Created ──▶ Loading ──▶ Ready ──▶ ButtonsReady ──▶ Presented
+///    │            │          │           │
+///    │            │          ▼           ▼
+///    │            │    ProcessDied   ProcessDied
+///    │            │     (isAlive     (isAlive
+///    │            │     = false)      = false)
+///    ▼            ▼
+///  reset()    cancelCurrentLoad()
+/// ```
+///
+/// **Created**: `webView == nil`, `isReady == false`, `buttonsReady == false`.
+///
+/// **Loading**: `loadAndWait()` in progress. A fresh WKWebView has been created
+/// and is loading the checkout URL off-screen. JS signals flow through the
+/// `messageRouter`.
+///
+/// **Ready**: The JS `ready` signal fired — Stripe's payment element is rendered
+/// and the DOM height has been measured. `isReady == true`, `isAlive == true`.
+///
+/// **ButtonsReady**: The JS `buttonsReady` signal fired — Apple Pay / card
+/// buttons are visually rendered. `buttonsReady == true`. The checkout sheet
+/// must NOT be presented until this state is reached.
+///
+/// **Presented**: The WebView has been transferred to the checkout sheet.
+/// The `messageRouter.onMessage` closure is redirected to the sheet's
+/// coordinator so JS messages (contentHeight, complete, error) flow to
+/// the sheet instead of the preloader.
+///
+/// ## Flag Invalidation
+///
+/// All readiness flags (`isReady`, `buttonsReady`, `hasApplePay`) are reset:
+/// - On every `loadAndWait()` call (creating a fresh WebView)
+/// - On `reset()` (full cleanup after purchase or explicit reset)
+/// - On `handleProcessTermination()` (WebContent process crashed)
+///
+/// This prevents stale flags from a dead WebView causing premature presentation.
+///
+/// ## Thread Safety
+///
+/// All properties and methods are `@MainActor`. Continuations are resumed
+/// on the main queue. The `loadToken` prevents stale closures from a previous
+/// load cycle from interfering with the current one.
 @MainActor
 internal final class CheckoutPreloader: ObservableObject {
     @Published var webView: WKWebView?
@@ -71,7 +117,8 @@ internal final class CheckoutPreloader: ObservableObject {
     var hasApplePay = false
 
     /// Returns true only if the WebView is loaded AND its content process is alive.
-    /// A terminated WebContent process sets `webView.url` to nil.
+    /// A terminated WebContent process sets `webView.url` to nil, so this becomes
+    /// false even though `isReady` may still be true.
     var isAlive: Bool {
         guard let wv = webView, isReady else { return false }
         return wv.url != nil
@@ -89,18 +136,28 @@ internal final class CheckoutPreloader: ObservableObject {
 
     @MainActor
     func loadAndWait(url: URL) async {
+        let start = CFAbsoluteTimeGetCurrent()
+        let shortURL = url.absoluteString.prefix(60)
+
         // Reuse the existing WebView if it already loaded this URL
         if let wv = webView, isReady, loadedURL == url {
             if wv.url == nil {
-                // Content process was terminated while orphaned — need full reload
+                ZSLogger.info("[Preloader] loadAndWait: existing WebView url=nil (process died) — resetting. product=\(shortURL)", category: .checkout)
                 reset()
             } else {
+                ZSLogger.info("[Preloader] loadAndWait: reusing existing WebView (isReady=true, url valid). product=\(shortURL)", category: .checkout)
                 return
             }
         }
 
-        // Cancel any in-flight load by resuming its continuation
+        ZSLogger.info("[Preloader] loadAndWait: creating fresh WebView. product=\(shortURL) hadExisting=\(webView != nil) wasReady=\(isReady)", category: .checkout)
+
+        // Cancel any in-flight load and reset readiness flags so they
+        // reflect the NEW WebView, not the old (possibly dead) one.
         cancelCurrentLoad()
+        isReady = false
+        buttonsReady = false
+        hasApplePay = false
 
         loadToken &+= 1
         let myToken = loadToken
@@ -110,8 +167,6 @@ internal final class CheckoutPreloader: ObservableObject {
         config.allowsInlineMediaPlayback = true
         config.userContentController.add(messageRouter, name: "checkoutComplete")
 
-        // Install height observer + button detection at document end — runs automatically when page loads.
-        // This is more reliable than evaluateJavaScript after page load.
         let heightScript = WKUserScript(
             source: setupMeasureJS + "\n" + heightObserverJS + "\n" + buttonReadyJS,
             injectionTime: .atDocumentEnd,
@@ -126,7 +181,6 @@ internal final class CheckoutPreloader: ObservableObject {
         wv.backgroundColor = .clear
         wv.scrollView.backgroundColor = .clear
 
-        // Set up process crash detection
         let navDelegate = PreloaderNavigationDelegate()
         navDelegate.preloader = self
         wv.navigationDelegate = navDelegate
@@ -134,13 +188,13 @@ internal final class CheckoutPreloader: ObservableObject {
 
         self.webView = wv
 
-        // Add to PoolPreloaderHost immediately so the WebView is in a visible UIWindow.
-        // Without this, WebKit treats the page as hidden (document.visibilityState='hidden'),
-        // and Stripe's Payment Element never fires "ready" — causing an 8s timeout.
         CheckoutPreloaderPool.shared.refreshWebViews()
+        let inWindow = wv.window != nil
+        ZSLogger.info("[Preloader] loadAndWait: WebView created, addedToPool, inWindow=\(inWindow), pid=\(ProcessInfo.processInfo.processIdentifier). product=\(shortURL)", category: .checkout)
 
         let themedURL = applyThemeParam(to: url)
         wv.load(URLRequest(url: themedURL))
+        ZSLogger.info("[Preloader] loadAndWait: URL load started. product=\(shortURL)", category: .checkout)
 
         await withTaskCancellationHandler {
             await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
@@ -154,36 +208,50 @@ internal final class CheckoutPreloader: ObservableObject {
                           let action = body["action"] as? String else { return }
 
                     if action == "buttonsReady" {
+                        ZSLogger.info("[Preloader] JS signal: buttonsReady received at \(Int((CFAbsoluteTimeGetCurrent() - start) * 1000))ms. product=\(shortURL)", category: .checkout)
                         self.buttonsReady = true
                         self.buttonsReadyContinuation?.resume()
                         self.buttonsReadyContinuation = nil
                         return
                     }
 
-                    guard action == "ready" else { return }
+                    if action == "apple_pay_detected" {
+                        ZSLogger.info("[Preloader] JS signal: apple_pay_detected at \(Int((CFAbsoluteTimeGetCurrent() - start) * 1000))ms. product=\(shortURL)", category: .checkout)
+                        self.hasApplePay = true
+                        return
+                    }
 
-                    self.webView?.evaluateJavaScript(setupMeasureJS + "\n" + measureContentJS) { [weak self] result, _ in
+                    guard action == "ready" else {
+                        ZSLogger.info("[Preloader] JS signal: action=\(action) at \(Int((CFAbsoluteTimeGetCurrent() - start) * 1000))ms. product=\(shortURL)", category: .checkout)
+                        return
+                    }
+
+                    ZSLogger.info("[Preloader] JS signal: ready received at \(Int((CFAbsoluteTimeGetCurrent() - start) * 1000))ms — measuring height. product=\(shortURL)", category: .checkout)
+
+                    self.webView?.evaluateJavaScript(setupMeasureJS + "\n" + measureContentJS) { [weak self] result, error in
                         guard let self = self, self.loadToken == myToken else { return }
                         DispatchQueue.main.async {
                             if let height = parseJSHeight(result) {
                                 self.measuredContentHeight = height
+                                ZSLogger.info("[Preloader] measured height=\(height) at \(Int((CFAbsoluteTimeGetCurrent() - start) * 1000))ms. product=\(shortURL)", category: .checkout)
+                            } else {
+                                ZSLogger.error("[Preloader] height measurement failed: result=\(String(describing: result)) error=\(String(describing: error)). product=\(shortURL)", category: .checkout)
                             }
                             self.isReady = true
                             self.loadedURL = url
                             self.continuation?.resume()
                             self.continuation = nil
+                            ZSLogger.info("[Preloader] loadAndWait COMPLETE: isReady=true at \(Int((CFAbsoluteTimeGetCurrent() - start) * 1000))ms. product=\(shortURL)", category: .checkout)
                         }
                     }
                 }
 
-                // Fallback: if the JS "ready" signal never fires (e.g. page error),
-                // show the sheet anyway after 8 seconds rather than hanging forever.
                 Task { [weak self] in
                     try? await Task.sleep(nanoseconds: 8_000_000_000)
                     guard let self, self.loadToken == myToken, self.continuation != nil else { return }
                     let inWindow = self.webView?.window != nil
-                    ZSLogger.error("Preloader timed out waiting for JS ready signal — presenting sheet anyway (inWindow=\(inWindow))", category: .checkout)
-                    // Try to measure even on timeout — content may be partially rendered
+                    let urlAlive = self.webView?.url != nil
+                    ZSLogger.error("[Preloader] TIMEOUT 8s — JS ready never fired. inWindow=\(inWindow) urlAlive=\(urlAlive) buttonsReady=\(self.buttonsReady). product=\(shortURL)", category: .checkout)
                     guard let wv = self.webView else {
                         self.isReady = true
                         self.loadedURL = url
@@ -206,41 +274,48 @@ internal final class CheckoutPreloader: ObservableObject {
                 }
             }
         } onCancel: { [weak self] in
+            ZSLogger.info("[Preloader] loadAndWait CANCELLED. product=\(shortURL)", category: .checkout)
             Task { @MainActor [weak self] in
                 guard let self, self.loadToken == myToken else { return }
                 self.cancelCurrentLoad()
             }
         }
-        // Pause the height observer while the WebView sits idle in the pool.
-        // It will be resumed when the sheet presents (PaymentWebView.updateUIView).
+        let elapsed = Int((CFAbsoluteTimeGetCurrent() - start) * 1000)
+        ZSLogger.info("[Preloader] loadAndWait returned after \(elapsed)ms. isReady=\(isReady) buttonsReady=\(buttonsReady) hasApplePay=\(hasApplePay) height=\(measuredContentHeight). product=\(shortURL)", category: .checkout)
         webView?.evaluateJavaScript("window.__zsStopObserver && window.__zsStopObserver()", completionHandler: nil)
     }
 
     /// Waits until the `buttonsReady` signal fires from JavaScript, confirming
     /// payment buttons are visually rendered. Returns immediately if already ready.
-    /// Includes a 5-second safety timeout to prevent indefinite hangs.
+    ///
+    /// Returns `true` if buttons loaded, `false` if the 5-second timeout elapsed.
     @MainActor
-    func waitForButtonsReady() async {
-        if buttonsReady { return }
+    @discardableResult
+    func waitForButtonsReady() async -> Bool {
+        if buttonsReady { return true }
 
         let myToken = loadToken
+        var timedOut = false
 
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             self.buttonsReadyContinuation = cont
 
-            // Safety timeout: present sheet after 5s even if buttonsReady never fires
+            // Timeout: resume so the caller can handle the failure.
             Task { [weak self] in
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
                 guard let self, self.loadToken == myToken, self.buttonsReadyContinuation != nil else { return }
-                ZSLogger.info("[CheckoutPreloader] buttonsReady safety timeout — proceeding", category: .checkout)
-                self.buttonsReady = true
+                ZSLogger.info("[CheckoutPreloader] buttonsReady timeout — payment buttons never loaded", category: .checkout)
+                timedOut = true
                 self.buttonsReadyContinuation?.resume()
                 self.buttonsReadyContinuation = nil
             }
         }
+        return !timedOut
     }
 
-    /// Resume and nil the current continuation (if any), clear WebView state.
+    /// Low-level cleanup: resumes any waiting continuations and clears the
+    /// message handler. Does NOT touch the WebView or readiness flags —
+    /// use `reset()` for full teardown.
     private func cancelCurrentLoad() {
         continuation?.resume()
         continuation = nil
@@ -249,7 +324,13 @@ internal final class CheckoutPreloader: ObservableObject {
         messageRouter.onMessage = nil
     }
 
+    /// Full teardown: destroys the WebView and resets all readiness flags.
+    /// Called after a successful purchase (to force a fresh PI on next open)
+    /// or when explicitly discarding a dead WebView.
     func reset() {
+        let url = loadedURL?.absoluteString.prefix(60) ?? "none"
+        let urlAlive = webView?.url != nil
+        ZSLogger.info("[Preloader] reset() called. wasReady=\(isReady) hadWebView=\(webView != nil) urlWasAlive=\(urlAlive) product=\(url)", category: .checkout)
         cancelCurrentLoad()
         webView?.navigationDelegate = nil
         webView = nil
@@ -260,15 +341,18 @@ internal final class CheckoutPreloader: ObservableObject {
         measuredContentHeight = 0
     }
 
-    /// Called by WKWebView when its content process terminates.
-    /// Immediately marks the preloader as not ready so the fast path
-    /// won't present a dead WebView.
+    /// Called by `PreloaderNavigationDelegate` when the WebContent process
+    /// crashes. Marks the preloader as not ready so `isAlive` returns false
+    /// and `ensureReady()` will create a fresh WebView on next use.
+    ///
+    /// Does NOT nil the WebView — keeps it for debugging. The `isAlive` check
+    /// (`wv.url != nil`) already returns false for a terminated process.
     func handleProcessTermination() {
-        ZSLogger.error("[Preloader] WebContent process terminated for \(loadedURL?.absoluteString.prefix(60) ?? "unknown")", category: .checkout)
+        let url = loadedURL?.absoluteString.prefix(60) ?? "unknown"
+        let webViewURLNow = webView?.url?.absoluteString.prefix(40) ?? "nil"
+        ZSLogger.error("[Preloader] PROCESS TERMINATED. wasReady=\(isReady) buttonsReady=\(buttonsReady) webView.url=\(webViewURLNow) product=\(url)", category: .checkout)
         isReady = false
         buttonsReady = false
-        // Don't nil the webView — WKWebView can reload after process termination.
-        // The next loadAndWait call will detect url==nil and reset fully.
     }
 }
 
@@ -279,6 +363,7 @@ internal class PreloaderNavigationDelegate: NSObject, WKNavigationDelegate {
     weak var preloader: CheckoutPreloader?
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        ZSLogger.error("[PreloaderDelegate] webViewWebContentProcessDidTerminate called. webView.url=\(webView.url?.absoluteString.prefix(40) ?? "nil")", category: .checkout)
         Task { @MainActor [weak preloader] in
             preloader?.handleProcessTermination()
         }
@@ -365,20 +450,66 @@ internal final class CheckoutPreloaderPool: ObservableObject {
     }
 
     /// Reset and remove the preloader for a specific product (e.g., after purchase).
+    /// Logged for lifecycle tracing.
     func reset(for productId: String) {
+        ZSLogger.info("[Pool] reset(for: \(productId)) — preloader existed=\(preloaders[productId] != nil)", category: .checkout)
         preloaders[productId]?.reset()
         preloaders.removeValue(forKey: productId)
         refreshWebViews()
     }
 
     func resetAll() {
+        ZSLogger.info("[Pool] resetAll() — clearing \(preloaders.count) preloader(s)", category: .checkout)
         preloaders.values.forEach { $0.reset() }
         preloaders.removeAll()
         refreshWebViews()
     }
 
     func refreshWebViews() {
+        let count = preloaders.values.compactMap(\.webView).count
         webViews = preloaders.values.compactMap(\.webView)
+        ZSLogger.info("[Pool] refreshWebViews: \(count) live WebView(s) in pool", category: .checkout)
+    }
+
+    // MARK: - WebView Readiness
+
+    /// Ensures the WebView for a product is loaded with payment buttons visible.
+    ///
+    /// This is the **single entry point** for getting a WebView ready to present.
+    /// It encapsulates the full readiness sequence:
+    ///
+    /// 1. If the WebView process is dead (`!isAlive`), reset and create a fresh one
+    /// 2. Load the checkout URL and wait for the Stripe `ready` signal
+    /// 3. Wait for the `buttonsReady` signal (Apple Pay / card buttons rendered)
+    ///
+    /// All three checkout modifier variants (`CheckoutSheetModifier`,
+    /// `CheckoutSheetItemModifier`, `UIKitSheetBridge`) must call this instead
+    /// of manually checking preloader flags. This prevents divergence where one
+    /// modifier gets a fix but others don't.
+    ///
+    /// - Parameters:
+    ///   - productId: Product identifier to look up the preloader.
+    ///   - url: Checkout URL to load if the WebView needs (re)loading.
+    /// - Returns: `true` if the WebView is ready to present (buttons visible),
+    ///   `false` if buttonsReady timed out (5s) or the task was cancelled.
+    @MainActor
+    func ensureReady(for productId: String, url: URL) async -> Bool {
+        let preloader = preloader(for: productId)
+
+        if !preloader.isAlive {
+            if preloader.isReady {
+                // Process died after ready signal — discard the dead WebView.
+                ZSLogger.info("[Pool] ensureReady: WebView was ready but process died — resetting \(productId)", category: .checkout)
+                preloader.reset()
+            }
+            await preloader.loadAndWait(url: url)
+        }
+
+        if !preloader.buttonsReady {
+            return await preloader.waitForButtonsReady()
+        }
+
+        return true
     }
 
     // MARK: - Debug: Active Modifier Tracking

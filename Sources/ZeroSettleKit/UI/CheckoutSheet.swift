@@ -489,7 +489,10 @@ public struct CheckoutSheet<Header: View>: View {
         self.initialContentHeight = trustworthy ? measured : 0
         self._webContentHeight = State(initialValue: trustworthy ? measured : 0)
 
-        self._isLoading = State(initialValue: true)
+        // Preloaded WebView is already fully rendered (buttons visible) —
+        // start with loading overlay hidden. If the WebView re-navigates
+        // (rare, process restart), buttonsReady will fire from JS.
+        self._isLoading = State(initialValue: false)
 
         // Start the settling window to protect against the Stripe iframe feedback
         // loop (see file header §2). For trusted measurements, start immediately
@@ -760,11 +763,8 @@ extension CheckoutSheet {
                 // Expire a stale bypass window.
                 if settleBypassExpiry != nil { settleBypassExpiry = nil }
             }
-            if height > 0 && isLoading {
-                withAnimation(.easeOut(duration: 0.15)) {
-                    isLoading = false
-                }
-            }
+            // Loading overlay is cleared by buttonsReady (JS signal), not
+            // contentHeight. The buttonsReady timeout (5s) is the safety net.
 
             // Start the settling window on the first accepted height
             // (non-preloaded path; preloaded views set this in init).
@@ -784,6 +784,7 @@ extension CheckoutSheet {
             onComplete(.failure(ZeroSettleError.cancelled))
 
         case .error(let message):
+            ZSLogger.error("[CheckoutSheet] handleWebViewAction: ERROR — message=\"\(message)\" webView.url=\(String(describing: preloadedWebView?.url?.absoluteString.prefix(60)))", category: .checkout)
             dismiss()
             let lowered = message.lowercased()
             if lowered.contains("cancel") {
@@ -800,6 +801,7 @@ extension CheckoutSheet {
             } else {
                 kind = .checkoutError
             }
+            ZSLogger.error("[CheckoutSheet] handleWebViewAction: firing onComplete(.failure) kind=\(kind) message=\"\(message)\"", category: .checkout)
             onComplete(.failure(PaymentSheetError.paymentFailed(PaymentFailureDetail(kind: kind, message: message))))
         }
     }
@@ -852,6 +854,10 @@ private struct PaymentWebView: UIViewRepresentable {
     func makeUIView(context: Context) -> WKWebView {
         // Reuse preloaded WebView if available
         if let preloaded = preloadedWebView {
+            let wvURL = preloaded.url?.absoluteString.prefix(60) ?? "nil"
+            let inWindow = preloaded.window != nil
+            ZSLogger.info("[PaymentWebView] makeUIView: reusing preloaded WebView. url=\(wvURL) inWindow=\(inWindow) superview=\(preloaded.superview != nil)", category: .checkout)
+
             preloaded.removeFromSuperview()
             preloaded.navigationDelegate = context.coordinator
             context.coordinator.webView = preloaded
@@ -861,12 +867,10 @@ private struct PaymentWebView: UIViewRepresentable {
                 coordinator.userContentController(WKUserContentController(), didReceive: message)
             }
 
-            // Height observer was installed as a WKUserScript at document end,
-            // so it's already running and polling every 200ms. It will route
-            // contentHeight messages through the messageRouter → coordinator.
-
             return preloaded
         }
+
+        ZSLogger.info("[PaymentWebView] makeUIView: creating fresh WebView (no preloaded)", category: .checkout)
 
         // Standard path: create a new WebView
         let configuration = WKWebViewConfiguration()
@@ -964,15 +968,12 @@ private struct PaymentWebView: UIViewRepresentable {
                   let body = message.body as? [String: Any] else { return }
 
             let action = body["action"] as? String ?? ""
+            ZSLogger.info("[CheckoutSheet] JS message: action=\(action) body=\(body.keys.sorted().joined(separator: ",")) hasCompleted=\(hasCompleted)", category: .checkout)
 
             switch action {
             case "ready":
+                ZSLogger.info("[CheckoutSheet] JS: ready received — waiting for buttonsReady", category: .checkout)
                 onAction(.ready)
-                // Height observer was installed as a WKUserScript at document end,
-                // so it's already running by the time "ready" fires.
-                DispatchQueue.main.async {
-                    self.isLoading = false
-                }
 
             case "contentHeight":
                 if let height = parseJSHeight(body["height"]) {
@@ -982,33 +983,60 @@ private struct PaymentWebView: UIViewRepresentable {
             case "expandSheet":
                 onAction(.expandSheet)
             case "collapseSheet":
-                break // Height handled by ResizeObserver → contentHeight
+                break
+            case "buttonsReady":
+                ZSLogger.info("[CheckoutSheet] JS: buttonsReady — clearing loading overlay", category: .checkout)
+                DispatchQueue.main.async {
+                    self.isLoading = false
+                }
 
             case "complete":
-                guard !hasCompleted else { return }
+                guard !hasCompleted else {
+                    ZSLogger.info("[CheckoutSheet] JS: complete — IGNORED (already completed)", category: .checkout)
+                    return
+                }
                 hasCompleted = true
                 if let success = body["success"] as? Bool, success,
                    let transactionId = body["transaction_id"] as? String {
+                    ZSLogger.info("[CheckoutSheet] JS: complete SUCCESS txn=\(transactionId)", category: .checkout)
                     onAction(.complete(transactionId: transactionId))
                 } else {
                     let errorMessage = body["error"] as? String ?? "Payment failed"
+                    ZSLogger.error("[CheckoutSheet] JS: complete FAILED — error=\(errorMessage) body=\(body)", category: .checkout)
                     onAction(.error(errorMessage))
                 }
 
             case "error":
                 let errorMessage = body["message"] as? String ?? "Checkout error"
+                ZSLogger.error("[CheckoutSheet] JS: error — message=\(errorMessage) body=\(body)", category: .checkout)
                 onAction(.error(errorMessage))
 
             default:
-                guard !hasCompleted else { return }
+                // Legacy checkout pages may send completion without a recognized
+                // action name. Only treat the message as a terminal event if it
+                // contains checkout-result fields (success, cancelled, error).
+                // Truly unrecognized actions are logged and ignored — this
+                // prevents new JS signals from being misinterpreted as failures.
+                let hasTerminalField = body["success"] != nil || body["cancelled"] != nil || body["error"] != nil
+                guard hasTerminalField else {
+                    ZSLogger.info("[CheckoutSheet] JS: unrecognized action=\(action) — ignoring (no terminal fields)", category: .checkout)
+                    return
+                }
+                guard !hasCompleted else {
+                    ZSLogger.info("[CheckoutSheet] JS: default action=\(action) — IGNORED (already completed)", category: .checkout)
+                    return
+                }
                 hasCompleted = true
                 if let success = body["success"] as? Bool, success,
                    let transactionId = body["transaction_id"] as? String {
+                    ZSLogger.info("[CheckoutSheet] JS: default complete SUCCESS txn=\(transactionId)", category: .checkout)
                     onAction(.complete(transactionId: transactionId))
                 } else if let cancelled = body["cancelled"] as? Bool, cancelled {
+                    ZSLogger.info("[CheckoutSheet] JS: default cancelled", category: .checkout)
                     onAction(.cancelled)
                 } else {
                     let errorMessage = body["error"] as? String ?? "Payment failed"
+                    ZSLogger.error("[CheckoutSheet] JS: default FAILED — error=\(errorMessage) body=\(body)", category: .checkout)
                     onAction(.error(errorMessage))
                 }
             }
@@ -1017,12 +1045,18 @@ private struct PaymentWebView: UIViewRepresentable {
         // MARK: - Navigation Delegate
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            ZSLogger.info("[CheckoutSheet] Coordinator: webView didFinish navigation. url=\(webView.url?.absoluteString.prefix(60) ?? "nil")", category: .checkout)
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            ZSLogger.error("[CheckoutSheet] Coordinator: webView didFail navigation. error=\(error.localizedDescription) url=\(webView.url?.absoluteString.prefix(60) ?? "nil")", category: .checkout)
             DispatchQueue.main.async {
                 self.isLoading = false
             }
+        }
+
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            ZSLogger.error("[CheckoutSheet] Coordinator: PROCESS TERMINATED while sheet is visible! url=\(webView.url?.absoluteString.prefix(60) ?? "nil")", category: .checkout)
         }
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {

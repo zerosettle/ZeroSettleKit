@@ -66,11 +66,13 @@ extension CheckoutSheet where Header == EmptyView {
         userId: String? = nil
     ) async -> (checkoutURL: URL, transactionId: String)? {
         if let product = ZeroSettle.shared.product(for: productId), product.webPrice == nil {
+            ZSLogger.info("[Checkout] preload(\(productId)): no webPrice — skipping", category: .checkout)
             return nil
         }
 
         guard let config = ZeroSettle.shared.currentConfig,
               let baseURL = ZeroSettle.shared.effectiveBaseURL else {
+            ZSLogger.error("[Checkout] preload(\(productId)): no config/baseURL", category: .checkout)
             return nil
         }
 
@@ -87,6 +89,7 @@ extension CheckoutSheet where Header == EmptyView {
         }
 
         guard let response, let url = URL(string: response.checkoutUrl) else {
+            ZSLogger.error("[Checkout] preload(\(productId)): fetchOrJoin returned nil or bad URL", category: .checkout)
             return nil
         }
 

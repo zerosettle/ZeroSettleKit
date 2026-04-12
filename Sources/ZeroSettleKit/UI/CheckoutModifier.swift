@@ -281,10 +281,24 @@ internal struct CheckoutSheetModifier<Header: View>: ViewModifier {
             }
     }
 
+    /// Prepares and presents the checkout sheet.
+    ///
+    /// Flow: bootstrap wait → checkout type guard → fetch PI → ensureReady → present.
+    /// See `CheckoutPreloaderPool.ensureReady(for:url:)` for WebView readiness logic.
     private func preloadAll() async {
+        // ── Gate: wait for bootstrap so PI requests don't race with warmUpAll() ──
+        if !ZeroSettle.shared.isBootstrapped {
+            let deadline = CFAbsoluteTimeGetCurrent() + 10
+            while !ZeroSettle.shared.isBootstrapped, CFAbsoluteTimeGetCurrent() < deadline {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled else { return }
+            }
+            guard ZeroSettle.shared.isBootstrapped else { return }
+        }
+
         let checkoutType = ZeroSettle.shared.checkoutType
 
-        // Safari / SafariVC — delegate to purchase() which opens the browser
+        // ── Safari / SafariVC — delegate to purchase() which opens the browser ──
         guard checkoutType == .webView || checkoutType == .nativePay else {
             do {
                 let transaction = try await ZeroSettle.shared.purchase(
@@ -298,12 +312,11 @@ internal struct CheckoutSheetModifier<Header: View>: ViewModifier {
             return
         }
 
-        // Webview path — preload PaymentIntent + WebView, then present sheet
+        // ── Fetch PaymentIntent (cached or fresh) ──
         guard let result = await CheckoutSheet<EmptyView>.preload(
             productId: product.id, userId: userId
         ) else {
             guard !Task.isCancelled else { return }
-            // Preload failed — don't present an empty sheet.
             onComplete(.failure(ZeroSettleError.checkoutFailed(reason: .other("Failed to create payment"))))
             isPresented = false
             return
@@ -313,15 +326,15 @@ internal struct CheckoutSheetModifier<Header: View>: ViewModifier {
         preloadedURL = result.checkoutURL
         preloadedTransactionId = result.transactionId
 
-        // Use shared pool — skip if warmUpAll() already rendered this product's WebView
-        let preloader = pool.preloader(for: product.id)
-        if !preloader.isReady {
-            await preloader.loadAndWait(url: result.checkoutURL)
-        }
-
-        // Wait for payment buttons to be visually rendered before presenting
-        if !preloader.buttonsReady {
-            await preloader.waitForButtonsReady()
+        // ── Ensure WebView is loaded with payment buttons visible ──
+        let ready = await pool.ensureReady(for: product.id, url: result.checkoutURL)
+        if !ready {
+            guard !Task.isCancelled else { return }
+            onComplete(.failure(ZeroSettleError.checkoutFailed(
+                reason: .other("Checkout timed out — payment buttons failed to load. Please check your internet connection and try again.")
+            )))
+            isPresented = false
+            return
         }
 
         guard !Task.isCancelled else { return }
@@ -402,6 +415,10 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
             .task(id: item?.id) {
                 if let product = item {
                     presentedProduct = product
+                    // Clear stale preloaded state from a different product.
+                    // Without this, the fast path serves the wrong product's checkout.
+                    preloadedURL = nil
+                    preloadedTransactionId = nil
                     await preloadAll(product: product)
                 }
             }
@@ -475,15 +492,38 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
             }
     }
 
+    /// Prepares and presents the checkout sheet for a specific product.
+    ///
+    /// Flow: bootstrap wait → checkout type guard → fast path → fetch PI →
+    /// `pool.ensureReady()` → present.
+    ///
+    /// The fast path skips all async work when the previous checkout's PI and
+    /// WebView are still cached and alive (e.g., user dismissed without purchasing).
     private func preloadAll(product: ZSProduct) async {
         let start = CFAbsoluteTimeGetCurrent()
-        let checkoutType = ZeroSettle.shared.checkoutType
-        let jurisdiction = ZeroSettle.shared.detectedJurisdiction
-        let bootstrapped = ZeroSettle.shared.isBootstrapped
-        let preloader = pool.preloader(for: product.id)
-        ZSLogger.info("[Checkout] preloadAll START: product=\(product.id), checkoutType=\(checkoutType.rawValue), jurisdiction=\(jurisdiction.map { String(describing: $0) } ?? "nil"), isBootstrapped=\(bootstrapped), hasURL=\(preloadedURL != nil), hasTxnId=\(preloadedTransactionId != nil), preloaderReady=\(preloader.isReady), preloaderAlive=\(preloader.isAlive)", category: .checkout)
 
-        // Safari / SafariVC — delegate to purchase() which opens the browser
+        // ── Gate: wait for bootstrap so PI requests don't race with warmUpAll() ──
+        if !ZeroSettle.shared.isBootstrapped {
+            ZSLogger.info("[Checkout] preloadAll: waiting for bootstrap before preloading \(product.id)", category: .checkout)
+            let deadline = CFAbsoluteTimeGetCurrent() + 10
+            while !ZeroSettle.shared.isBootstrapped, CFAbsoluteTimeGetCurrent() < deadline {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled else {
+                    ZSLogger.info("[Checkout] preloadAll: cancelled while waiting for bootstrap", category: .checkout)
+                    return
+                }
+            }
+            guard ZeroSettle.shared.isBootstrapped else {
+                ZSLogger.error("[Checkout] preloadAll: bootstrap timed out for \(product.id)", category: .checkout)
+                return
+            }
+        }
+
+        let checkoutType = ZeroSettle.shared.checkoutType
+        let preloader = pool.preloader(for: product.id)
+        ZSLogger.info("[Checkout] preloadAll START: product=\(product.id), checkoutType=\(checkoutType.rawValue), isBootstrapped=true, hasURL=\(preloadedURL != nil), hasTxnId=\(preloadedTransactionId != nil), preloaderAlive=\(preloader.isAlive)", category: .checkout)
+
+        // ── Safari / SafariVC — delegate to purchase() which opens the browser ──
         guard checkoutType == .webView || checkoutType == .nativePay else {
             ZSLogger.info("[Checkout] preloadAll: routing to purchase() for \(checkoutType.rawValue)", category: .checkout)
             do {
@@ -499,19 +539,17 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
             return
         }
 
-        // Fast path: URL, transaction ID, and WebView all still warm from a
-        // previous presentation (e.g., user dismissed without purchasing).
-        // Present immediately without any async hops.
-        // Requires bootstrap to be complete — pre-bootstrap PIs may be invalid.
+        // ── Fast path: PI + WebView still warm from previous presentation ──
+        // Requires bootstrap complete (pre-bootstrap PIs may be invalid) and
+        // buttonsReady true (preloader.isAlive alone doesn't guarantee buttons).
         if preloadedURL != nil, preloadedTransactionId != nil,
-           preloader.isAlive,
-           bootstrapped {
+           preloader.isAlive, preloader.buttonsReady {
             ZSLogger.info("[Checkout] preloadAll: FAST PATH — presenting in \(Int((CFAbsoluteTimeGetCurrent() - start) * 1000))ms", category: .checkout)
             showSheet = true
             return
         }
 
-        // Fetch PI from cache (or server if cache miss), load WebView if needed.
+        // ── Fetch PaymentIntent (cached or fresh) ──
         let preloadStart = CFAbsoluteTimeGetCurrent()
         guard let result = await CheckoutSheet<EmptyView>.preload(
             productId: product.id, userId: userId
@@ -534,28 +572,23 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
         preloadedURL = result.checkoutURL
         preloadedTransactionId = result.transactionId
 
-        if !preloader.isAlive {
-            if preloader.isReady {
-                ZSLogger.info("[Checkout] preloadAll: WebView was ready but process died — resetting", category: .checkout)
-                preloader.reset()
-            }
-            let wvStart = CFAbsoluteTimeGetCurrent()
-            await preloader.loadAndWait(url: result.checkoutURL)
-            ZSLogger.info("[Checkout] preloadAll: WebView loaded in \(Int((CFAbsoluteTimeGetCurrent() - wvStart) * 1000))ms", category: .checkout)
-        } else {
-            ZSLogger.info("[Checkout] preloadAll: WebView alive, skipping loadAndWait", category: .checkout)
-        }
+        // ── Ensure WebView is loaded with payment buttons visible ──
+        let wvStart = CFAbsoluteTimeGetCurrent()
+        let ready = await pool.ensureReady(for: product.id, url: result.checkoutURL)
+        ZSLogger.info("[Checkout] preloadAll: ensureReady=\(ready) in \(Int((CFAbsoluteTimeGetCurrent() - wvStart) * 1000))ms", category: .checkout)
 
-        if !preloader.buttonsReady {
-            let btnStart = CFAbsoluteTimeGetCurrent()
-            await preloader.waitForButtonsReady()
-            ZSLogger.info("[Checkout] preloadAll: buttons ready in \(Int((CFAbsoluteTimeGetCurrent() - btnStart) * 1000))ms", category: .checkout)
-        } else {
-            ZSLogger.info("[Checkout] preloadAll: buttons already ready, skipping wait", category: .checkout)
+        if !ready {
+            guard !Task.isCancelled else { return }
+            ZSLogger.error("[Checkout] preloadAll: payment buttons never loaded for \(product.id)", category: .checkout)
+            onComplete(.failure(ZeroSettleError.checkoutFailed(
+                reason: .other("Checkout timed out — payment buttons failed to load. Please check your internet connection and try again.")
+            )))
+            item = nil
+            return
         }
 
         guard !Task.isCancelled else {
-            ZSLogger.info("[Checkout] preloadAll: cancelled after WebView/buttons ready", category: .checkout)
+            ZSLogger.info("[Checkout] preloadAll: cancelled after ensureReady", category: .checkout)
             return
         }
         ZSLogger.info("[Checkout] preloadAll DONE: presenting sheet, total \(Int((CFAbsoluteTimeGetCurrent() - start) * 1000))ms", category: .checkout)
@@ -646,10 +679,24 @@ internal struct UIKitSheetBridge<SheetHeader: View>: View {
             }
     }
 
+    /// Prepares and presents the checkout sheet via UIKit window overlay.
+    ///
+    /// Flow: bootstrap wait → checkout type guard → fetch PI → ensureReady → present.
+    /// See `CheckoutPreloaderPool.ensureReady(for:url:)` for WebView readiness logic.
     private func preloadAll() async {
+        // ── Gate: wait for bootstrap so PI requests don't race with warmUpAll() ──
+        if !ZeroSettle.shared.isBootstrapped {
+            let deadline = CFAbsoluteTimeGetCurrent() + 10
+            while !ZeroSettle.shared.isBootstrapped, CFAbsoluteTimeGetCurrent() < deadline {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled else { return }
+            }
+            guard ZeroSettle.shared.isBootstrapped else { return }
+        }
+
         let checkoutType = ZeroSettle.shared.checkoutType
 
-        // Safari / SafariVC — delegate to purchase() which opens the browser
+        // ── Safari / SafariVC — delegate to purchase() which opens the browser ──
         guard checkoutType == .webView || checkoutType == .nativePay else {
             do {
                 let transaction = try await ZeroSettle.shared.purchase(
@@ -663,7 +710,7 @@ internal struct UIKitSheetBridge<SheetHeader: View>: View {
             return
         }
 
-        // Webview path — use shared pool for pre-rendered WebView
+        // ── Resolve checkout URL (caller-provided or fetched) ──
         let url: URL
         if let checkoutURL {
             url = checkoutURL
@@ -676,18 +723,21 @@ internal struct UIKitSheetBridge<SheetHeader: View>: View {
             preloadedURL = result.checkoutURL
             preloadedTransactionId = result.transactionId
         } else {
-            showSheet = true
+            guard !Task.isCancelled else { return }
+            onComplete(.failure(ZeroSettleError.checkoutFailed(reason: .other("Failed to create payment"))))
+            onDismissed()
             return
         }
 
-        let preloader = pool.preloader(for: product.id)
-        if !preloader.isReady {
-            await preloader.loadAndWait(url: url)
-        }
-
-        // Wait for payment buttons to be visually rendered before presenting
-        if !preloader.buttonsReady {
-            await preloader.waitForButtonsReady()
+        // ── Ensure WebView is loaded with payment buttons visible ──
+        let ready = await pool.ensureReady(for: product.id, url: url)
+        if !ready {
+            guard !Task.isCancelled else { return }
+            onComplete(.failure(ZeroSettleError.checkoutFailed(
+                reason: .other("Checkout timed out — payment buttons failed to load. Please check your internet connection and try again.")
+            )))
+            onDismissed()
+            return
         }
 
         guard CheckoutPresentationCoordinator.shared.acquire(for: product.id) else {
