@@ -293,6 +293,12 @@ public final class ZeroSettle: ObservableObject {
     /// Whether ``bootstrap(userId:)`` has completed.
     public private(set) var isBootstrapped: Bool = false
 
+    /// Original transaction IDs confirmed as owned by the current user during bootstrap.
+    /// Used to filter local StoreKit entitlements so transactions belonging to other
+    /// ZeroSettle accounts (on the same Apple ID) are excluded.
+    /// nil = no filter applied (backward compat / no sync ran yet).
+    private var ownedStoreKitTransactionIds: Set<String>?
+
     /// Cached cancel flow configuration from the backend.
     /// Populated during ``bootstrap(userId:)`` so it's immediately available
     /// for building custom cancel flow UI without an extra network call.
@@ -456,6 +462,7 @@ public final class ZeroSettle: ObservableObject {
         cancelFlowConfig = nil
         migrationManager = nil
         offerManager = nil
+        ownedStoreKitTransactionIds = nil
 
         // Cached checkout sessions (PaymentIntents for previous user)
         Task { await CheckoutResponseCache.shared.clearAll() }
@@ -635,6 +642,7 @@ public final class ZeroSettle: ObservableObject {
         cancelFlowConfig = nil
         migrationManager = nil
         offerManager = nil
+        ownedStoreKitTransactionIds = nil
         Task { await CheckoutResponseCache.shared.clearAll() }
 
         // Store customer info for subsequent checkout requests.
@@ -645,7 +653,7 @@ public final class ZeroSettle: ObservableObject {
         //    Entitlement records exist before we check migration eligibility.
         if let storeKitManager {
             storeKitManager.setUserId(userId)
-            await storeKitManager.syncCurrentTransactions(userId: userId)
+            ownedStoreKitTransactionIds = await storeKitManager.syncCurrentTransactions(userId: userId)
         }
 
         // 2. Fetch products, cancel flow config, and restore entitlements in parallel.
@@ -1136,7 +1144,18 @@ public final class ZeroSettle: ObservableObject {
 
         if let storeKitManager {
             let storeKitEntitlements = await storeKitManager.getCurrentEntitlements()
-            allEntitlements.append(contentsOf: storeKitEntitlements)
+            if let ownedIds = ownedStoreKitTransactionIds {
+                // Only include StoreKit entitlements the server confirmed as ours.
+                // Transactions belonging to other ZeroSettle accounts are excluded.
+                let filtered = storeKitEntitlements.filter { ent in
+                    guard let origId = ent.storekitOriginalTransactionId else { return true }
+                    return ownedIds.contains(origId)
+                }
+                allEntitlements.append(contentsOf: filtered)
+            } else {
+                // No sync ran (e.g., manual restoreEntitlements call) — include all.
+                allEntitlements.append(contentsOf: storeKitEntitlements)
+            }
         }
 
         do {
@@ -1714,8 +1733,17 @@ extension ZeroSettle: StoreKitUpdateDelegate {
     }
 
     func storeKitEntitlementsDidChange(_ storeKitEntitlements: [Entitlement]) {
-        // Merge: keep web entitlements, replace StoreKit entitlements
+        // Merge: keep web entitlements, replace StoreKit entitlements (filtered by ownership)
         let webEntitlements = self.entitlements.filter { $0.source == .webCheckout }
-        updateEntitlements(webEntitlements + storeKitEntitlements)
+        let filtered: [Entitlement]
+        if let ownedIds = ownedStoreKitTransactionIds {
+            filtered = storeKitEntitlements.filter { ent in
+                guard let origId = ent.storekitOriginalTransactionId else { return true }
+                return ownedIds.contains(origId)
+            }
+        } else {
+            filtered = storeKitEntitlements
+        }
+        updateEntitlements(webEntitlements + filtered)
     }
 }

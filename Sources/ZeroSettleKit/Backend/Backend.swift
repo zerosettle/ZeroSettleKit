@@ -362,13 +362,16 @@ internal final class Backend: @unchecked Sendable {
     // MARK: - StoreKit Transaction Sync
 
     /// Forward a StoreKit transaction's JWS representation for server-side verification.
-    func syncStoreKitTransaction(jwsRepresentation: String, userId: String) async throws {
+    /// Returns ownership info: `owned` is true if this transaction belongs to the current user.
+    func syncStoreKitTransaction(jwsRepresentation: String, userId: String) async throws -> SyncStoreKitTransactionResponse {
         let url = apiURL("iap/storekit-transactions/")
         let body = SyncStoreKitTransactionRequest(
             jwsRepresentation: jwsRepresentation,
             userId: userId
         )
-        try await wrapped { try await httpClient.postVoid(url, body: body, headers: authHeaders) }
+        return try await wrapped {
+            try await httpClient.post(url, body: body, headers: authHeaders, responseType: SyncStoreKitTransactionResponse.self)
+        }
     }
 
     // MARK: - Cancel Flow
@@ -753,6 +756,18 @@ internal struct BatchCheckoutResponse: Decodable {
 private struct SyncStoreKitTransactionRequest: Encodable {
     let jwsRepresentation: String
     let userId: String
+}
+
+struct SyncStoreKitTransactionResponse: Decodable {
+    let status: String
+    let owned: Bool?
+    let originalTransactionId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case status
+        case owned
+        case originalTransactionId = "original_transaction_id"
+    }
 }
 
 private struct MigrationConversionRequest: Encodable {

@@ -210,24 +210,35 @@ internal final class StoreKitManager {
 
     // MARK: - Transaction Sync
 
-    /// Sync all current StoreKit entitlements to the backend.
-    /// Ensures the backend has Identity and Entitlement records for the user's
-    /// active subscriptions before any migration eligibility checks.
-    /// Idempotent — the backend deduplicates on storekit_transaction_id.
-    func syncCurrentTransactions(userId: String) async {
+    /// Syncs all current StoreKit entitlements to the backend.
+    /// Returns the set of `original_transaction_id`s confirmed as owned by the current user.
+    func syncCurrentTransactions(userId: String) async -> Set<String> {
+        var ownedOriginalTransactionIds: Set<String> = []
+
         for await result in SKTransaction.currentEntitlements {
             guard case .verified(let transaction) = result else { continue }
             let jws = result.jwsRepresentation
             do {
-                try await backend.syncStoreKitTransaction(
+                let response = try await backend.syncStoreKitTransaction(
                     jwsRepresentation: jws,
                     userId: userId
                 )
-                ZSLogger.info("Synced current transaction \(transaction.id) for \(transaction.productID)", category: .entitlements)
+                // Default owned to true for backward compat with older backends
+                if response.owned != false, let origId = response.originalTransactionId {
+                    ownedOriginalTransactionIds.insert(origId)
+                }
+                ZSLogger.info("Synced current transaction \(transaction.id) for \(transaction.productID) (owned=\(response.owned ?? true))", category: .entitlements)
             } catch {
+                // On error, optimistically include — will be resolved on next sync
+                let origId = String(transaction.originalID)
+                if transaction.originalID != 0 {
+                    ownedOriginalTransactionIds.insert(origId)
+                }
                 ZSLogger.error("Failed to sync current transaction \(transaction.id): \(error)", category: .entitlements)
             }
         }
+
+        return ownedOriginalTransactionIds
     }
 
     // MARK: - Current Entitlements
@@ -331,10 +342,13 @@ internal final class StoreKitManager {
 
         // Forward JWS to ZeroSettle backend for server-side verification
         do {
-            try await backend.syncStoreKitTransaction(
+            let response = try await backend.syncStoreKitTransaction(
                 jwsRepresentation: jwsRepresentation,
                 userId: userId
             )
+            if response.owned == false {
+                ZSLogger.error("Server returned owned=false for a new purchase — unexpected. product=\(transaction.productID)", category: .entitlements)
+            }
 
             // Sync succeeded — dequeue any previous retry entry, then finish
             await syncQueue.dequeue(transaction.id)
