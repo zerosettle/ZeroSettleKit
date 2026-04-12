@@ -466,9 +466,8 @@ internal final class CheckoutPreloaderPool: ObservableObject {
     }
 
     func refreshWebViews() {
-        let count = preloaders.values.compactMap(\.webView).count
         webViews = preloaders.values.compactMap(\.webView)
-        ZSLogger.info("[Pool] refreshWebViews: \(count) live WebView(s) in pool", category: .checkout)
+        ZSLogger.info("[Pool] refreshWebViews: \(webViews.count) live WebView(s) in pool", category: .checkout)
     }
 
     // MARK: - WebView Readiness

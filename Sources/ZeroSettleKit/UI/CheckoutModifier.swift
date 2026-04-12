@@ -26,6 +26,22 @@ internal func activeWindowScene() -> UIWindowScene? {
 
 // MARK: - Shared Success Handler
 
+/// Error message shown when the buttonsReady timeout fires.
+private let checkoutTimeoutMessage = "Checkout timed out — payment buttons failed to load. Please check your internet connection and try again."
+
+/// Waits for `ZeroSettle.shared.isBootstrapped` with a 10-second timeout.
+/// Returns `true` if bootstrapped, `false` on timeout or cancellation.
+@MainActor
+internal func awaitBootstrap() async -> Bool {
+    if ZeroSettle.shared.isBootstrapped { return true }
+    let deadline = CFAbsoluteTimeGetCurrent() + 10
+    while !ZeroSettle.shared.isBootstrapped, CFAbsoluteTimeGetCurrent() < deadline {
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        guard !Task.isCancelled else { return false }
+    }
+    return ZeroSettle.shared.isBootstrapped
+}
+
 /// Invalidates caches, resets preloader, and eagerly re-preloads after a successful checkout.
 /// Shared across `CheckoutSheetModifier`, `CheckoutSheetItemModifier`, and
 /// `UIKitSheetBridge` to eliminate duplicated post-success logic.
@@ -286,15 +302,7 @@ internal struct CheckoutSheetModifier<Header: View>: ViewModifier {
     /// Flow: bootstrap wait → checkout type guard → fetch PI → ensureReady → present.
     /// See `CheckoutPreloaderPool.ensureReady(for:url:)` for WebView readiness logic.
     private func preloadAll() async {
-        // ── Gate: wait for bootstrap so PI requests don't race with warmUpAll() ──
-        if !ZeroSettle.shared.isBootstrapped {
-            let deadline = CFAbsoluteTimeGetCurrent() + 10
-            while !ZeroSettle.shared.isBootstrapped, CFAbsoluteTimeGetCurrent() < deadline {
-                try? await Task.sleep(nanoseconds: 200_000_000)
-                guard !Task.isCancelled else { return }
-            }
-            guard ZeroSettle.shared.isBootstrapped else { return }
-        }
+        guard await awaitBootstrap() else { return }
 
         let checkoutType = ZeroSettle.shared.checkoutType
 
@@ -331,7 +339,7 @@ internal struct CheckoutSheetModifier<Header: View>: ViewModifier {
         if !ready {
             guard !Task.isCancelled else { return }
             onComplete(.failure(ZeroSettleError.checkoutFailed(
-                reason: .other("Checkout timed out — payment buttons failed to load. Please check your internet connection and try again.")
+                reason: .other(checkoutTimeoutMessage)
             )))
             isPresented = false
             return
@@ -502,26 +510,12 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
     private func preloadAll(product: ZSProduct) async {
         let start = CFAbsoluteTimeGetCurrent()
 
-        // ── Gate: wait for bootstrap so PI requests don't race with warmUpAll() ──
-        if !ZeroSettle.shared.isBootstrapped {
-            ZSLogger.info("[Checkout] preloadAll: waiting for bootstrap before preloading \(product.id)", category: .checkout)
-            let deadline = CFAbsoluteTimeGetCurrent() + 10
-            while !ZeroSettle.shared.isBootstrapped, CFAbsoluteTimeGetCurrent() < deadline {
-                try? await Task.sleep(nanoseconds: 200_000_000)
-                guard !Task.isCancelled else {
-                    ZSLogger.info("[Checkout] preloadAll: cancelled while waiting for bootstrap", category: .checkout)
-                    return
-                }
-            }
-            guard ZeroSettle.shared.isBootstrapped else {
-                ZSLogger.error("[Checkout] preloadAll: bootstrap timed out for \(product.id)", category: .checkout)
-                return
-            }
+        guard await awaitBootstrap() else {
+            ZSLogger.error("[Checkout] preloadAll: bootstrap timed out for \(product.id)", category: .checkout)
+            return
         }
 
         let checkoutType = ZeroSettle.shared.checkoutType
-        let preloader = pool.preloader(for: product.id)
-        ZSLogger.info("[Checkout] preloadAll START: product=\(product.id), checkoutType=\(checkoutType.rawValue), isBootstrapped=true, hasURL=\(preloadedURL != nil), hasTxnId=\(preloadedTransactionId != nil), preloaderAlive=\(preloader.isAlive)", category: .checkout)
 
         // ── Safari / SafariVC — delegate to purchase() which opens the browser ──
         guard checkoutType == .webView || checkoutType == .nativePay else {
@@ -538,6 +532,9 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
             item = nil
             return
         }
+
+        let preloader = pool.preloader(for: product.id)
+        ZSLogger.info("[Checkout] preloadAll START: product=\(product.id), checkoutType=\(checkoutType.rawValue), isBootstrapped=true, hasURL=\(preloadedURL != nil), hasTxnId=\(preloadedTransactionId != nil), preloaderAlive=\(preloader.isAlive)", category: .checkout)
 
         // ── Fast path: PI + WebView still warm from previous presentation ──
         // Requires bootstrap complete (pre-bootstrap PIs may be invalid) and
@@ -581,7 +578,7 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
             guard !Task.isCancelled else { return }
             ZSLogger.error("[Checkout] preloadAll: payment buttons never loaded for \(product.id)", category: .checkout)
             onComplete(.failure(ZeroSettleError.checkoutFailed(
-                reason: .other("Checkout timed out — payment buttons failed to load. Please check your internet connection and try again.")
+                reason: .other(checkoutTimeoutMessage)
             )))
             item = nil
             return
@@ -684,15 +681,7 @@ internal struct UIKitSheetBridge<SheetHeader: View>: View {
     /// Flow: bootstrap wait → checkout type guard → fetch PI → ensureReady → present.
     /// See `CheckoutPreloaderPool.ensureReady(for:url:)` for WebView readiness logic.
     private func preloadAll() async {
-        // ── Gate: wait for bootstrap so PI requests don't race with warmUpAll() ──
-        if !ZeroSettle.shared.isBootstrapped {
-            let deadline = CFAbsoluteTimeGetCurrent() + 10
-            while !ZeroSettle.shared.isBootstrapped, CFAbsoluteTimeGetCurrent() < deadline {
-                try? await Task.sleep(nanoseconds: 200_000_000)
-                guard !Task.isCancelled else { return }
-            }
-            guard ZeroSettle.shared.isBootstrapped else { return }
-        }
+        guard await awaitBootstrap() else { return }
 
         let checkoutType = ZeroSettle.shared.checkoutType
 
@@ -734,7 +723,7 @@ internal struct UIKitSheetBridge<SheetHeader: View>: View {
         if !ready {
             guard !Task.isCancelled else { return }
             onComplete(.failure(ZeroSettleError.checkoutFailed(
-                reason: .other("Checkout timed out — payment buttons failed to load. Please check your internet connection and try again.")
+                reason: .other(checkoutTimeoutMessage)
             )))
             onDismissed()
             return

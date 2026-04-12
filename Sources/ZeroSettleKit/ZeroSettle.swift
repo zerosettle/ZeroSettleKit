@@ -299,6 +299,16 @@ public final class ZeroSettle: ObservableObject {
     /// nil = no filter applied (backward compat / no sync ran yet).
     private var ownedStoreKitTransactionIds: Set<String>?
 
+    /// Filters StoreKit entitlements to only include those owned by the current user.
+    /// If no ownership set exists (no sync ran yet), returns all entitlements unfiltered.
+    private func filterOwnedEntitlements(_ entitlements: [Entitlement]) -> [Entitlement] {
+        guard let ownedIds = ownedStoreKitTransactionIds else { return entitlements }
+        return entitlements.filter { ent in
+            guard let origId = ent.storekitOriginalTransactionId else { return true }
+            return ownedIds.contains(origId)
+        }
+    }
+
     /// Cached cancel flow configuration from the backend.
     /// Populated during ``bootstrap(userId:)`` so it's immediately available
     /// for building custom cancel flow UI without an extra network call.
@@ -1199,18 +1209,7 @@ public final class ZeroSettle: ObservableObject {
 
         if let storeKitManager {
             let storeKitEntitlements = await storeKitManager.getCurrentEntitlements()
-            if let ownedIds = ownedStoreKitTransactionIds {
-                // Only include StoreKit entitlements the server confirmed as ours.
-                // Transactions belonging to other ZeroSettle accounts are excluded.
-                let filtered = storeKitEntitlements.filter { ent in
-                    guard let origId = ent.storekitOriginalTransactionId else { return true }
-                    return ownedIds.contains(origId)
-                }
-                allEntitlements.append(contentsOf: filtered)
-            } else {
-                // No sync ran (e.g., manual restoreEntitlements call) — include all.
-                allEntitlements.append(contentsOf: storeKitEntitlements)
-            }
+            allEntitlements.append(contentsOf: filterOwnedEntitlements(storeKitEntitlements))
         }
 
         do {
@@ -1790,15 +1789,6 @@ extension ZeroSettle: StoreKitUpdateDelegate {
     func storeKitEntitlementsDidChange(_ storeKitEntitlements: [Entitlement]) {
         // Merge: keep web entitlements, replace StoreKit entitlements (filtered by ownership)
         let webEntitlements = self.entitlements.filter { $0.source == .webCheckout }
-        let filtered: [Entitlement]
-        if let ownedIds = ownedStoreKitTransactionIds {
-            filtered = storeKitEntitlements.filter { ent in
-                guard let origId = ent.storekitOriginalTransactionId else { return true }
-                return ownedIds.contains(origId)
-            }
-        } else {
-            filtered = storeKitEntitlements
-        }
-        updateEntitlements(webEntitlements + filtered)
+        updateEntitlements(webEntitlements + filterOwnedEntitlements(storeKitEntitlements))
     }
 }

@@ -224,7 +224,7 @@ internal final class StoreKitManager {
                     userId: userId
                 )
                 // Default owned to true for backward compat with older backends
-                if response.owned != false, let origId = response.originalTransactionId {
+                if response.owned ?? true, let origId = response.originalTransactionId {
                     ownedOriginalTransactionIds.insert(origId)
                 }
                 ZSLogger.info("Synced current transaction \(transaction.id) for \(transaction.productID) (owned=\(response.owned ?? true))", category: .entitlements)
