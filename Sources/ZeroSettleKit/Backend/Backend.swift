@@ -230,7 +230,8 @@ internal final class Backend: @unchecked Sendable {
             if case .httpError(statusCode: 409, body: let data) = error,
                let data,
                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let retryDelay = json["retry_after"] as? Double {
+               let rawDelay = json["retry_after"] as? Double {
+                let retryDelay = min(max(rawDelay, 0.1), 5.0)
                 ZSLogger.info("[Backend] PI in-flight for \(productId), retrying in \(retryDelay)s", category: .checkout)
                 try await Task.sleep(nanoseconds: UInt64(retryDelay * 1_000_000_000))
                 return try await wrapped {
