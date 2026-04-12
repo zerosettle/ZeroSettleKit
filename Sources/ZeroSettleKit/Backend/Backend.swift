@@ -771,7 +771,7 @@ private struct SyncStoreKitTransactionRequest: Encodable {
     let userId: String
 }
 
-struct SyncStoreKitTransactionResponse: Decodable {
+internal struct SyncStoreKitTransactionResponse: Decodable {
     let status: String
     let owned: Bool?
     let originalTransactionId: String?
@@ -783,7 +783,7 @@ struct SyncStoreKitTransactionResponse: Decodable {
     }
 }
 
-struct ClaimEntitlementResponse: Decodable {
+internal struct ClaimEntitlementResponse: Decodable {
     let status: String
     let claimed: Bool?
     let productId: String?

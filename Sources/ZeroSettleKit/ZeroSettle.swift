@@ -438,12 +438,7 @@ public final class ZeroSettle: ObservableObject {
 
         // Find the StoreKit transaction for this product on the current Apple ID
         guard let jwsRepresentation = await storeKitManager.findTransactionJWS(for: productId) else {
-            throw ZeroSettleError.apiError(APIErrorDetail(
-                statusCode: nil,
-                serverMessage: "No StoreKit transaction found for product \(productId) on this Apple ID",
-                serverCode: nil,
-                underlyingError: nil
-            ))
+            throw ZeroSettleError.productNotFound(productId)
         }
 
         let response = try await backend.claimEntitlement(
