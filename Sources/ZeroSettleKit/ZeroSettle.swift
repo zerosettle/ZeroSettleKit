@@ -402,6 +402,66 @@ public final class ZeroSettle: ObservableObject {
         activeEntitlements.filter { $0.source == .webCheckout && !knownIds.contains($0.id) }
     }
 
+    // MARK: - Entitlement Claiming
+
+    /// Claims a StoreKit entitlement for the current user, even if another
+    /// ZeroSettle account originally purchased it on this Apple ID.
+    ///
+    /// Use this for:
+    /// - **Testing**: switching between accounts on the same Apple sandbox ID
+    /// - **Account migration**: moving a subscription to a new account
+    /// - **Support**: resolving "wrong account" issues
+    ///
+    /// Only applicable to subscriptions and non-consumables. Consumables cannot
+    /// be claimed.
+    ///
+    /// Requires ``bootstrap(userId:)`` to have been called first.
+    ///
+    /// ```swift
+    /// try await ZeroSettle.shared.claimEntitlement(
+    ///     productId: "com.myapp.premium.monthly"
+    /// )
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - productId: The product to claim from the current Apple ID's transactions.
+    ///   - userId: The current user's ID. Must match the ID used in ``bootstrap(userId:)``.
+    /// - Throws: ``ZeroSettleError`` if the product is not found in StoreKit transactions,
+    ///   or if the server rejects the claim.
+    @MainActor
+    public func claimEntitlement(productId: String, userId: String) async throws {
+        let backend = try requireBackend()
+
+        guard let storeKitManager else {
+            throw ZeroSettleError.notConfigured
+        }
+
+        // Find the StoreKit transaction for this product on the current Apple ID
+        guard let jwsRepresentation = await storeKitManager.findTransactionJWS(for: productId) else {
+            throw ZeroSettleError.apiError(APIErrorDetail(
+                statusCode: nil,
+                serverMessage: "No StoreKit transaction found for product \(productId) on this Apple ID",
+                serverCode: nil,
+                underlyingError: nil
+            ))
+        }
+
+        let response = try await backend.claimEntitlement(
+            jwsRepresentation: jwsRepresentation,
+            userId: userId
+        )
+
+        ZSLogger.info("[ZeroSettle] Entitlement claimed: product=\(productId) claimed=\(response.claimed ?? false) message=\(response.message ?? "")", category: .entitlements)
+
+        // Add the claimed product to our owned set so it passes the filter
+        if let origTxnId = response.originalTransactionId {
+            ownedStoreKitTransactionIds?.insert(origTxnId)
+        }
+
+        // Refresh entitlements to pick up the new claim
+        _ = try await restoreEntitlements(userId: userId)
+    }
+
     /// Resolve the Apple Pay merchant ID: local override > backend default > nil.
     private var resolvedMerchantId: String? {
         if let local = config?.appleMerchantId, !local.isEmpty {

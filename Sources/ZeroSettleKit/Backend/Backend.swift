@@ -374,6 +374,19 @@ internal final class Backend: @unchecked Sendable {
         }
     }
 
+    /// Explicitly claim a StoreKit entitlement for the current user, even if
+    /// another ZeroSettle account originally purchased it on this Apple ID.
+    func claimEntitlement(jwsRepresentation: String, userId: String) async throws -> ClaimEntitlementResponse {
+        let url = apiURL("iap/claim-entitlement/")
+        let body = SyncStoreKitTransactionRequest(
+            jwsRepresentation: jwsRepresentation,
+            userId: userId
+        )
+        return try await wrapped {
+            try await httpClient.post(url, body: body, headers: authHeaders, responseType: ClaimEntitlementResponse.self)
+        }
+    }
+
     // MARK: - Cancel Flow
 
     /// Fetch the cancel flow configuration for this app.
@@ -766,6 +779,20 @@ struct SyncStoreKitTransactionResponse: Decodable {
     enum CodingKeys: String, CodingKey {
         case status
         case owned
+        case originalTransactionId = "original_transaction_id"
+    }
+}
+
+struct ClaimEntitlementResponse: Decodable {
+    let status: String
+    let claimed: Bool?
+    let productId: String?
+    let originalTransactionId: String?
+    let message: String?
+
+    enum CodingKeys: String, CodingKey {
+        case status, claimed, message
+        case productId = "product_id"
         case originalTransactionId = "original_transaction_id"
     }
 }

@@ -287,6 +287,19 @@ internal final class StoreKitManager {
         return entitlements
     }
 
+    /// Finds the JWS representation of a StoreKit transaction for the given product ID.
+    /// Searches `Transaction.currentEntitlements` on the current Apple ID.
+    /// Returns nil if no transaction exists for this product.
+    func findTransactionJWS(for productId: String) async -> String? {
+        for await result in SKTransaction.currentEntitlements {
+            guard case .verified(let transaction) = result else { continue }
+            if transaction.productID == productId {
+                return result.jwsRepresentation
+            }
+        }
+        return nil
+    }
+
     /// Real-time renewal status from `Product.SubscriptionInfo.Status`.
     struct RenewalStatus {
         let willAutoRenew: Bool
