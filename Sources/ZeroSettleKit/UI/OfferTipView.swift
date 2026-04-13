@@ -208,6 +208,7 @@ public struct OfferTipView: View {
             case .success(let txn):
                 Task {
                     await manager.markCheckoutSucceeded(transactionId: txn.id)
+                    ctaTapped = false
                     onEvent?(.checkoutCompleted)
                     if manager.state == .accepted {
                         onEvent?(.appleSubscriptionManagementOpened)
