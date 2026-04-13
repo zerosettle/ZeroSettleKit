@@ -5,7 +5,6 @@
 //  Listens to StoreKit 2 transaction updates and forwards JWS to ZeroSettle backend.
 //
 
-import CryptoKit
 import Foundation
 import StoreKit
 #if canImport(UIKit)
@@ -156,24 +155,11 @@ internal final class StoreKitManager {
     /// - Returns: The verified transaction
     func purchase(_ product: StoreKit.Product) async throws -> SKTransaction {
         // Set appAccountToken so ASSN v2 webhooks can resolve the correct
-        // user identity without waiting for the SDK sync. Uses the user ID
-        // directly if it's a valid UUID, otherwise derives a deterministic
-        // UUID via SHA-256 truncation.
+        // user identity without waiting for the SDK sync. Only set when the
+        // user ID is a valid UUID — for other formats, the backend reassigns
+        // synthetic identities when the SDK sync arrives.
         var purchaseOptions: Set<StoreKit.Product.PurchaseOption> = []
-        if let uid = userId, !uid.isEmpty {
-            let token: UUID
-            if let parsed = UUID(uuidString: uid) {
-                token = parsed
-            } else {
-                // Deterministic UUID from arbitrary string via SHA-256
-                let digest = SHA256.hash(data: Data(uid.utf8))
-                var uuidBytes = Array(digest.prefix(16))
-                uuidBytes[6] = (uuidBytes[6] & 0x0F) | 0x50  // Version 5
-                uuidBytes[8] = (uuidBytes[8] & 0x3F) | 0x80  // Variant 1
-                let u = uuidBytes
-                token = UUID(uuid: (u[0],u[1],u[2],u[3],u[4],u[5],u[6],u[7],
-                                    u[8],u[9],u[10],u[11],u[12],u[13],u[14],u[15]))
-            }
+        if let uid = userId, let token = UUID(uuidString: uid) {
             purchaseOptions.insert(.appAccountToken(token))
         }
 
