@@ -82,10 +82,15 @@ extension CheckoutSheet where Header == EmptyView {
             productId: productId, userId: userId, publishableKey: pk
         ) {
             let backend = Backend(baseURL: baseURL, publishableKey: pk)
-            return try? await backend.initiateCheckout(
-                productId: productId, userId: userId,
-                storekitSubscriptionEnd: migrationEndDate(for: productId)
-            )
+            do {
+                return try await backend.initiateCheckout(
+                    productId: productId, userId: userId,
+                    storekitSubscriptionEnd: migrationEndDate(for: productId)
+                )
+            } catch {
+                ZSLogger.error("[Checkout] PI creation error for \(productId): \(error)", category: .checkout)
+                return nil
+            }
         }
 
         guard let response, let url = URL(string: response.checkoutUrl) else {

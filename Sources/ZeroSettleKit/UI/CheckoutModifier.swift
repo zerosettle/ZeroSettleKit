@@ -325,7 +325,7 @@ internal struct CheckoutSheetModifier<Header: View>: ViewModifier {
             productId: product.id, userId: userId
         ) else {
             guard !Task.isCancelled else { return }
-            onComplete(.failure(ZeroSettleError.checkoutFailed(reason: .other("Failed to create payment"))))
+            onComplete(.failure(ZeroSettleError.checkoutFailed(reason: .other("Failed to create payment for \(product.id). Check that the product has a valid web price configured in the ZeroSettle dashboard."))))
             isPresented = false
             return
         }
@@ -556,7 +556,7 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
                 return
             }
             ZSLogger.error("[Checkout] preloadAll: preload() returned nil after \(Int((CFAbsoluteTimeGetCurrent() - preloadStart) * 1000))ms — no PI created", category: .checkout)
-            onComplete(.failure(ZeroSettleError.checkoutFailed(reason: .other("Failed to create payment"))))
+            onComplete(.failure(ZeroSettleError.checkoutFailed(reason: .other("Failed to create payment for \(product.id). Check that the product has a valid web price configured in the ZeroSettle dashboard."))))
             item = nil
             return
         }
@@ -713,7 +713,7 @@ internal struct UIKitSheetBridge<SheetHeader: View>: View {
             preloadedTransactionId = result.transactionId
         } else {
             guard !Task.isCancelled else { return }
-            onComplete(.failure(ZeroSettleError.checkoutFailed(reason: .other("Failed to create payment"))))
+            onComplete(.failure(ZeroSettleError.checkoutFailed(reason: .other("Failed to create payment for \(product.id). Check that the product has a valid web price configured in the ZeroSettle dashboard."))))
             onDismissed()
             return
         }
