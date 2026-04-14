@@ -13,6 +13,33 @@ internal import ZeroSettleCore
 ///
 /// The server resolves which offer to show via the `offer` field in the products
 /// response. The SDK validates rollout cohort and renders the appropriate UI.
+///
+/// ## State Machine
+///
+/// ```
+/// loading ──▶ evaluateEligibility() ──▶ ineligible
+///                                   └──▶ eligible
+///                                         │
+///                                    present()
+///                                         │
+///                                         ▼
+///                                      presented
+///                                         │
+///                              markCheckoutSucceeded()
+///                                    ┌────┴────┐
+///                                    ▼         ▼
+///                               accepted   completed
+///                                    │
+///                   showAppleSubscriptionManagement()
+///                                    │
+///                                    ▼
+///                               completed
+///
+///  Any state ──▶ dismiss() ──▶ dismissed (permanent, persisted)
+/// ```
+///
+/// Re-evaluation via `startObserving()` only fires in `.loading`, `.ineligible`,
+/// and `.eligible` states — never during an active checkout flow.
 @MainActor
 public final class ZSOfferManager: ObservableObject {
 
@@ -46,6 +73,12 @@ public final class ZSOfferManager: ObservableObject {
 
     // Persistence keys
     private static let dismissedKeyPrefix = "com.zerosettle.offerTipDismissed"
+
+    /// Active StoreKit entitlements for the current user.
+    /// Used to check migration eligibility and find subscription details.
+    private var activeStoreKitEntitlements: [Entitlement] {
+        ZeroSettle.shared.entitlements.filter { $0.source == .storeKit && $0.isActive }
+    }
 
     // MARK: - Init
 
@@ -125,8 +158,7 @@ public final class ZSOfferManager: ObservableObject {
         // Migration and storekit_to_web flows require an active StoreKit subscription
         // to migrate from — skip if the user doesn't have one.
         if offer.needsAppleCancel {
-            let skEntitlements = iap.entitlements.filter { $0.source == .storeKit && $0.isActive }
-            guard !skEntitlements.isEmpty else {
+            guard !activeStoreKitEntitlements.isEmpty else {
                 ZSLogger.info("[OfferManager] Skipping: no active StoreKit subscription to migrate", category: .migration)
                 state = .ineligible
                 return
@@ -170,7 +202,7 @@ public final class ZSOfferManager: ObservableObject {
 
     private func resolveFromMigration(_ migration: MigrationPrompt, iap: ZeroSettle) {
         // Legacy path: requires StoreKit subscription (same as ZSMigrationManager)
-        let skEntitlements = iap.entitlements.filter { $0.source == .storeKit && $0.isActive }
+        let skEntitlements = activeStoreKitEntitlements
         guard !skEntitlements.isEmpty else {
             state = .ineligible
             return
@@ -221,7 +253,10 @@ public final class ZSOfferManager: ObservableObject {
 
     /// Transition from `.eligible` → `.presented`.
     public func present() {
-        guard state == .eligible else { return }
+        guard state == .eligible else {
+            ZSLogger.info("[OfferManager] present() skipped — state is \(state), expected .eligible", category: .migration)
+            return
+        }
         state = .presented
     }
 
@@ -258,7 +293,11 @@ public final class ZSOfferManager: ObservableObject {
     /// Mark checkout as succeeded. Verifies transaction, refreshes entitlements,
     /// and handles post-checkout state transitions.
     public func markCheckoutSucceeded(transactionId: String? = nil) async {
-        guard state == .presented else { return }
+        ZSLogger.info("[OfferManager] markCheckoutSucceeded called. state=\(state) needsAppleCancel=\(offerData?.needsAppleCancel ?? false)", category: .migration)
+        guard state == .presented else {
+            ZSLogger.error("[OfferManager] markCheckoutSucceeded SKIPPED — state is \(state), expected .presented", category: .migration)
+            return
+        }
         guard let data = offerData else { return }
 
         checkoutTransactionId = transactionId
@@ -297,7 +336,10 @@ public final class ZSOfferManager: ObservableObject {
     /// Open the Apple subscription management sheet, then verify cancellation
     /// via server-side Apple API (real-time). Falls back to on-device StoreKit.
     public func showAppleSubscriptionManagement() async {
-        guard state == .accepted else { return }
+        guard state == .accepted else {
+            ZSLogger.info("[OfferManager] showAppleSubscriptionManagement() skipped — state is \(state), expected .accepted", category: .migration)
+            return
+        }
 
         do {
             guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene else {
@@ -311,7 +353,7 @@ public final class ZSOfferManager: ObservableObject {
         }
 
         // Sheet dismissed — verify cancellation via server-side Apple API
-        let skEntitlement = ZeroSettle.shared.entitlements.first { $0.source == .storeKit && $0.isActive }
+        let skEntitlement = activeStoreKitEntitlements.first
         let origTxnId = skEntitlement?.storekitOriginalTransactionId
         let txnId = checkoutTransactionId
 
@@ -376,7 +418,7 @@ public final class ZSOfferManager: ObservableObject {
         var storekitOrigTxnId: String?
 
         if data.needsAppleCancel {
-            let skEntitlement = ZeroSettle.shared.entitlements.first { $0.source == .storeKit && $0.isActive }
+            let skEntitlement = activeStoreKitEntitlements.first
             storekitEnd = skEntitlement?.expiresAt
             storekitOrigTxnId = skEntitlement?.storekitOriginalTransactionId
         }

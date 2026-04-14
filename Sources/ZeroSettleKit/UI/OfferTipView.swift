@@ -67,7 +67,6 @@ public struct OfferTipView: View {
     // WebView checkout state
     @State private var isExpanded = false
     @State private var ctaTapped = false
-    @State private var webViewLoaded = false
     @State private var contentHeight: CGFloat = 180
     @State private var checkoutURL: URL?
     @State private var hasApplePay = false
@@ -207,7 +206,9 @@ public struct OfferTipView: View {
             switch result {
             case .success(let txn):
                 Task {
+                    ZSLogger.info("[OfferTipView] Sheet checkout succeeded, calling markCheckoutSucceeded. state=\(manager.state) txn=\(txn.id)", category: .migration)
                     await manager.markCheckoutSucceeded(transactionId: txn.id)
+                    ZSLogger.info("[OfferTipView] After markCheckoutSucceeded: state=\(manager.state) ctaTapped=\(ctaTapped)", category: .migration)
                     ctaTapped = false
                     onEvent?(.checkoutCompleted)
                     if manager.state == .accepted {
@@ -270,9 +271,7 @@ public struct OfferTipView: View {
                         backgroundColor: UIColor(backgroundColor),
                         preloadedWebView: preloader.isReady ? preloader.webView : nil,
                         preloadedMessageRouter: preloader.isReady ? preloader.messageRouter : nil,
-                        onLoaded: {
-                            webViewLoaded = true
-                        },
+                        onLoaded: { },
                         onPaymentMethodChanged: { paymentMethod in
                             handlePaymentMethodChanged(paymentMethod)
                         },
@@ -511,6 +510,9 @@ public struct OfferTipView: View {
     private func handleCtaTapped() {
         onEvent?(.ctaTapped)
         ctaTapped = true
+        ZSLogger.info("[OfferTipView] handleCtaTapped: state=\(manager.state) upgradeType=\(manager.offerData?.upgradeType?.rawValue ?? "nil") checkoutPresentation=\(manager.offerData?.checkoutPresentation?.rawValue ?? "nil")", category: .migration)
+        manager.present()
+        ZSLogger.info("[OfferTipView] after present(): state=\(manager.state)", category: .migration)
 
         // Web-to-web upgrades: no WebView, just a loading spinner
         if manager.offerData?.upgradeType == .webToWeb {
@@ -553,7 +555,6 @@ public struct OfferTipView: View {
             ctaTapped = false
             return
         }
-        manager.present()
         sheetCheckoutProduct = product
     }
 
@@ -571,8 +572,11 @@ public struct OfferTipView: View {
 
     private func startInlineWebViewCheckout() {
         Task {
+            ZSLogger.info("[OfferTipView] startInlineWebViewCheckout: preloader.isReady=\(preloader.isReady) checkoutURL=\(checkoutURL != nil) state=\(manager.state)", category: .migration)
+
             // Fastest path: WebView already loaded (re-expanding after minimize)
             if checkoutURL != nil {
+                ZSLogger.info("[OfferTipView] re-expanding existing WebView", category: .migration)
                 withAnimation(.easeInOut(duration: 0.3)) {
                     isExpanded = true
                 }
@@ -581,6 +585,7 @@ public struct OfferTipView: View {
 
             // Fast path: preloader has URL and WebView ready
             if preloader.isReady, let url = await manager.preloadCheckout(stripeCustomerId: stripeCustomerId) {
+                ZSLogger.info("[OfferTipView] using preloaded checkout URL", category: .migration)
                 checkoutURL = url
                 hasApplePay = preloader.hasApplePay
                 if preloader.buttonsReady {
@@ -593,7 +598,9 @@ public struct OfferTipView: View {
             }
 
             // Slow path: PI creation on-demand
+            ZSLogger.info("[OfferTipView] slow path: creating PI on-demand", category: .migration)
             let url = await manager.startCheckout(stripeCustomerId: stripeCustomerId)
+            ZSLogger.info("[OfferTipView] startCheckout returned url=\(url != nil) state=\(manager.state)", category: .migration)
             if let url {
                 checkoutURL = url
                 scheduleExpansionTimeout()
@@ -616,8 +623,6 @@ public struct OfferTipView: View {
     }
 
     private func startBrowserCheckout() {
-        manager.present()
-
         Task { @MainActor in
             guard manager.offerData != nil else {
                 ctaTapped = false
@@ -703,16 +708,22 @@ public struct OfferTipView: View {
     }
 
     private func handleCheckoutSuccess(transactionId: String?) {
+        ZSLogger.info("[OfferTipView] handleCheckoutSuccess: txn=\(transactionId ?? "nil") state=\(manager.state) ctaTapped=\(ctaTapped) isExpanded=\(isExpanded)", category: .migration)
         withAnimation(.easeInOut(duration: 0.25)) {
             isExpanded = false
-            webViewLoaded = false
             contentHeight = Self.collapsedHeight
             checkoutURL = nil
         }
         Task {
             await manager.markCheckoutSucceeded(transactionId: transactionId)
+            ZSLogger.info("[OfferTipView] after markCheckoutSucceeded: state=\(manager.state) needsAppleCancel=\(manager.needsAppleCancel)", category: .migration)
+            ctaTapped = false
+            onEvent?(.checkoutCompleted)
+            if manager.state == .completed {
+                transitionToCompleted()
+            }
+            // .accepted state renders acceptedCardView with "Cancel Apple Billing" button
         }
-        onEvent?(.checkoutCompleted)
     }
 
     @MainActor
@@ -742,14 +753,16 @@ public struct OfferTipView: View {
         }
 
         // Delay confetti so the congratulations view renders first
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 100_000_000)
             confettiTrigger += 1
         }
 
         onEvent?(.offerCompleted)
 
         // Auto-dismiss after 5 seconds
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
             withAnimation(.easeInOut(duration: 0.3)) {
                 manager.dismiss()
             }

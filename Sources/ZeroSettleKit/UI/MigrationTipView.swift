@@ -8,6 +8,7 @@ internal import ZeroSettleCore
 #endif
 
 // MARK: - Expandable Web Billing Tip View
+@available(*, deprecated, message: "Use OfferTipView instead. OfferTipView supports migration, upgrade, and web-to-web flows with server-configurable copy.")
 public struct MigrationTipView: View {
 
     /// Lifecycle events emitted by ``MigrationTipView``.
@@ -858,6 +859,7 @@ struct CheckoutWebView: UIViewRepresentable {
             } else if message.name == "checkoutComplete", let body = message.body as? [String: Any] {
                 let action = body["action"] as? String ?? ""
                 let success = body["success"] as? Bool ?? false
+                ZSLogger.info("[CheckoutWebView] checkoutComplete: action=\(action) success=\(success) hasCompleted=\(hasCompleted) keys=\(body.keys.sorted())", category: .migration)
 
                 if action == "expandSheet" {
                     DispatchQueue.main.async {
