@@ -221,18 +221,18 @@ internal final class Backend: @unchecked Sendable {
                     .storekitOriginalTransactionId
             }
         }
-        let (custName, custEmail) = await MainActor.run {
-            (ZeroSettle.shared.customerName, ZeroSettle.shared.customerEmail)
-        }
         // Device iOS version — feeds the backend's Apple auto-reporting
         // regime detector (Japan MSCA requires iOS 26.4+). UIKit is always
         // available on iOS; guarded here for non-iOS build targets.
-        let iosVersion: String?
-        #if canImport(UIKit)
-        iosVersion = await MainActor.run { UIDevice.current.systemVersion }
-        #else
-        iosVersion = nil
-        #endif
+        let (custName, custEmail, iosVersion): (String?, String?, String?) = await MainActor.run {
+            let name = ZeroSettle.shared.customerName
+            let email = ZeroSettle.shared.customerEmail
+            #if canImport(UIKit)
+            return (name, email, UIDevice.current.systemVersion)
+            #else
+            return (name, email, nil)
+            #endif
+        }
         let body = InitiateCheckoutRequest(
             productId: productId,
             userId: userId,
