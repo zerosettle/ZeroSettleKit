@@ -94,6 +94,18 @@ import SwiftUI
 //   - Offer.PerProductOffer
 //   - Offer.OfferData
 //
+// From Models/UserOffer.swift (SDK 1.2+):
+//   - UserOffer (namespace enum)
+//   - UserOffer.Response
+//   - UserOffer.Subscription (tagged union: none | activeWeb | activeStorekit |
+//                             migrationTrial | cancelledActive | unknown)
+//   - UserOffer.OfferData
+//   - UserOffer.ActionType
+//   - UserOffer.Display
+//   - UserOffer.Proration
+//   - UserOffer.AppleSubscription
+//   - UserOffer.CheckoutPresentation
+//
 // From UI/ZSMigrateTipView.swift:
 //   - MigrationTipView
 //   - MigrationTipView.Event

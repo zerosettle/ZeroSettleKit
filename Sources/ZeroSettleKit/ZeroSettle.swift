@@ -1624,6 +1624,34 @@ public final class ZeroSettle: ObservableObject {
         }
     }
 
+    // MARK: - User Offer (SDK 1.2+)
+
+    /// Fetch the unified user-offer response from `/v1/iap/user-offer/` (SDK 1.2+).
+    ///
+    /// Returns a ``UserOffer/Response`` carrying both the user's current subscription
+    /// state (``UserOffer/Subscription``) and the server-canonical offer decision
+    /// (discriminated by ``UserOffer/ActionType``). The server resolves experiment
+    /// variants and rollout eligibility, so the SDK no longer re-hashes locally.
+    ///
+    /// Adoption is optional — existing calls to ``fetchProducts(userId:)`` continue
+    /// to return `config.offer` / `config.migration` in the legacy shape, and
+    /// ``ZSOfferManager`` / ``ZSMigrationManager`` remain on that path.
+    ///
+    /// - Parameter userId: Your app's user identifier.
+    /// - Returns: The unified ``UserOffer/Response``.
+    public func fetchUserOffer(userId: String) async throws -> UserOffer.Response {
+        let backend = try requireBackend()
+
+        do {
+            let response = try await backend.fetchUserOffer(userId: userId)
+            ZSLogger.info("Fetched user offer: action=\(response.offer.actionType.rawValue), eligible=\(response.offer.isEligible)", category: .checkout)
+            return response
+        } catch {
+            ZSLogger.error("Failed to fetch user offer: \(error)", category: .checkout)
+            throw Backend.wrapError(error)
+        }
+    }
+
     // MARK: - Error Helpers
 
     /// Parsed error body from an HTTP response for checkout failure classification.
