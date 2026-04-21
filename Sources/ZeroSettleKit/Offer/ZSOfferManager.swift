@@ -188,6 +188,17 @@ public final class ZSOfferManager: ObservableObject {
         let iap = ZeroSettle.shared
         guard iap.isBootstrapped else { return }
 
+        // Nudge the StoreKit monitor to re-pull renewal state. Transaction.updates
+        // does not fire on pure `willAutoRenew` toggles, so a cancel the user made
+        // via App Store Settings while the app was foregrounded goes undetected
+        // until the next real transaction event. Firing a refresh whenever we
+        // recompute offer state means the `.accepted → .completed` transition
+        // happens the moment the user interacts with this view.
+        Task { [weak self] in
+            guard self != nil else { return }
+            await ZeroSettle.shared.subscriptionMonitor.refreshIfStale()
+        }
+
         // Check dismissal
         if Self.isPermanentlyDismissed(forUserId: userId) {
             state = .ineligible

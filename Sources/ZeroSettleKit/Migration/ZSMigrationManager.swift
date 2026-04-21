@@ -245,6 +245,17 @@ public final class ZSMigrationManager: ObservableObject {
         guard !isEvaluating else { return }
         isEvaluating = true
 
+        // Nudge the StoreKit monitor to re-pull renewal state. Transaction.updates
+        // does not fire on pure `willAutoRenew` toggles, so a cancel the user made
+        // via App Store Settings while the app was foregrounded goes undetected
+        // until the next real transaction event. Firing a refresh whenever we
+        // recompute offer state means the `.accepted → .completed` transition
+        // happens the moment the user interacts with this view.
+        Task { [weak self] in
+            guard self != nil else { return }
+            await ZeroSettle.shared.subscriptionMonitor.refreshIfStale()
+        }
+
         // Demo mode: force out of dismissed state so re-evaluation can proceed
         if Self.demoMode && state == .dismissed {
             state = .loading

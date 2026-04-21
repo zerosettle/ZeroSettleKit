@@ -17,6 +17,10 @@
 import Foundation
 import StoreKit
 
+#if canImport(UIKit)
+import UIKit
+#endif
+
 #if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
 #endif
@@ -80,6 +84,12 @@ internal final class StoreKitSubscriptionMonitor {
     private var continuation: AsyncStream<SubscriptionInfo>.Continuation?
     private var updateListenerTask: Task<Void, Never>?
 
+    #if canImport(UIKit)
+    /// Observer token for `UIApplication.didBecomeActiveNotification`. Retained
+    /// so we can explicitly remove it on `stop()` / `deinit`.
+    private var didBecomeActiveObserver: (any NSObjectProtocol)?
+    #endif
+
     // MARK: - Init
 
     init() {
@@ -92,6 +102,11 @@ internal final class StoreKitSubscriptionMonitor {
 
     deinit {
         continuation?.finish()
+        // Note: we intentionally don't remove `didBecomeActiveObserver` here.
+        // The block-based observer captures `self` weakly, so once the monitor
+        // is released the block becomes a no-op and NotificationCenter cleans
+        // up the dangling registration on the next post. Explicit removal
+        // happens in `stop()` when the SDK is torn down deliberately.
     }
 
     // MARK: - Lifecycle
@@ -108,12 +123,47 @@ internal final class StoreKitSubscriptionMonitor {
             await self.refreshAll()
             await self.observeUpdates()
         }
+
+        #if canImport(UIKit)
+        // StoreKit's `Transaction.updates` async stream does NOT fire on pure
+        // `willAutoRenew` flips (the event Apple emits when a user cancels a
+        // subscription via Settings). Without an extra trigger, a cancellation
+        // made after app launch stays invisible until the next real transaction
+        // event. Re-pull every time the app returns to foreground so any
+        // off-app toggle (Settings → Subscriptions → Cancel) surfaces the
+        // moment the user comes back.
+        if didBecomeActiveObserver == nil {
+            didBecomeActiveObserver = NotificationCenter.default.addObserver(
+                forName: UIApplication.didBecomeActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { [weak self] in await self?.refreshAll() }
+            }
+        }
+        #endif
     }
 
     /// Stop observing. Used during SDK teardown / tests.
     func stop() {
         updateListenerTask?.cancel()
         updateListenerTask = nil
+
+        #if canImport(UIKit)
+        if let token = didBecomeActiveObserver {
+            NotificationCenter.default.removeObserver(token)
+            didBecomeActiveObserver = nil
+        }
+        #endif
+    }
+
+    /// Force a fresh read of every current entitlement's renewal state and emit
+    /// any changes. Cheap — each call is one `Transaction.currentEntitlements`
+    /// pull and a handful of `Product.products(for:)` lookups. Safe to call
+    /// from UI code paths that evaluate offer / cancel state; the observed
+    /// output still reaches consumers via `stateChanges`.
+    func refreshIfStale() async {
+        await refreshAll()
     }
 
     // MARK: - Queries
@@ -127,11 +177,27 @@ internal final class StoreKitSubscriptionMonitor {
     // MARK: - Refresh
 
     /// Re-fetches state for every current entitlement. Invoked on `start()` so
-    /// the monitor has data before any `Transaction.updates` fires.
+    /// the monitor has data before any `Transaction.updates` fires, and on
+    /// `didBecomeActive` so subscription cancellations that happened in the
+    /// App Store Settings app surface immediately on foreground.
     func refreshAll() async {
+        var refreshedProductIds: [String] = []
         for await result in StoreKit.Transaction.currentEntitlements {
             guard case .verified(let transaction) = result else { continue }
             await self.updateFor(transaction: transaction)
+            refreshedProductIds.append(transaction.productID)
+        }
+
+        if refreshedProductIds.isEmpty {
+            ZSLogger.debug("[StoreKitSubscriptionMonitor] refreshAll: no current entitlements", category: .entitlements)
+        } else {
+            let summary = refreshedProductIds.map { id -> String in
+                if let info = self.subscriptionInfoByProductId[id] {
+                    return "\(id) willAutoRenew=\(info.willAutoRenew) state=\(info.renewalState.rawValue)"
+                }
+                return "\(id) (non-subscription or unknown)"
+            }.joined(separator: ", ")
+            ZSLogger.debug("[StoreKitSubscriptionMonitor] refreshAll: \(summary)", category: .entitlements)
         }
     }
 
