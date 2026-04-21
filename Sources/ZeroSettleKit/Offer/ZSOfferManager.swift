@@ -70,6 +70,7 @@ public final class ZSOfferManager: ObservableObject {
     private var stripeCustomerId: String?
     private var checkoutTransactionId: String?
     private var preloadTask: Task<URL?, Never>?
+    private var monitorObservationTask: Task<Void, Never>?
 
     // Persistence keys
     private static let dismissedKeyPrefix = "com.zerosettle.offerTipDismissed"
@@ -86,6 +87,80 @@ public final class ZSOfferManager: ObservableObject {
         self.userId = userId
         self.stripeCustomerId = stripeCustomerId
         startObserving()
+        startMonitoringSubscriptionChanges()
+    }
+
+    deinit {
+        monitorObservationTask?.cancel()
+    }
+
+    // MARK: - Subscription Monitor Integration
+
+    /// Subscribe to local StoreKit subscription state changes so the offer
+    /// flow can flip to `.completed` the moment the user cancels Apple
+    /// auto-renew in App Store Settings — no ASSN / backend round-trip needed.
+    private func startMonitoringSubscriptionChanges() {
+        monitorObservationTask?.cancel()
+        let monitor = ZeroSettle.shared.subscriptionMonitor
+        monitorObservationTask = Task { [weak self] in
+            for await info in monitor.stateChanges {
+                guard !Task.isCancelled else { break }
+                await self?.handleSubscriptionInfoChange(info)
+            }
+        }
+    }
+
+    /// Consumes a `StoreKitSubscriptionMonitor.SubscriptionInfo` update and
+    /// transitions state when appropriate. Only acts while in `.accepted` with
+    /// `storekitCancelRequired == true` — outside of that window, the offer
+    /// flow has no pending "cancel Apple" expectation to resolve.
+    private func handleSubscriptionInfoChange(_ info: StoreKitSubscriptionMonitor.SubscriptionInfo) async {
+        guard state == .accepted, storekitCancelRequired else { return }
+        guard let data = offerData else { return }
+
+        // The product to watch is whichever StoreKit product the user is
+        // migrating away from. For migration flows that's the same as the
+        // target product (same reference_id); for storekit_to_web upgrades
+        // it's the `fromProductId` the user currently holds.
+        let watchedProductId = data.fromProductId ?? data.productId
+        guard info.productId == watchedProductId else { return }
+
+        let cancelled = !info.willAutoRenew
+            || info.renewalState == .expired
+            || info.renewalState == .revoked
+        guard cancelled else { return }
+
+        ZSLogger.info(
+            "[OfferManager] Local StoreKit monitor detected cancellation for \(info.productId) (willAutoRenew=\(info.willAutoRenew), state=\(info.renewalState.rawValue)) — transitioning to .completed",
+            category: .migration
+        )
+
+        storekitCancelRequired = false
+        state = .completed
+
+        // Fire-and-forget: nudge the backend so the dashboard ledger
+        // reflects the local observation. Best-effort — never throws.
+        await syncCancellationToBackend(info: info)
+    }
+
+    /// Best-effort sync of the cancellation signal to the backend. The next
+    /// StoreKit sync will also carry the updated `willAutoRenew` via the
+    /// extended payload, but this call updates the transaction row directly
+    /// so the dashboard reflects the change immediately.
+    private func syncCancellationToBackend(info: StoreKitSubscriptionMonitor.SubscriptionInfo) async {
+        guard let txnId = checkoutTransactionId else { return }
+        do {
+            let backend = try makeBackend()
+            // Status 2 = cancelled/expired in the SDK's convention, matches
+            // `showAppleSubscriptionManagement()` and StoreKitSubscriptionStatus.
+            try await backend.updateStorekitStatus(
+                transactionId: txnId,
+                storekitStatus: 2,
+                storekitSubscriptionEnd: nil
+            )
+        } catch {
+            ZSLogger.error("[OfferManager] Failed to sync local cancellation to backend: \(error)", category: .migration)
+        }
     }
 
     // MARK: - Observation

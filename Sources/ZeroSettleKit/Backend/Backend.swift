@@ -364,11 +364,28 @@ internal final class Backend: @unchecked Sendable {
 
     /// Forward a StoreKit transaction's JWS representation for server-side verification.
     /// Returns ownership info: `owned` is true if this transaction belongs to the current user.
-    func syncStoreKitTransaction(jwsRepresentation: String, userId: String) async throws -> SyncStoreKitTransactionResponse {
+    ///
+    /// - Parameters:
+    ///   - jwsRepresentation: The verified JWS payload from StoreKit.
+    ///   - userId: Your app's user identifier.
+    ///   - willAutoRenew: Optional latest `RenewalInfo.willAutoRenew` observed
+    ///     by the SDK. When supplied, the backend can reconcile Apple-side
+    ///     cancellations without waiting on ASSN v2. Backend added support
+    ///     via Patch 2B; older servers ignore the extra key.
+    ///   - renewalState: Optional latest `SubscriptionInfo.RenewalState` (e.g.
+    ///     `subscribed`, `expired`, `revoked`). Paired with `willAutoRenew`.
+    func syncStoreKitTransaction(
+        jwsRepresentation: String,
+        userId: String,
+        willAutoRenew: Bool? = nil,
+        renewalState: String? = nil
+    ) async throws -> SyncStoreKitTransactionResponse {
         let url = apiURL("iap/storekit-transactions/")
         let body = SyncStoreKitTransactionRequest(
             jwsRepresentation: jwsRepresentation,
-            userId: userId
+            userId: userId,
+            willAutoRenew: willAutoRenew,
+            renewalState: renewalState
         )
         return try await wrapped {
             try await httpClient.post(url, body: body, headers: authHeaders, responseType: SyncStoreKitTransactionResponse.self)
@@ -381,7 +398,9 @@ internal final class Backend: @unchecked Sendable {
         let url = apiURL("iap/claim-entitlement/")
         let body = SyncStoreKitTransactionRequest(
             jwsRepresentation: jwsRepresentation,
-            userId: userId
+            userId: userId,
+            willAutoRenew: nil,
+            renewalState: nil
         )
         return try await wrapped {
             try await httpClient.post(url, body: body, headers: authHeaders, responseType: ClaimEntitlementResponse.self)
@@ -787,6 +806,12 @@ internal struct BatchCheckoutResponse: Decodable {
 private struct SyncStoreKitTransactionRequest: Encodable {
     let jwsRepresentation: String
     let userId: String
+    /// Latest `RenewalInfo.willAutoRenew` observed by the SDK (Patch 2B).
+    /// Older backends ignore this field.
+    let willAutoRenew: Bool?
+    /// Latest `Product.SubscriptionInfo.RenewalState` observed by the SDK.
+    /// Raw values match `StoreKitSubscriptionMonitor.RenewalState.rawValue`.
+    let renewalState: String?
 }
 
 internal struct SyncStoreKitTransactionResponse: Decodable {

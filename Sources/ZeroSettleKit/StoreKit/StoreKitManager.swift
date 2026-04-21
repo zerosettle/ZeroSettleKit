@@ -71,10 +71,17 @@ internal final class StoreKitManager {
     private var updateListenerTask: Task<Void, Never>?
     private var userId: String?
 
+    /// Optional local subscription monitor. When provided, its current
+    /// `willAutoRenew` / `renewalState` snapshot is attached to the StoreKit
+    /// sync payload so the backend ledger reflects the user's latest
+    /// App-Store-side state (Patch 2B pairing).
+    private weak var subscriptionMonitor: StoreKitSubscriptionMonitor?
+
     weak var delegate: StoreKitUpdateDelegate?
 
-    init(backend: Backend) {
+    init(backend: Backend, subscriptionMonitor: StoreKitSubscriptionMonitor? = nil) {
         self.backend = backend
+        self.subscriptionMonitor = subscriptionMonitor
     }
 
     // MARK: - Listening
@@ -89,7 +96,9 @@ internal final class StoreKitManager {
             await self?.listenForUpdates()
         }
 
-        // Retry any pending syncs from previous sessions
+        // Retry any pending syncs from previous sessions. The retry path does
+        // not have per-transaction product context, so willAutoRenew/renewalState
+        // are omitted here — next live transaction update will refresh them.
         let backend = self.backend
         let syncQueue = self.syncQueue
         Task(priority: .utility) { [weak self] in
@@ -102,6 +111,26 @@ internal final class StoreKitManager {
             }
         }
 
+    }
+
+    // MARK: - Renewal State Enrichment
+
+    /// Snapshot of `willAutoRenew` + `renewalState` for the given product,
+    /// sourced from the local ``StoreKitSubscriptionMonitor``. Returned as a
+    /// tuple-less struct so call sites stay readable.
+    private struct RenewalSnapshot {
+        let willAutoRenew: Bool?
+        let renewalState: String?
+    }
+
+    private func renewalSnapshot(for productId: String) -> RenewalSnapshot {
+        guard let info = subscriptionMonitor?.subscriptionInfoByProductId[productId] else {
+            return RenewalSnapshot(willAutoRenew: nil, renewalState: nil)
+        }
+        return RenewalSnapshot(
+            willAutoRenew: info.willAutoRenew,
+            renewalState: info.renewalState.rawValue
+        )
     }
 
     /// Stop listening for StoreKit transaction updates.
@@ -227,10 +256,13 @@ internal final class StoreKitManager {
         for await result in SKTransaction.currentEntitlements {
             guard case .verified(let transaction) = result else { continue }
             let jws = result.jwsRepresentation
+            let snapshot = renewalSnapshot(for: transaction.productID)
             do {
                 let response = try await backend.syncStoreKitTransaction(
                     jwsRepresentation: jws,
-                    userId: userId
+                    userId: userId,
+                    willAutoRenew: snapshot.willAutoRenew,
+                    renewalState: snapshot.renewalState
                 )
                 // Default owned to true for backward compat with older backends
                 if response.owned ?? true, let origId = response.originalTransactionId {
@@ -362,11 +394,22 @@ internal final class StoreKitManager {
             return
         }
 
+        // Refresh monitor state before syncing so the payload reflects the
+        // latest willAutoRenew/renewalState for this product. This is what
+        // lets the backend detect an Apple cancellation on the next sync
+        // even if ASSN never arrives.
+        if let monitor = subscriptionMonitor {
+            await monitor.refreshAll()
+        }
+        let snapshot = renewalSnapshot(for: transaction.productID)
+
         // Forward JWS to ZeroSettle backend for server-side verification
         do {
             let response = try await backend.syncStoreKitTransaction(
                 jwsRepresentation: jwsRepresentation,
-                userId: userId
+                userId: userId,
+                willAutoRenew: snapshot.willAutoRenew,
+                renewalState: snapshot.renewalState
             )
             if response.owned == false {
                 ZSLogger.error("Server returned owned=false for a new purchase — unexpected. product=\(transaction.productID)", category: .entitlements)

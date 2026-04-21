@@ -602,6 +602,13 @@ public final class ZeroSettle: ObservableObject {
     @ObservationIgnored
     private var storeKitManager: StoreKitManager?
 
+    /// Observes StoreKit subscription state changes (cancel, revoke, expire)
+    /// locally. Used by `ZSOfferManager` / `ZSMigrationManager` to transition
+    /// to terminal UI states the moment the user cancels in App Store Settings
+    /// — no ASSN / backend round-trip required. See ``StoreKitSubscriptionMonitor``.
+    @ObservationIgnored
+    internal let subscriptionMonitor = StoreKitSubscriptionMonitor()
+
 #if NativePay
     @ObservationIgnored
     private var nativePayFlow: NativePay.Flow?
@@ -661,11 +668,17 @@ public final class ZeroSettle: ObservableObject {
 #endif
 
         if config.syncStoreKitTransactions {
-            let storeKitManager = StoreKitManager(backend: backend)
+            let storeKitManager = StoreKitManager(backend: backend, subscriptionMonitor: subscriptionMonitor)
             storeKitManager.delegate = self
             storeKitManager.startListening()
             self.storeKitManager = storeKitManager
         }
+
+        // Local subscription monitor runs regardless of `syncStoreKitTransactions`
+        // — consumers (ZSOfferManager, ZSMigrationManager) rely on it to flip
+        // to terminal UI states when the user cancels Apple auto-renew. Even
+        // RevenueCat-integrated apps benefit from local UI updates.
+        subscriptionMonitor.start()
 
         isConfigured = true
 

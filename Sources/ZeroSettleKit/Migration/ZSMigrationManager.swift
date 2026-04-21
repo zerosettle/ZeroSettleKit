@@ -59,6 +59,11 @@ public final class ZSMigrationManager: ObservableObject {
     /// Tracks the active sync task to prevent concurrent evaluations.
     private var syncTask: Task<Void, Never>?
 
+    /// Observes `StoreKitSubscriptionMonitor.stateChanges` so the manager
+    /// can transition `.accepted` → `.completed` the moment the user cancels
+    /// Apple auto-renew (no ASSN / backend round-trip required).
+    private var monitorObservationTask: Task<Void, Never>?
+
     /// Re-entrancy guard for evaluateEligibility.
     private var isEvaluating = false
 
@@ -175,6 +180,46 @@ public final class ZSMigrationManager: ObservableObject {
 
         // Evaluate immediately and start observing ZeroSettle.shared for changes
         startObserving()
+        startMonitoringSubscriptionChanges()
+    }
+
+    deinit {
+        monitorObservationTask?.cancel()
+    }
+
+    /// Subscribe to local StoreKit subscription state changes so the migration
+    /// flow flips to `.completed` the moment the user cancels Apple auto-renew
+    /// in App Store Settings — independent of ASSN / backend reconciliation.
+    private func startMonitoringSubscriptionChanges() {
+        monitorObservationTask?.cancel()
+        let monitor = ZeroSettle.shared.subscriptionMonitor
+        monitorObservationTask = Task { [weak self] in
+            for await info in monitor.stateChanges {
+                guard !Task.isCancelled else { break }
+                await self?.handleSubscriptionInfoChange(info)
+            }
+        }
+    }
+
+    private func handleSubscriptionInfoChange(_ info: StoreKitSubscriptionMonitor.SubscriptionInfo) async {
+        guard state == .accepted, storekitCancelRequired else { return }
+
+        // Match against the StoreKit product the user accepted the migration for.
+        guard let watchedProductId = offerData?.activeStoreKitProductId else { return }
+        guard info.productId == watchedProductId else { return }
+
+        let cancelled = !info.willAutoRenew
+            || info.renewalState == .expired
+            || info.renewalState == .revoked
+        guard cancelled else { return }
+
+        ZSLogger.info(
+            "[MigrationManager] Local StoreKit monitor detected cancellation for \(info.productId) (willAutoRenew=\(info.willAutoRenew), state=\(info.renewalState.rawValue)) — transitioning to .completed",
+            category: .migration
+        )
+
+        storekitCancelRequired = false
+        state = .completed
     }
 
     /// Observes `ZeroSettle.shared` properties read by `evaluateEligibility()` and
