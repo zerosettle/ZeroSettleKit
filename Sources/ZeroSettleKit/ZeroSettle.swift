@@ -1900,10 +1900,4 @@ extension ZeroSettle: StoreKitUpdateDelegate {
     func storeKitSyncFailed(error: Error) {
         delegate?.zeroSettleStoreKitSyncFailed(error: error)
     }
-
-    func storeKitEntitlementsDidChange(_ storeKitEntitlements: [Entitlement]) {
-        // Merge: keep web entitlements, replace StoreKit entitlements (filtered by ownership)
-        let webEntitlements = self.entitlements.filter { $0.source == .webCheckout }
-        updateEntitlements(webEntitlements + filterOwnedEntitlements(storeKitEntitlements))
-    }
 }
