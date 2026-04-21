@@ -583,9 +583,19 @@ public final class ZeroSettle: ObservableObject {
         throw ZeroSettleError.userIdRequired(productId: product.id)
     }
 
-    /// Update entitlements and notify all observers (delegate + AsyncStream).
+    /// Update entitlements and notify all observers (delegate + AsyncStream +
+    /// SwiftUI bindings).
+    ///
+    /// `ZeroSettle` is annotated with both `@Observable` (for `withObservationTracking`
+    /// consumers like ``ZSOfferManager``) and `ObservableObject` (for legacy
+    /// `@ObservedObject` / `@StateObject` consumers reading `ZeroSettle.shared`).
+    /// The `@Observable` macro does NOT publish to `objectWillChange` — so views
+    /// that adopt the `ObservableObject` protocol would miss updates unless we
+    /// send manually. We do both on every mutation to guarantee downstream
+    /// re-renders regardless of which observation style the app chose.
     private func updateEntitlements(_ newEntitlements: [Entitlement]) {
         guard entitlements != newEntitlements else { return }
+        objectWillChange.send()
         entitlements = newEntitlements
         entitlementContinuation?.yield(newEntitlements)
         delegate?.zeroSettleEntitlementsDidUpdate(newEntitlements)
@@ -1761,25 +1771,53 @@ public final class ZeroSettle: ObservableObject {
         }
     }
 
-    /// Refetches web entitlements and publishes the merged result to observers.
+    /// Refetches entitlements from BOTH sources (StoreKit + backend) and
+    /// publishes the merged result to observers.
     ///
     /// Call after any mutation that might have changed the user's entitlements
     /// (StoreKit sync, claim, web checkout completion, etc.) so downstream
     /// consumers (``ZSOfferManager``, Switch & Save, debug env view) see the
     /// new ownership state without requiring an app restart.
     ///
+    /// Pulls StoreKit entitlements live via ``StoreKitManager/getCurrentEntitlements()``
+    /// and applies the current ``filterOwnedEntitlements(_:)`` so claims that flip
+    /// ownership of a StoreKit transaction show up immediately — the previous
+    /// implementation reused `entitlements.filter { .storeKit }` which was stale
+    /// (pre-claim) and would drop a freshly-claimed transaction until restart.
+    ///
     /// No-op when no userId is set (pre-bootstrap). Errors are logged, not thrown.
     internal func refreshEntitlementsAndPublish() async {
-        guard let backend else { return }
-        guard let userId = storeKitManager?.currentUserId else { return }
+        ZSLogger.info("refreshEntitlementsAndPublish invoked", category: .entitlements)
+
+        guard let backend else {
+            ZSLogger.debug("refreshEntitlementsAndPublish: no backend (pre-configure) — skipping", category: .entitlements)
+            return
+        }
+        guard let userId = storeKitManager?.currentUserId else {
+            ZSLogger.debug("refreshEntitlementsAndPublish: no userId (pre-bootstrap) — skipping", category: .entitlements)
+            return
+        }
+
+        // Pull fresh StoreKit entitlements (post-claim ownership may have changed).
+        var storeKitEnts: [Entitlement] = []
+        if let storeKitManager {
+            let fresh = await storeKitManager.getCurrentEntitlements()
+            storeKitEnts = filterOwnedEntitlements(fresh)
+        } else {
+            // StoreKit sync disabled (RevenueCat mode) — keep whatever we had.
+            storeKitEnts = entitlements.filter { $0.source == .storeKit }
+        }
 
         do {
             let webEntitlements = try await backend.getEntitlements(userId: userId)
-            let storeKitEnts = entitlements.filter { $0.source == .storeKit }
             updateEntitlements(storeKitEnts + webEntitlements)
             ZSLogger.debug("refreshEntitlementsAndPublish: published \(webEntitlements.count) web + \(storeKitEnts.count) storekit entitlement(s)", category: .entitlements)
         } catch {
-            ZSLogger.error("refreshEntitlementsAndPublish failed: \(error)", category: .entitlements)
+            // Even when the backend call fails, republish the fresh StoreKit
+            // slice so claims that changed local ownership surface to the UI.
+            let webEntitlements = entitlements.filter { $0.source == .webCheckout }
+            updateEntitlements(storeKitEnts + webEntitlements)
+            ZSLogger.error("refreshEntitlementsAndPublish failed (backend): \(error) — republished local state", category: .entitlements)
         }
     }
 
