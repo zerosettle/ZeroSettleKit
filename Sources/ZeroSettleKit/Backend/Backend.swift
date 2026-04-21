@@ -472,6 +472,23 @@ internal final class Backend: @unchecked Sendable {
         }
     }
 
+    // MARK: - User Offer (SDK 1.2+)
+
+    /// Fetch the unified user-offer response: the user's current subscription
+    /// state plus the server-canonical offer decision.
+    func fetchUserOffer(userId: String) async throws -> UserOffer.Response {
+        var components = URLComponents(url: apiURL("iap/user-offer/"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "user_id", value: userId)]
+
+        guard let url = components.url else {
+            throw Backend.wrapError(HTTPError.invalidURL("Failed to construct user-offer URL"))
+        }
+
+        return try await wrapped {
+            try await httpClient.get(url, headers: authHeaders, responseType: UserOffer.Response.self)
+        }
+    }
+
     /// Execute a subscription upgrade (web-to-web or storekit-to-web).
     func executeUpgradeOffer(_ request: UpgradeOffer.ExecuteRequest) async throws -> UpgradeOfferExecuteResponse {
         let url = apiURL("iap/upgrade-offer/execute/")
@@ -858,4 +875,19 @@ internal struct StoreKitSubscriptionStatusResponse: Decodable {
     let autoRenewStatus: Int
     /// Subscription expiration date, if available
     let expiresAt: Date?
+    /// Canonical "granting access" flag from backend 2026-04-20+.
+    /// Absent on older backends — use ``resolvedIsActive`` for safe access.
+    let isActive: Bool?
+    /// Canonical auto-renew flag from backend 2026-04-20+. Absent on older backends.
+    let autoRenewEnabled: Bool?
+
+    /// Canonical "is this subscription currently granting access?" answer.
+    /// Prefers the server-provided ``isActive`` flag from backend 2026-04-20+;
+    /// falls back to the legacy heuristic (`status == 1`) for older backends.
+    var resolvedIsActive: Bool {
+        if let serverProvided = isActive {
+            return serverProvided
+        }
+        return status == 1
+    }
 }
