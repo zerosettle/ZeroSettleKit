@@ -382,6 +382,13 @@ internal final class StoreKitManager {
                 transactionId: transaction.id,
                 originalTransactionId: response.originalTransactionId
             )
+
+            // After sync succeeds with owned:true, refresh local entitlements so
+            // downstream consumers (ZSOfferManager, Switch & Save, debug env view)
+            // see the new ownership state without requiring app restart.
+            if response.owned == true {
+                await ZeroSettle.shared.refreshEntitlementsAndPublish()
+            }
         } catch {
             // Sync failed — enqueue for retry, do NOT finish (StoreKit will redeliver)
             ZSLogger.error("Failed to sync StoreKit transaction: \(error)", category: .entitlements)

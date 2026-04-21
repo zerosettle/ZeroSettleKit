@@ -463,6 +463,13 @@ public final class ZeroSettle: ObservableObject {
             ownedStoreKitTransactionIds?.insert(origTxnId)
         }
 
+        // Claim transferred an entitlement to us — surface it to downstream
+        // consumers (ZSOfferManager, Switch & Save, debug env view) without
+        // waiting for the restoreEntitlements fetch below.
+        if response.claimed == true {
+            await refreshEntitlementsAndPublish()
+        }
+
         // Refresh entitlements to pick up the new claim
         _ = try await restoreEntitlements(userId: userId)
     }
@@ -1738,6 +1745,28 @@ public final class ZeroSettle: ObservableObject {
                 productId: callback.productId,
                 error: ZeroSettleError.transactionVerificationFailed(error.localizedDescription)
             )
+        }
+    }
+
+    /// Refetches web entitlements and publishes the merged result to observers.
+    ///
+    /// Call after any mutation that might have changed the user's entitlements
+    /// (StoreKit sync, claim, web checkout completion, etc.) so downstream
+    /// consumers (``ZSOfferManager``, Switch & Save, debug env view) see the
+    /// new ownership state without requiring an app restart.
+    ///
+    /// No-op when no userId is set (pre-bootstrap). Errors are logged, not thrown.
+    internal func refreshEntitlementsAndPublish() async {
+        guard let backend else { return }
+        guard let userId = storeKitManager?.currentUserId else { return }
+
+        do {
+            let webEntitlements = try await backend.getEntitlements(userId: userId)
+            let storeKitEnts = entitlements.filter { $0.source == .storeKit }
+            updateEntitlements(storeKitEnts + webEntitlements)
+            ZSLogger.debug("refreshEntitlementsAndPublish: published \(webEntitlements.count) web + \(storeKitEnts.count) storekit entitlement(s)", category: .entitlements)
+        } catch {
+            ZSLogger.error("refreshEntitlementsAndPublish failed: \(error)", category: .entitlements)
         }
     }
 
