@@ -57,7 +57,6 @@ internal enum StoreKitPurchaseError: Error, LocalizedError {
 protocol StoreKitUpdateDelegate: AnyObject {
     @MainActor func storeKitDidSyncTransaction(productId: String, transactionId: UInt64, originalTransactionId: String?)
     @MainActor func storeKitSyncFailed(error: Error)
-    @MainActor func storeKitEntitlementsDidChange(_ entitlements: [Entitlement])
 }
 
 // MARK: - StoreKit Manager
@@ -425,13 +424,6 @@ internal final class StoreKitManager {
                 transactionId: transaction.id,
                 originalTransactionId: response.originalTransactionId
             )
-
-            // After sync succeeds with owned:true, refresh local entitlements so
-            // downstream consumers (ZSOfferManager, Switch & Save, debug env view)
-            // see the new ownership state without requiring app restart.
-            if response.owned == true {
-                await ZeroSettle.shared.refreshEntitlementsAndPublish()
-            }
         } catch {
             // Sync failed — enqueue for retry, do NOT finish (StoreKit will redeliver)
             ZSLogger.error("Failed to sync StoreKit transaction: \(error)", category: .entitlements)
@@ -447,9 +439,13 @@ internal final class StoreKitManager {
             delegate?.storeKitSyncFailed(error: error)
         }
 
-        // Refresh entitlements after a new transaction
-        let entitlements = await getCurrentEntitlements()
-        delegate?.storeKitEntitlementsDidChange(entitlements)
+        // Refresh published entitlements from both local StoreKit and backend.
+        // Called unconditionally (success or sync failure) so downstream
+        // consumers — ZSOfferManager, Switch & Save, debug env view, any
+        // @ObservedObject/@StateObject SwiftUI view — see the latest ownership
+        // state. Replaces a prior lossy merge that dropped backend-returned
+        // storekit entitlements, causing premium UI to flash on then off.
+        await ZeroSettle.shared.refreshEntitlementsAndPublish()
     }
 
     private func entitlementFromTransaction(
