@@ -1822,42 +1822,36 @@ public final class ZeroSettle: ObservableObject {
     }
 
     /// Refresh entitlements after a successful checkout.
-    /// Fetches fresh entitlements from the backend and merges with StoreKit entitlements.
-    /// Falls back to creating a local entitlement if the backend call fails.
+    ///
+    /// Delegates to `refreshEntitlementsAndPublish` for the canonical
+    /// local-StoreKit + backend merge so upgrade / migration flows don't
+    /// leave the UI on stale state (previously this method kept
+    /// `self.entitlements.filter { .storeKit }` verbatim, which skipped the
+    /// ownership filter and could duplicate rows that `getEntitlements` also
+    /// returned from the backend).
+    ///
+    /// For consumables, the backend doesn't persist an entitlement, so if
+    /// the fresh fetch doesn't contain one for this transaction, we append a
+    /// local entitlement here so `newConsumableEntitlements(excluding:)` can
+    /// match it and the app can credit tokens.
     internal func refreshEntitlementsAfterCheckout(transaction: CheckoutTransaction) async {
-        guard let backend else { return }
+        guard let _ = backend else { return }
 
-        if let userId = storeKitManager?.currentUserId {
-            do {
-                let freshEntitlements = try await backend.getEntitlements(userId: userId)
-                let storeKitEnts = entitlements.filter { $0.source == .storeKit }
-                var merged = storeKitEnts + freshEntitlements
+        // No userId means checkout without bootstrap — can't call the
+        // backend, so all we can do is append the local fallback.
+        guard storeKitManager?.currentUserId != nil else {
+            appendLocalEntitlement(for: transaction)
+            return
+        }
 
-                // If the server didn't return an entitlement for this transaction
-                // (common for consumables — they're one-time and not persisted),
-                // append a local entitlement so newConsumableEntitlements(excluding:)
-                // can find it and the app can credit tokens.
-                let txnId = transaction.id
-                if !merged.contains(where: { $0.id == txnId || $0.id == "web_\(txnId)" }) {
-                    let local = Entitlement(
-                        id: "web_\(txnId)",
-                        productId: transaction.productId,
-                        source: .webCheckout,
-                        isActive: true,
-                        expiresAt: transaction.expiresAt,
-                        purchasedAt: transaction.purchasedAt
-                    )
-                    merged.append(local)
-                    ZSLogger.info("Appended local entitlement for \(transaction.productId) — server did not include it (consumable)", category: .entitlements)
-                }
+        await refreshEntitlementsAndPublish()
 
-                updateEntitlements(merged)
-                ZSLogger.info("Refreshed entitlements after checkout: \(freshEntitlements.count) web entitlements", category: .entitlements)
-            } catch {
-                ZSLogger.error("Failed to refresh entitlements after checkout: \(error)", category: .entitlements)
-                appendLocalEntitlement(for: transaction)
-            }
-        } else {
+        // Append a local fallback only when the server didn't return an
+        // entitlement for this transaction (consumables, or a rare race
+        // where the webhook hasn't landed yet).
+        let txnId = transaction.id
+        if !entitlements.contains(where: { $0.id == txnId || $0.id == "web_\(txnId)" }) {
+            ZSLogger.info("Appended local entitlement for \(transaction.productId) — server did not include it (consumable or pre-webhook)", category: .entitlements)
             appendLocalEntitlement(for: transaction)
         }
     }
