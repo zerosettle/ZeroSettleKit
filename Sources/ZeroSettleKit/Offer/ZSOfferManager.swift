@@ -115,6 +115,10 @@ public final class ZSOfferManager: ObservableObject {
     /// `storekitCancelRequired == true` — outside of that window, the offer
     /// flow has no pending "cancel Apple" expectation to resolve.
     private func handleSubscriptionInfoChange(_ info: StoreKitSubscriptionMonitor.SubscriptionInfo) async {
+        ZSLogger.debug(
+            "[OfferManager] handleSubscriptionInfoChange: productId=\(info.productId) willAutoRenew=\(info.willAutoRenew) renewalState=\(info.renewalState.rawValue) | state=\(state) storekitCancelRequired=\(storekitCancelRequired)",
+            category: .migration
+        )
         guard state == .accepted, storekitCancelRequired else { return }
         guard let data = offerData else { return }
 
@@ -123,6 +127,10 @@ public final class ZSOfferManager: ObservableObject {
         // target product (same reference_id); for storekit_to_web upgrades
         // it's the `fromProductId` the user currently holds.
         let watchedProductId = data.fromProductId ?? data.productId
+        ZSLogger.debug(
+            "[OfferManager] handleSubscriptionInfoChange: watchedProductId=\(watchedProductId) info.productId=\(info.productId) match=\(info.productId == watchedProductId)",
+            category: .migration
+        )
         guard info.productId == watchedProductId else { return }
 
         let cancelled = !info.willAutoRenew
@@ -438,36 +446,70 @@ public final class ZSOfferManager: ObservableObject {
             return
         }
 
-        // Sheet dismissed — verify cancellation via server-side Apple API
+        // Sheet dismissed — verify cancellation.
         let skEntitlement = activeStoreKitEntitlements.first
         let origTxnId = skEntitlement?.storekitOriginalTransactionId
+        let watchedProductId = offerData.map { $0.fromProductId ?? $0.productId }
         let txnId = checkoutTransactionId
 
-        // Try server-side first (real-time)
+        ZSLogger.info(
+            "[OfferManager] Sheet dismissed — skEntitlement.productId=\(skEntitlement?.productId ?? "nil") origTxnId=\(origTxnId ?? "nil") watchedProductId=\(watchedProductId ?? "nil") txnId=\(txnId ?? "nil")",
+            category: .migration
+        )
+
+        // Step 1: Force a local StoreKit refresh.
+        // Transaction.updates does NOT fire for willAutoRenew flips. didBecomeActive
+        // doesn't fire either — the app stays in the foreground during this in-app sheet.
+        // Without an explicit refresh the monitor stays stale and stateChanges never emits.
+        let monitor = ZeroSettle.shared.subscriptionMonitor
+        let monitorStateBefore = watchedProductId.flatMap { monitor.willAutoRenew(for: $0) }
+        ZSLogger.info("[OfferManager] Local monitor BEFORE refresh: watchedProduct willAutoRenew=\(String(describing: monitorStateBefore))", category: .migration)
+        ZSLogger.info("[OfferManager] All monitor products before refresh: \(monitor.subscriptionInfoByProductId.map { "\($0.key)=willAutoRenew:\($0.value.willAutoRenew)" }.joined(separator: ", "))", category: .migration)
+
+        await monitor.refreshIfStale()
+
+        let monitorStateAfter = watchedProductId.flatMap { monitor.willAutoRenew(for: $0) }
+        ZSLogger.info("[OfferManager] Local monitor AFTER refresh: watchedProduct willAutoRenew=\(String(describing: monitorStateAfter))", category: .migration)
+        ZSLogger.info("[OfferManager] All monitor products after refresh: \(monitor.subscriptionInfoByProductId.map { "\($0.key)=willAutoRenew:\($0.value.willAutoRenew)" }.joined(separator: ", "))", category: .migration)
+
+        let cancelledLocally = monitorStateAfter == false
+
+        // Step 2: Server-side check for revoke/expire or as confirmation fallback.
         var appleStatus = 1 // default: still subscribed
         var expirationDate: Date?
-        var autoRenewEnabled: Bool?
+        var serverAutoRenewEnabled: Bool?
         if let origTxnId {
             do {
                 let backend = try makeBackend()
                 let statusResponse = try await backend.getStoreKitSubscriptionStatus(originalTransactionId: origTxnId)
                 appleStatus = statusResponse.status
                 expirationDate = statusResponse.expiresAt
-                autoRenewEnabled = statusResponse.autoRenewEnabled
+                serverAutoRenewEnabled = statusResponse.autoRenewEnabled
+                ZSLogger.info("[OfferManager] Server status: appleStatus=\(appleStatus) autoRenewEnabled=\(String(describing: serverAutoRenewEnabled)) expiresAt=\(String(describing: expirationDate))", category: .migration)
             } catch {
                 ZSLogger.error("[OfferManager] Server-side Apple status check failed: \(error)", category: .migration)
             }
+        } else {
+            ZSLogger.warning("[OfferManager] No origTxnId — skipping server status check", category: .migration)
         }
 
-        // Treat as done if Apple reports the subscription is expired/revoked (status 2/5)
-        // OR if auto-renew is now off — cancellation via Apple's sheet sets auto-renew=false
-        // immediately but the subscription stays active (status 1) until period end.
-        // Checking only status 2/5 meant the CTA never cleared after a successful cancel.
-        if appleStatus == 5 /* revoked */ || appleStatus == 2 /* expired */ || autoRenewEnabled == false {
+        let cancelled = cancelledLocally
+            || appleStatus == 5 /* revoked */
+            || appleStatus == 2 /* expired */
+            || serverAutoRenewEnabled == false
+
+        ZSLogger.info(
+            "[OfferManager] Cancellation result: cancelledLocally=\(cancelledLocally) appleStatus=\(appleStatus) serverAutoRenewEnabled=\(String(describing: serverAutoRenewEnabled)) → cancelled=\(cancelled)",
+            category: .migration
+        )
+
+        if cancelled {
             storekitCancelRequired = false
             state = .completed
+            ZSLogger.info("[OfferManager] → state=.completed", category: .migration)
         } else {
             storekitCancelRequired = true
+            ZSLogger.info("[OfferManager] → still active, storekitCancelRequired=true", category: .migration)
         }
 
         // Sync status to backend
