@@ -251,11 +251,19 @@ internal final class StoreKitManager {
     /// Returns the set of `original_transaction_id`s confirmed as owned by the current user.
     func syncCurrentTransactions(userId: String) async -> Set<String> {
         var ownedOriginalTransactionIds: Set<String> = []
+        var seenTransactionIds: [String] = []
 
         for await result in SKTransaction.currentEntitlements {
             guard case .verified(let transaction) = result else { continue }
             let jws = result.jwsRepresentation
             let snapshot = renewalSnapshot(for: transaction.productID)
+            // Family Sharing transactions belong to a different Apple ID — do not
+            // treat them as owned by this device's account. The backend will refuse
+            // the entitlement (owned=false), but we also skip adding to the owned
+            // set so filterOwnedEntitlements never surfaces a family-shared row
+            // as if it were directly owned.
+            let isDirectlyOwned = transaction.ownershipType == .purchased
+            seenTransactionIds.append("\(transaction.id)/orig=\(transaction.originalID)/product=\(transaction.productID)/ownership=\(transaction.ownershipType)")
             do {
                 let response = try await backend.syncStoreKitTransaction(
                     jwsRepresentation: jws,
@@ -263,21 +271,30 @@ internal final class StoreKitManager {
                     willAutoRenew: snapshot.willAutoRenew,
                     renewalState: snapshot.renewalState
                 )
-                // Default owned to true for backward compat with older backends
-                if response.owned ?? true, let origId = response.originalTransactionId {
+                // Backend is authoritative for ownership. Only mark owned if the
+                // backend confirms it. Family-shared transactions will return
+                // owned=false and must not be surfaced as directly owned.
+                if response.owned == true && transaction.originalID != 0 {
+                    ownedOriginalTransactionIds.insert(String(transaction.originalID))
+                }
+                if response.owned == true, let origId = response.originalTransactionId {
                     ownedOriginalTransactionIds.insert(origId)
                 }
-                ZSLogger.info("Synced current transaction \(transaction.id) for \(transaction.productID) (owned=\(response.owned ?? true))", category: .entitlements)
+                if response.owned == false {
+                    ZSLogger.info("[syncCurrentTransactions] Server returned owned=false for txn id=\(transaction.id) product=\(transaction.productID) ownership=\(transaction.ownershipType) — not tracked", category: .entitlements)
+                }
+                ZSLogger.info("[syncCurrentTransactions] txn id=\(transaction.id) origID=\(transaction.originalID) product=\(transaction.productID) ownership=\(transaction.ownershipType) → backend owned=\(response.owned ?? true) origTxnId=\(response.originalTransactionId ?? "nil")", category: .entitlements)
             } catch {
-                // On error, optimistically include — will be resolved on next sync
+                // On error, optimistically include directly-owned transactions only.
                 let origId = String(transaction.originalID)
-                if transaction.originalID != 0 {
+                if isDirectlyOwned && transaction.originalID != 0 {
                     ownedOriginalTransactionIds.insert(origId)
                 }
-                ZSLogger.error("Failed to sync current transaction \(transaction.id): \(error)", category: .entitlements)
+                ZSLogger.error("[syncCurrentTransactions] FAILED txn id=\(transaction.id) origID=\(transaction.originalID) product=\(transaction.productID) ownership=\(transaction.ownershipType): \(error)", category: .entitlements)
             }
         }
 
+        ZSLogger.info("[syncCurrentTransactions] saw \(seenTransactionIds.count) txn(s): \(seenTransactionIds). Final owned set: \(ownedOriginalTransactionIds)", category: .entitlements)
         return ownedOriginalTransactionIds
     }
 
@@ -316,6 +333,8 @@ internal final class StoreKitManager {
                 RenewalStatus(willAutoRenew: $0.willAutoRenew)
             }
 
+            ZSLogger.info("[getCurrentEntitlements] txn id=\(transaction.id) origID=\(originalTxnId) product=\(transaction.productID) expires=\(transaction.expirationDate?.description ?? "nil")", category: .entitlements)
+
             let entitlement = entitlementFromTransaction(
                 transaction,
                 originalTransactionId: originalTxnId,
@@ -324,6 +343,7 @@ internal final class StoreKitManager {
             entitlements.append(entitlement)
         }
 
+        ZSLogger.info("[getCurrentEntitlements] returning \(entitlements.count) entitlement(s): \(entitlements.map { "\($0.productId)/orig=\($0.storekitOriginalTransactionId ?? "nil")" })", category: .entitlements)
         return entitlements
     }
 

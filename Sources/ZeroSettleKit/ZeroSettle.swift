@@ -302,11 +302,16 @@ public final class ZeroSettle: ObservableObject {
     /// Filters StoreKit entitlements to only include those owned by the current user.
     /// If no ownership set exists (no sync ran yet), returns all entitlements unfiltered.
     private func filterOwnedEntitlements(_ entitlements: [Entitlement]) -> [Entitlement] {
-        guard let ownedIds = ownedStoreKitTransactionIds else { return entitlements }
-        return entitlements.filter { ent in
+        guard let ownedIds = ownedStoreKitTransactionIds else {
+            ZSLogger.info("[filterOwnedEntitlements] ownedIds=nil → passing all \(entitlements.count) entitlement(s) unfiltered", category: .entitlements)
+            return entitlements
+        }
+        let filtered = entitlements.filter { ent in
             guard let origId = ent.storekitOriginalTransactionId else { return true }
             return ownedIds.contains(origId)
         }
+        ZSLogger.info("[filterOwnedEntitlements] ownedIds=\(ownedIds) input=\(entitlements.map { "\($0.productId)/orig=\($0.storekitOriginalTransactionId ?? "nil")" }) → kept \(filtered.count)/\(entitlements.count)", category: .entitlements)
+        return filtered
     }
 
     /// Cached cancel flow configuration from the backend.
