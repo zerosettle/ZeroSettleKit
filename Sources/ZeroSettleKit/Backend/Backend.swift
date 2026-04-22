@@ -405,11 +405,16 @@ internal final class Backend: @unchecked Sendable {
         renewalState: String? = nil
     ) async throws -> SyncStoreKitTransactionResponse {
         let url = apiURL("iap/storekit-transactions/")
+        let (customerName, customerEmail) = await MainActor.run {
+            (ZeroSettle.shared.customerName, ZeroSettle.shared.customerEmail)
+        }
         let body = SyncStoreKitTransactionRequest(
             jwsRepresentation: jwsRepresentation,
             userId: userId,
             willAutoRenew: willAutoRenew,
-            renewalState: renewalState
+            renewalState: renewalState,
+            customerName: customerName,
+            customerEmail: customerEmail
         )
         return try await wrapped {
             try await httpClient.post(url, body: body, headers: authHeaders, responseType: SyncStoreKitTransactionResponse.self)
@@ -424,7 +429,9 @@ internal final class Backend: @unchecked Sendable {
             jwsRepresentation: jwsRepresentation,
             userId: userId,
             willAutoRenew: nil,
-            renewalState: nil
+            renewalState: nil,
+            customerName: nil,
+            customerEmail: nil
         )
         return try await wrapped {
             try await httpClient.post(url, body: body, headers: authHeaders, responseType: ClaimEntitlementResponse.self)
@@ -842,6 +849,11 @@ private struct SyncStoreKitTransactionRequest: Encodable {
     /// Latest `Product.SubscriptionInfo.RenewalState` observed by the SDK.
     /// Raw values match `StoreKitSubscriptionMonitor.RenewalState.rawValue`.
     let renewalState: String?
+    /// Customer display name from `ZeroSettle.shared.customerName` (set during bootstrap).
+    /// Backend uses this to backfill `Identity.name` on StoreKit-only accounts.
+    let customerName: String?
+    /// Customer email from `ZeroSettle.shared.customerEmail` (set during bootstrap).
+    let customerEmail: String?
 }
 
 internal struct SyncStoreKitTransactionResponse: Decodable {

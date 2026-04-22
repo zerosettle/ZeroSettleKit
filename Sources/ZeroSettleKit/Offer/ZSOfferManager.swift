@@ -446,18 +446,24 @@ public final class ZSOfferManager: ObservableObject {
         // Try server-side first (real-time)
         var appleStatus = 1 // default: still subscribed
         var expirationDate: Date?
+        var autoRenewEnabled: Bool?
         if let origTxnId {
             do {
                 let backend = try makeBackend()
                 let statusResponse = try await backend.getStoreKitSubscriptionStatus(originalTransactionId: origTxnId)
                 appleStatus = statusResponse.status
                 expirationDate = statusResponse.expiresAt
+                autoRenewEnabled = statusResponse.autoRenewEnabled
             } catch {
                 ZSLogger.error("[OfferManager] Server-side Apple status check failed: \(error)", category: .migration)
             }
         }
 
-        if appleStatus == 5 /* expired */ || appleStatus == 2 /* cancelled */ {
+        // Treat as done if Apple reports the subscription is expired/revoked (status 2/5)
+        // OR if auto-renew is now off — cancellation via Apple's sheet sets auto-renew=false
+        // immediately but the subscription stays active (status 1) until period end.
+        // Checking only status 2/5 meant the CTA never cleared after a successful cancel.
+        if appleStatus == 5 /* revoked */ || appleStatus == 2 /* expired */ || autoRenewEnabled == false {
             storekitCancelRequired = false
             state = .completed
         } else {
