@@ -1240,6 +1240,13 @@ public final class ZeroSettle: ObservableObject {
 
         storeKitManager?.setUserId(userId)
 
+        // Snapshot the prior list BEFORE we start fetching, so we can preserve
+        // any locally-appended consumable fallbacks (ids prefixed "web_")
+        // through the rebuild. Consumable web purchases don't get persisted as
+        // backend EntitlementStates, so without this merge they'd be wiped
+        // before the host app observes them via newConsumableEntitlements().
+        let priorEntitlements = entitlements
+
         var allEntitlements: [Entitlement] = []
 
         if let storeKitManager {
@@ -1252,17 +1259,23 @@ public final class ZeroSettle: ObservableObject {
             allEntitlements.append(contentsOf: webEntitlements)
         } catch {
             ZSLogger.error("Failed to fetch web entitlements: \(error)", category: .entitlements)
-            updateEntitlements(allEntitlements)
+            let merged = EntitlementMerge.preservingLocalFallbacks(
+                fresh: allEntitlements, prior: priorEntitlements
+            )
+            updateEntitlements(merged)
             throw ZeroSettleError.restoreEntitlementsFailed(
-                partialEntitlements: allEntitlements,
+                partialEntitlements: merged,
                 underlyingError: error
             )
         }
 
-        updateEntitlements(allEntitlements)
-        ZSLogger.debug("Restored \(allEntitlements.count) entitlement(s) for userId=\"\(userId)\"", category: .entitlements)
+        let merged = EntitlementMerge.preservingLocalFallbacks(
+            fresh: allEntitlements, prior: priorEntitlements
+        )
+        updateEntitlements(merged)
+        ZSLogger.debug("Restored \(merged.count) entitlement(s) for userId=\"\(userId)\" (fresh=\(allEntitlements.count) preserved_fallbacks=\(merged.count - allEntitlements.count))", category: .entitlements)
 
-        return allEntitlements
+        return merged
     }
 
     // MARK: - Transaction History
@@ -1863,7 +1876,7 @@ public final class ZeroSettle: ObservableObject {
 
     /// Create and append a local entitlement from a transaction when backend fetch fails.
     private func appendLocalEntitlement(for transaction: CheckoutTransaction) {
-        ZSLogger.info("Creating local fallback entitlement for \(transaction.productId) (transaction: \(transaction.id)). This entitlement was not fetched from the backend — it will be reconciled on the next restoreEntitlements() call.", category: .entitlements)
+        ZSLogger.info("Creating local fallback entitlement for \(transaction.productId) (transaction: \(transaction.id)). This entitlement is in-memory only — consumables are not persisted as backend EntitlementStates. restoreEntitlements() preserves it via EntitlementMerge until the host app credits it.", category: .entitlements)
         let entitlement = Entitlement(
             id: "web_\(transaction.id)",
             productId: transaction.productId,
