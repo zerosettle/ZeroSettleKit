@@ -1240,13 +1240,6 @@ public final class ZeroSettle: ObservableObject {
 
         storeKitManager?.setUserId(userId)
 
-        // Snapshot the prior list BEFORE we start fetching, so we can preserve
-        // any locally-appended consumable fallbacks (ids prefixed "web_")
-        // through the rebuild. Consumable web purchases don't get persisted as
-        // backend EntitlementStates, so without this merge they'd be wiped
-        // before the host app observes them via newConsumableEntitlements().
-        let priorEntitlements = entitlements
-
         var allEntitlements: [Entitlement] = []
 
         if let storeKitManager {
@@ -1259,8 +1252,11 @@ public final class ZeroSettle: ObservableObject {
             allEntitlements.append(contentsOf: webEntitlements)
         } catch {
             ZSLogger.error("Failed to fetch web entitlements: \(error)", category: .entitlements)
+            // Read the live list right before merging (not pre-await) so any
+            // fallback appended during the fetch window is preserved. See
+            // EntitlementMerge for the preservation rule.
             let merged = EntitlementMerge.preservingLocalFallbacks(
-                fresh: allEntitlements, prior: priorEntitlements
+                fresh: allEntitlements, prior: entitlements
             )
             updateEntitlements(merged)
             throw ZeroSettleError.restoreEntitlementsFailed(
@@ -1270,7 +1266,7 @@ public final class ZeroSettle: ObservableObject {
         }
 
         let merged = EntitlementMerge.preservingLocalFallbacks(
-            fresh: allEntitlements, prior: priorEntitlements
+            fresh: allEntitlements, prior: entitlements
         )
         updateEntitlements(merged)
         ZSLogger.debug("Restored \(merged.count) entitlement(s) for userId=\"\(userId)\" (fresh=\(allEntitlements.count) preserved_fallbacks=\(merged.count - allEntitlements.count))", category: .entitlements)
@@ -1828,13 +1824,26 @@ public final class ZeroSettle: ObservableObject {
 
         do {
             let webEntitlements = try await backend.getEntitlements(userId: userId)
-            updateEntitlements(storeKitEnts + webEntitlements)
-            ZSLogger.debug("refreshEntitlementsAndPublish: published \(webEntitlements.count) web + \(storeKitEnts.count) storekit entitlement(s)", category: .entitlements)
+            // Preserve any local consumable fallbacks (ids prefixed "web_")
+            // that were appended by refreshEntitlementsAfterCheckout but
+            // aren't persisted as backend EntitlementStates (consumables).
+            // Without this merge, background StoreKit syncs would wipe them
+            // before the host app observes them via newConsumableEntitlements().
+            let merged = EntitlementMerge.preservingLocalFallbacks(
+                fresh: storeKitEnts + webEntitlements, prior: entitlements
+            )
+            updateEntitlements(merged)
+            ZSLogger.debug("refreshEntitlementsAndPublish: published \(webEntitlements.count) web + \(storeKitEnts.count) storekit entitlement(s) + \(merged.count - storeKitEnts.count - webEntitlements.count) preserved fallback(s)", category: .entitlements)
         } catch {
             // Even when the backend call fails, republish the fresh StoreKit
             // slice so claims that changed local ownership surface to the UI.
+            // Preserve web entitlements (including local fallbacks) so a
+            // transient backend error doesn't wipe consumables.
             let webEntitlements = entitlements.filter { $0.source == .webCheckout }
-            updateEntitlements(storeKitEnts + webEntitlements)
+            let merged = EntitlementMerge.preservingLocalFallbacks(
+                fresh: storeKitEnts + webEntitlements, prior: entitlements
+            )
+            updateEntitlements(merged)
             ZSLogger.error("refreshEntitlementsAndPublish failed (backend): \(error) — republished local state", category: .entitlements)
         }
     }
