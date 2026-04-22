@@ -490,7 +490,7 @@ public final class ZSOfferManager: ObservableObject {
                 ZSLogger.error("[OfferManager] Server-side Apple status check failed: \(error)", category: .migration)
             }
         } else {
-            ZSLogger.warning("[OfferManager] No origTxnId — skipping server status check", category: .migration)
+            ZSLogger.info("[OfferManager] No origTxnId — skipping server status check", category: .migration)
         }
 
         let cancelled = cancelledLocally
