@@ -7,6 +7,10 @@
 
 import Foundation
 
+#if canImport(UIKit)
+import UIKit
+#endif
+
 #if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
 #endif
@@ -189,7 +193,7 @@ internal final class Backend: @unchecked Sendable {
 
     /// Initiate a checkout for the given product.
     /// The backend creates the Transaction, PaymentIntent/SetupIntent, and returns a `checkoutUrl`.
-    func initiateCheckout(productId: String, userId: String? = nil, stripeCustomerId: String? = nil, storekitSubscriptionEnd: Date? = nil, storekitOriginalTransactionId: String? = nil, checkoutMode: String? = nil) async throws -> CheckoutResponse {
+    func initiateCheckout(productId: String, userId: String? = nil, stripeCustomerId: String? = nil, storekitSubscriptionEnd: Date? = nil, storekitOriginalTransactionId: String? = nil, checkoutMode: String? = nil, externalPurchaseToken: String? = nil) async throws -> CheckoutResponse {
         let url = apiURL("iap/payment-intents/")
         let iso8601End: String? = storekitSubscriptionEnd.map {
             $0.formatted(.iso8601)
@@ -217,10 +221,30 @@ internal final class Backend: @unchecked Sendable {
                     .storekitOriginalTransactionId
             }
         }
-        let (custName, custEmail) = await MainActor.run {
-            (ZeroSettle.shared.customerName, ZeroSettle.shared.customerEmail)
+        // Device iOS version — feeds the backend's Apple auto-reporting
+        // regime detector (Japan MSCA requires iOS 26.4+). UIKit is always
+        // available on iOS; guarded here for non-iOS build targets.
+        let (custName, custEmail, iosVersion): (String?, String?, String?) = await MainActor.run {
+            let name = ZeroSettle.shared.customerName
+            let email = ZeroSettle.shared.customerEmail
+            #if canImport(UIKit)
+            return (name, email, UIDevice.current.systemVersion)
+            #else
+            return (name, email, nil)
+            #endif
         }
-        let body = InitiateCheckoutRequest(productId: productId, userId: userId, stripeCustomerId: stripeCustomerId, storekitSubscriptionEnd: iso8601End, storekitOriginalTransactionId: resolvedOriginalTxnId, checkoutMode: checkoutMode, customerName: custName, customerEmail: custEmail)
+        let body = InitiateCheckoutRequest(
+            productId: productId,
+            userId: userId,
+            stripeCustomerId: stripeCustomerId,
+            storekitSubscriptionEnd: iso8601End,
+            storekitOriginalTransactionId: resolvedOriginalTxnId,
+            checkoutMode: checkoutMode,
+            customerName: custName,
+            customerEmail: custEmail,
+            externalPurchaseToken: externalPurchaseToken,
+            iosVersion: iosVersion
+        )
         do {
             return try await httpClient.post(url, body: body, headers: authHeaders, responseType: CheckoutResponse.self)
         } catch let error as HTTPError {
@@ -705,6 +729,12 @@ internal struct InitiateCheckoutRequest: Encodable {
     let platform: String = "ios"
     let customerName: String?
     let customerEmail: String?
+    /// Apple external-purchase token (from `ExternalPurchase` disclosure sheet).
+    /// Required for Apple auto-reporting — the backend gracefully handles nil.
+    let externalPurchaseToken: String?
+    /// Device iOS version (e.g. "26.4.1") — used by the backend regime detector
+    /// to decide whether a transaction qualifies for Japan MSCA reporting.
+    let iosVersion: String?
 }
 
 internal struct UpdateStorekitStatusRequest: Encodable {
