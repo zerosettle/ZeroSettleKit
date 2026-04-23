@@ -247,7 +247,13 @@ internal struct CheckoutSheetModifier<Header: View>: ViewModifier {
                 if preload != nil { pool.unregisterModifier() }
                 #endif
             }
-            .task {
+            .task(id: userId) {
+                // Key on userId so an account switch:
+                //  (a) discards the previous user's preloaded PI URL/txn,
+                //  (b) re-runs the warm-up for the current user, and
+                //  (c) never presents a sheet with someone else's client_secret.
+                preloadedURL = nil
+                preloadedTransactionId = nil
                 WebKitWarmup.warmIfNeeded()
                 if let preload {
                     Task { @MainActor in
@@ -437,7 +443,13 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
                 if preload != nil { pool.unregisterModifier() }
                 #endif
             }
-            .task {
+            .task(id: userId) {
+                // Key on userId so an account switch:
+                //  (a) discards the previous user's preloaded PI URL/txn,
+                //  (b) re-runs the warm-up for the current user, and
+                //  (c) never presents a sheet with someone else's client_secret.
+                preloadedURL = nil
+                preloadedTransactionId = nil
                 WebKitWarmup.warmIfNeeded()
                 if let preload {
                     Task { @MainActor in

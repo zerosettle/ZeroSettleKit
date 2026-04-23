@@ -544,6 +544,12 @@ public final class ZeroSettle: ObservableObject {
         // Cached checkout sessions (PaymentIntents for previous user)
         Task { await CheckoutResponseCache.shared.clearAll() }
 
+        // Preloaded WebViews hold a client_secret for the previous user —
+        // present one and you attribute the purchase to whoever that PI
+        // was created for. Tear them all down so a fresh account starts
+        // with no carry-over state.
+        CheckoutPreloaderPool.shared.resetAll()
+
         // StoreKit listener userId
         storeKitManager?.setUserId(nil)
     }
@@ -757,6 +763,9 @@ public final class ZeroSettle: ObservableObject {
         offerManager = nil
         ownedStoreKitTransactionIds = nil
         Task { await CheckoutResponseCache.shared.clearAll() }
+        // Tear down preloaded WebViews — they hold a client_secret from
+        // the previous user's PI. See logout() for rationale.
+        CheckoutPreloaderPool.shared.resetAll()
 
         // Store customer info for subsequent checkout requests.
         self.customerName = name
