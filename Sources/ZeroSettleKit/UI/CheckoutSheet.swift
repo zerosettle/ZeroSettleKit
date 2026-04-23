@@ -820,6 +820,12 @@ extension CheckoutSheet {
         let backend = Backend(baseURL: baseURL, publishableKey: config.publishableKey)
         do {
             let transaction = try await backend.verifyTransaction(transactionId: transactionId)
+            // Append the local fallback entitlement before firing onComplete so that
+            // host apps which immediately call restoreEntitlements() / credit consumable
+            // tokens in their completion handler see the new entitlement. Other checkout
+            // paths (purchase(), ZSMigrationManager, ZSOfferManager) already do this —
+            // the .checkoutSheet WebView branch was the only gap.
+            await ZeroSettle.shared.refreshEntitlementsAfterCheckout(transaction: transaction)
             onComplete(.success(transaction))
             // Fire delegate for consistency across all checkout types
             await ZeroSettle.shared.delegate?.zeroSettleCheckoutDidComplete(transaction: transaction)
