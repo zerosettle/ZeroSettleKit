@@ -1895,6 +1895,26 @@ public final class ZeroSettle: ObservableObject {
             ZSLogger.info("Appended local entitlement for \(transaction.productId) — server did not include it (consumable or pre-webhook)", category: .entitlements)
             appendLocalEntitlement(for: transaction)
         }
+
+        // Nudge offer managers to re-evaluate so upgrade & save can surface
+        // immediately after a web purchase without requiring an app relaunch.
+        await refreshOfferEligibility()
+    }
+
+    /// Re-fetch the product catalog so `remoteConfig.offer` reflects the
+    /// latest user-offer eligibility from the backend. Both ``ZSMigrationManager``
+    /// and ``ZSOfferManager`` observe ``remoteConfig`` via
+    /// `withObservationTracking` and will re-run their eligibility checks
+    /// automatically when it changes — so after a StoreKit purchase the
+    /// switch & save tip can pop, and after a web purchase the upgrade & save
+    /// funnel can surface, without the user having to relaunch the app.
+    ///
+    /// Failures are logged (inside ``fetchProducts``) but swallowed here —
+    /// the purchase that triggered this refresh already succeeded and we
+    /// don't want to propagate a stale-catalog error to the checkout path.
+    internal func refreshOfferEligibility() async {
+        guard let userId = storeKitManager?.currentUserId else { return }
+        _ = try? await fetchProducts(userId: userId)
     }
 
     /// Create and append a local entitlement from a transaction when backend fetch fails.

@@ -444,6 +444,11 @@ internal final class StoreKitManager {
                 transactionId: transaction.id,
                 originalTransactionId: response.originalTransactionId
             )
+
+            // Nudge offer managers to re-evaluate with fresh server state so
+            // switch & save can pop immediately after the new sub without
+            // requiring an app relaunch.
+            await ZeroSettle.shared.refreshOfferEligibility()
         } catch {
             // Sync failed — enqueue for retry, do NOT finish (StoreKit will redeliver)
             ZSLogger.error("Failed to sync StoreKit transaction: \(error)", category: .entitlements)
