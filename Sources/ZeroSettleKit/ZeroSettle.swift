@@ -574,6 +574,19 @@ public final class ZeroSettle: ObservableObject {
 #endif
     }
 
+    /// Build a ``Backend`` bound to the current configuration.
+    ///
+    /// Throws ``ZeroSettleError/notConfigured`` if the SDK has not been
+    /// configured or has no resolvable base URL. Callers that want a specific
+    /// log prefix can catch and re-log; the generic failure is logged here.
+    internal func makeBackend() throws -> Backend {
+        guard let config = currentConfig, let baseURL = effectiveBaseURL else {
+            ZSLogger.error("makeBackend() failed — SDK not configured", category: .migration)
+            throw ZeroSettleError.notConfigured
+        }
+        return Backend(baseURL: baseURL, publishableKey: config.publishableKey)
+    }
+
     // MARK: - Private Helpers
 
     /// Throws ``ZeroSettleError/userIdRequired(productId:)`` when a `userId` is needed but absent.

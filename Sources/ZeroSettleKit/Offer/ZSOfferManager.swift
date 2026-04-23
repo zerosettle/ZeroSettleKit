@@ -591,12 +591,7 @@ public final class ZSOfferManager: ObservableObject {
     }
 
     private func makeBackend() throws -> Backend {
-        guard let config = ZeroSettle.shared.currentConfig,
-              let baseURL = ZeroSettle.shared.effectiveBaseURL else {
-            ZSLogger.error("[OfferManager] makeBackend() failed — SDK not configured", category: .migration)
-            throw ZeroSettleError.notConfigured
-        }
-        return Backend(baseURL: baseURL, publishableKey: config.publishableKey)
+        try ZeroSettle.shared.makeBackend()
     }
 
     // MARK: - Dismissal Persistence
