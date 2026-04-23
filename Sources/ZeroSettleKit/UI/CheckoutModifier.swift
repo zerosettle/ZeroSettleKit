@@ -42,6 +42,36 @@ internal func awaitBootstrap() async -> Bool {
     return ZeroSettle.shared.isBootstrapped
 }
 
+/// Delegate a checkout to `ZeroSettle.shared.purchase()` — used by the
+/// three SwiftUI checkout modifiers when `checkoutType` is `.safari` or
+/// `.safariVC` (any type other than `.webView` / `.nativePay`). Those
+/// types open a browser flow and don't need the modifier's WebView
+/// preload machinery, so the modifier just forwards the purchase.
+///
+/// The `onFinally` closure resets the modifier's presentation state —
+/// callers pass `{ isPresented = false }`, `{ item = nil }`, or
+/// `onDismissed` depending on which modifier they are.
+@MainActor
+internal func performSafariCheckout(
+    product: ZSProduct,
+    userId: String?,
+    checkoutType: CheckoutType,
+    onComplete: (Result<CheckoutTransaction, Error>) -> Void,
+    onFinally: () -> Void
+) async {
+    ZSLogger.info("[Checkout] safari delegation: routing to purchase() for \(checkoutType.rawValue)", category: .checkout)
+    do {
+        let transaction = try await ZeroSettle.shared.purchase(
+            productId: product.id, userId: userId
+        )
+        onComplete(.success(transaction))
+    } catch {
+        ZSLogger.error("[Checkout] safari delegation: purchase() failed: \(error)", category: .checkout)
+        onComplete(.failure(error))
+    }
+    onFinally()
+}
+
 /// Invalidates caches, resets preloader, and eagerly re-preloads after a successful checkout.
 /// Shared across `CheckoutSheetModifier`, `CheckoutSheetItemModifier`, and
 /// `UIKitSheetBridge` to eliminate duplicated post-success logic.
@@ -308,15 +338,10 @@ internal struct CheckoutSheetModifier<Header: View>: ViewModifier {
 
         // ── Safari / SafariVC — delegate to purchase() which opens the browser ──
         guard checkoutType == .webView || checkoutType == .nativePay else {
-            do {
-                let transaction = try await ZeroSettle.shared.purchase(
-                    productId: product.id, userId: userId
-                )
-                onComplete(.success(transaction))
-            } catch {
-                onComplete(.failure(error))
-            }
-            isPresented = false
+            await performSafariCheckout(
+                product: product, userId: userId, checkoutType: checkoutType,
+                onComplete: onComplete, onFinally: { isPresented = false }
+            )
             return
         }
 
@@ -519,17 +544,10 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
 
         // ── Safari / SafariVC — delegate to purchase() which opens the browser ──
         guard checkoutType == .webView || checkoutType == .nativePay else {
-            ZSLogger.info("[Checkout] preloadAll: routing to purchase() for \(checkoutType.rawValue)", category: .checkout)
-            do {
-                let transaction = try await ZeroSettle.shared.purchase(
-                    productId: product.id, userId: userId
-                )
-                onComplete(.success(transaction))
-            } catch {
-                ZSLogger.error("[Checkout] preloadAll: purchase() failed: \(error)", category: .checkout)
-                onComplete(.failure(error))
-            }
-            item = nil
+            await performSafariCheckout(
+                product: product, userId: userId, checkoutType: checkoutType,
+                onComplete: onComplete, onFinally: { item = nil }
+            )
             return
         }
 
@@ -687,15 +705,10 @@ internal struct UIKitSheetBridge<SheetHeader: View>: View {
 
         // ── Safari / SafariVC — delegate to purchase() which opens the browser ──
         guard checkoutType == .webView || checkoutType == .nativePay else {
-            do {
-                let transaction = try await ZeroSettle.shared.purchase(
-                    productId: product.id, userId: userId
-                )
-                onComplete(.success(transaction))
-            } catch {
-                onComplete(.failure(error))
-            }
-            onDismissed()
+            await performSafariCheckout(
+                product: product, userId: userId, checkoutType: checkoutType,
+                onComplete: onComplete, onFinally: onDismissed
+            )
             return
         }
 
