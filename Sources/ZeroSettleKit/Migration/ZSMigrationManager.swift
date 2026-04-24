@@ -999,12 +999,12 @@ public final class ZSMigrationManager: ObservableObject {
             status: .active,
             expiresAt: now.addingTimeInterval(30 * 86_400),
             willRenew: true,
-            purchasedAt: now.addingTimeInterval(-60 * 86_400),
-            storekitOriginalTransactionId: nil,
             // Intentional: matches `purchasedAt` exactly. A real StoreKit
             // entitlement's originalPurchaseDate equals purchasedAt for the
             // first transaction in a subscription group, so the synthesized
             // demo entitlement mirrors that shape.
+            purchasedAt: now.addingTimeInterval(-60 * 86_400),
+            storekitOriginalTransactionId: nil,
             originalPurchaseDate: now.addingTimeInterval(-60 * 86_400)
         )
     }
