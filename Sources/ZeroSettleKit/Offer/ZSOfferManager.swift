@@ -454,6 +454,14 @@ public final class ZSOfferManager: ObservableObject {
             ZSLogger.info("[OfferManager] present() skipped — state is \(state), expected .eligible", category: .migration)
             return
         }
+        if Self.demoMode {
+            showDemoModeAlert = true
+            ZSLogger.info(
+                "[OfferManager] CTA tap blocked: demoMode is true — alert shown, no checkout initiated",
+                category: .migration
+            )
+            return
+        }
         state = .presented
     }
 

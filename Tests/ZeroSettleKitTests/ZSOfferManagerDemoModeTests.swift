@@ -39,3 +39,48 @@ final class ZSOfferManagerSynthesizeDemoEntitlementTests: XCTestCase {
         XCTAssertTrue(result?.id.hasPrefix("demo-synth-") ?? false)
     }
 }
+
+final class ZSOfferManagerPresentDemoGateTests: XCTestCase {
+
+    @MainActor
+    func testPresentInDemoModeSetsAlertAndKeepsStateEligible() {
+        defer { ZSOfferManager.demoMode = false }
+
+        let manager = ZSOfferManager(userId: "test-user")
+        manager._setStateForTesting(.eligible)
+        ZSOfferManager.demoMode = true
+
+        manager.present()
+
+        XCTAssertTrue(manager.showDemoModeAlert)
+        XCTAssertEqual(manager.state, .eligible)
+    }
+
+    @MainActor
+    func testPresentOutsideDemoModeTransitionsToPresented() {
+        defer { ZSOfferManager.demoMode = false }
+
+        let manager = ZSOfferManager(userId: "test-user")
+        manager._setStateForTesting(.eligible)
+        ZSOfferManager.demoMode = false
+
+        manager.present()
+
+        XCTAssertFalse(manager.showDemoModeAlert)
+        XCTAssertEqual(manager.state, .presented)
+    }
+
+    @MainActor
+    func testPresentInDemoModeWithNonEligibleStateIsNoop() {
+        defer { ZSOfferManager.demoMode = false }
+
+        let manager = ZSOfferManager(userId: "test-user")
+        manager._setStateForTesting(.ineligible)
+        ZSOfferManager.demoMode = true
+
+        manager.present()
+
+        XCTAssertFalse(manager.showDemoModeAlert)
+        XCTAssertEqual(manager.state, .ineligible)
+    }
+}
