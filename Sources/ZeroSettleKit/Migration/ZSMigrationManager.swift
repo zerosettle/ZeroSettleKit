@@ -32,6 +32,7 @@ internal import ZeroSettleCore
 ///     }
 /// }
 /// ```
+@available(*, deprecated, message: "Use ZSOfferManager — a strict superset that supports migration, StoreKit→web upgrades, and web→web upgrades with unified demoMode and server-driven checkout_presentation.")
 @MainActor
 public final class ZSMigrationManager: ObservableObject {
 
@@ -93,14 +94,74 @@ public final class ZSMigrationManager: ObservableObject {
 
     // MARK: - Demo Mode
 
-    /// Enables demo mode for previewing the migration UI without an active StoreKit subscription.
+    /// Previews the tenant-configured migration tip on a device without a sandbox StoreKit purchase.
     ///
-    /// When `true`, ``evaluateEligibility()`` skips the active StoreKit subscription check and
-    /// the "no active web entitlements" check, synthesizing a demo ``MigrationPrompt`` instead.
-    /// The SDK must still be configured and bootstrapped, and the dismissed check is still respected.
+    /// When `true`, ``evaluateEligibility()`` uses the tenant's real server-side
+    /// ``MigrationPrompt`` — same title, message, CTA, discount, and
+    /// `checkout_presentation` the end user would see in production — but bypasses
+    /// gates that would otherwise require an active StoreKit subscription first.
     ///
-    /// Set this before calling ``ZeroSettle/bootstrap(userId:)`` for best results.
-    public static var demoMode: Bool = false
+    /// ## Bypassed gates
+    ///
+    /// - active StoreKit subscription
+    /// - rollout bucket hash
+    /// - min / max subscription-tenure
+    /// - "already has active web subscription"
+    ///
+    /// ## Still enforced
+    ///
+    /// - SDK configured via ``ZeroSettle/configure(_:)`` and bootstrapped via ``ZeroSettle/bootstrap(userId:)``
+    /// - US jurisdiction (or ``forceUSARegion()``)
+    /// - Permanent dismissal
+    /// - Server returned a ``RemoteConfig/migration`` payload. If the tenant's
+    ///   dashboard has no migration campaign configured, demo mode resolves to
+    ///   ``MigrationOffer/State/ineligible`` — there is no hardcoded fallback.
+    ///
+    /// ## Transactions are disabled in demo mode
+    ///
+    /// Tapping the tip's CTA while ``demoMode`` is `true` does **not** open
+    /// checkout. The SDK sets ``showDemoModeAlert`` and leaves ``state`` at
+    /// ``MigrationOffer/State/eligible``; the tip view renders a local alert
+    /// explaining the block. No `PaymentIntent` or `SetupIntent` is created on
+    /// your Stripe account. To verify the real checkout flow, disable demo mode
+    /// and complete a StoreKit sandbox purchase.
+    ///
+    /// ## Usage
+    ///
+    /// ```swift
+    /// #if DEBUG
+    /// ZSMigrationManager.demoMode = true
+    /// #endif
+    ///
+    /// ZeroSettle.shared.configure(.init(publishableKey: "zs_pk_test_..."))
+    /// try? await ZeroSettle.shared.bootstrap(userId: "test-user")
+    /// ```
+    ///
+    /// - Important: Gate assignments behind a debug build flag (`#if DEBUG`)
+    ///   so the property cannot be enabled in a production TestFlight or App
+    ///   Store build. The SDK logs a prominent warning the first time the flag
+    ///   flips to `true` in a process, but never prevents it.
+    /// - SeeAlso: ``forceUSARegion()``, ``resetDismissedState()``,
+    ///   ``showDemoModeAlert``, ``ZSOfferManager/demoMode``
+    public static var demoMode: Bool = false {
+        didSet {
+            if demoMode && !oldValue {
+                ZSLogger.info(
+                    "[MigrationManager] ⚠️ demoMode=true — migration tip will preview " +
+                    "real dashboard config without a StoreKit subscription. Checkout " +
+                    "CTA is disabled to prevent real charges. Never ship with demoMode on.",
+                    category: ZSLogger.Category.migration
+                )
+            }
+        }
+    }
+
+    /// `true` when the user tapped the CTA while ``demoMode`` was on.
+    ///
+    /// Bound to a SwiftUI `.alert(isPresented:)` modifier by ``MigrationTipView``.
+    /// SwiftUI flips it back to `false` on OK-dismiss; you typically don't read
+    /// or write this directly. Part of the demo-mode plumbing.
+    @Published public private(set) var showDemoModeAlert: Bool = false
 
     // MARK: - Region Override
 
@@ -892,4 +953,13 @@ public final class ZSMigrationManager: ObservableObject {
     private func makeBackend() throws -> Backend {
         try ZeroSettle.shared.makeBackend()
     }
+
+    #if DEBUG
+    /// Test-only: force the manager into a given state. Never call from app code.
+    /// Needed because ``state`` is `private(set)` and tests for ``present()``
+    /// need to seed `.eligible` without running the full eligibility pipeline.
+    internal func _setStateForTesting(_ newState: MigrationOffer.State) {
+        state = newState
+    }
+    #endif
 }
