@@ -226,6 +226,21 @@ public struct OfferTipView: View {
                 }
             }
         }
+        .alert(
+            "Demo Mode",
+            isPresented: Binding(
+                get: { manager.showDemoModeAlert },
+                set: { if !$0 { manager.dismissDemoModeAlert() } }
+            )
+        ) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(
+                "Checkout is disabled while demoMode is on to prevent real charges. "
+                + "Set ZSOfferManager.demoMode = false and complete a StoreKit "
+                + "sandbox purchase to test checkout end-to-end."
+            )
+        }
     }
 
     // MARK: - Offer Card
