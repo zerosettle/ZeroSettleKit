@@ -965,6 +965,34 @@ public final class ZSMigrationManager: ObservableObject {
         try ZeroSettle.shared.makeBackend()
     }
 
+    /// Synthesizes a virtual active StoreKit ``Entitlement`` for demo mode from the
+    /// server-configured migration prompt. Picks the first product in the prompt's
+    /// `eligibleProductIds`. Returns `nil` if the prompt is missing or has no
+    /// eligible products — callers treat that as ineligible (no fallback to the
+    /// catalog's first product).
+    ///
+    /// The synthetic entitlement's `purchasedAt` is 60 days in the past so any
+    /// reasonable min-tenure check that slipped past the demo bypass would still
+    /// pass; `expiresAt` is 30 days in the future so the downstream migration
+    /// flow sees it as active.
+    internal static func synthesizeDemoEntitlement(from prompt: MigrationPrompt?) -> Entitlement? {
+        guard let prompt else { return nil }
+        guard let productId = prompt.eligibleProductIds.first else { return nil }
+        let now = Date()
+        return Entitlement(
+            id: "demo-synth-\(productId)",
+            productId: productId,
+            source: .storeKit,
+            isActive: true,
+            status: .active,
+            expiresAt: now.addingTimeInterval(30 * 86_400),
+            willRenew: true,
+            purchasedAt: now.addingTimeInterval(-60 * 86_400),
+            storekitOriginalTransactionId: nil,
+            originalPurchaseDate: now.addingTimeInterval(-60 * 86_400)
+        )
+    }
+
     #if DEBUG
     /// Test-only: force the manager into a given state. Never call from app code.
     /// Needed because ``state`` is `private(set)` and tests for ``present()``
