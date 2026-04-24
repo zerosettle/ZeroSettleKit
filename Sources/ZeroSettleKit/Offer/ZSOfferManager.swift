@@ -109,14 +109,16 @@ public final class ZSOfferManager: ObservableObject {
     ///   so the property cannot be enabled in a production TestFlight or App
     ///   Store build. The SDK logs a prominent warning the first time the flag
     ///   flips to `true` in a process, but never prevents it.
-    /// - SeeAlso: ``showDemoModeAlert``, ``ZSMigrationManager/demoMode``
+    /// - SeeAlso: ``showDemoModeAlert``. For the deprecated predecessor's
+    ///   equivalent flag, see ``ZSMigrationManager/demoMode``.
     public static var demoMode: Bool = false {
         didSet {
             if demoMode && !oldValue {
                 ZSLogger.info(
-                    "[OfferManager] ⚠️ demoMode=true — offer tip will preview real " +
-                    "dashboard config without an active subscription. Checkout CTA is " +
-                    "disabled to prevent real charges. Never ship with demoMode on.",
+                    "[OfferManager] ⚠️ demoMode=true — migration-offer tips preview " +
+                    "without any subscription; upgrade-offer tips still need a real " +
+                    "subscription (server-driven). Checkout CTA is disabled to prevent " +
+                    "real charges. Never ship with demoMode on.",
                     category: ZSLogger.Category.migration
                 )
             }
