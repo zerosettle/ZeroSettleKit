@@ -84,3 +84,30 @@ final class ZSOfferManagerPresentDemoGateTests: XCTestCase {
         XCTAssertEqual(manager.state, .ineligible)
     }
 }
+
+final class ZSOfferManagerPreloadCheckoutDemoGateTests: XCTestCase {
+
+    @MainActor
+    func testPreloadCheckoutReturnsNilInDemoMode() async {
+        defer { ZSOfferManager.demoMode = false }
+
+        let manager = ZSOfferManager(userId: "test-user")
+        ZSOfferManager.demoMode = true
+
+        let result = await manager.preloadCheckout(stripeCustomerId: nil)
+
+        XCTAssertNil(result, "preloadCheckout must not initiate checkout in demo mode")
+    }
+
+    @MainActor
+    func testStartCheckoutReturnsNilInDemoMode() async {
+        defer { ZSOfferManager.demoMode = false }
+
+        let manager = ZSOfferManager(userId: "test-user")
+        ZSOfferManager.demoMode = true
+
+        let result = await manager.startCheckout(stripeCustomerId: nil)
+
+        XCTAssertNil(result, "startCheckout must not initiate checkout in demo mode")
+    }
+}

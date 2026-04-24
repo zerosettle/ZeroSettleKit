@@ -529,6 +529,13 @@ public struct OfferTipView: View {
         manager.present()
         ZSLogger.info("[OfferTipView] after present(): state=\(manager.state)", category: .migration)
 
+        // If present() didn't transition to .presented (demo-mode gate fired,
+        // or any other short-circuit), abort — don't initiate any checkout.
+        guard manager.state == .presented else {
+            ctaTapped = false
+            return
+        }
+
         // Web-to-web upgrades: no WebView, just a loading spinner
         if manager.offerData?.upgradeType == .webToWeb {
             webToWebInProgress = true

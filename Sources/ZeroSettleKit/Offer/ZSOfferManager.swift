@@ -468,6 +468,9 @@ public final class ZSOfferManager: ObservableObject {
     /// Start the checkout flow. Returns the checkout URL for WebView,
     /// or nil for web-to-web upgrades (handled internally).
     public func startCheckout(stripeCustomerId: String? = nil) async -> URL? {
+        // Demo mode: never initiate a real PaymentIntent. The view layer
+        // should already have short-circuited; this is defense in depth.
+        if Self.demoMode { return nil }
         guard let data = offerData else { return nil }
         isLoading = true
         checkoutError = nil
@@ -642,6 +645,9 @@ public final class ZSOfferManager: ObservableObject {
 
     /// Preload checkout session for faster presentation.
     public func preloadCheckout(stripeCustomerId: String? = nil) async -> URL? {
+        // Demo mode: never initiate a real PaymentIntent. The tip view's
+        // .alert handles the CTA; preload is a no-op in demo mode.
+        if Self.demoMode { return nil }
         guard let data = offerData else { return nil }
 
         // Web-to-web doesn't need preloading (no WebView)

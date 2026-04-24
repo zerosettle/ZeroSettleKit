@@ -660,6 +660,12 @@ public struct MigrationTipView: View {
             return
         }
         manager.present()
+        // If present() didn't transition to .presented (demo-mode gate fired,
+        // or any other short-circuit), abort — don't initiate any checkout.
+        guard manager.state == .presented else {
+            ctaTapped = false
+            return
+        }
         sheetCheckoutProduct = product
     }
 
@@ -740,6 +746,12 @@ public struct MigrationTipView: View {
     private func startBrowserCheckout() {
         guard let offerData = manager.offerData else { return }
         manager.present()
+        // If present() didn't transition to .presented (demo-mode gate fired,
+        // or any other short-circuit), abort — don't initiate any checkout.
+        guard manager.state == .presented else {
+            ctaTapped = false
+            return
+        }
 
         Task { @MainActor in
             let iap = ZeroSettle.shared

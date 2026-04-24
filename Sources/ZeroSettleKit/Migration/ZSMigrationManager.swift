@@ -636,6 +636,9 @@ public final class ZSMigrationManager: ObservableObject {
     /// - Returns: The checkout URL to load in a webview, or `nil` on failure
     @discardableResult
     public func startCheckout(stripeCustomerId: String? = nil) async -> URL? {
+        // Demo mode: never initiate a real PaymentIntent. The view layer
+        // should already have short-circuited; this is defense in depth.
+        if Self.demoMode { return nil }
         guard let offerData else {
             ZSLogger.error("[MigrationManager] startCheckout() failed — no offerData available", category: .migration)
             checkoutError = ZeroSettleError.notConfigured
@@ -852,6 +855,9 @@ public final class ZSMigrationManager: ObservableObject {
     /// - Parameter stripeCustomerId: Optional Stripe customer ID override.
     /// - Returns: The checkout URL, or `nil` if preloading fails or the manager isn't eligible.
     internal func preloadCheckout(stripeCustomerId: String? = nil) async -> URL? {
+        // Demo mode: never initiate a real PaymentIntent. The tip view's
+        // .alert handles the CTA; preload is a no-op in demo mode.
+        if Self.demoMode { return nil }
         guard offerData != nil, state == .eligible else { return nil }
 
         // Cache hit

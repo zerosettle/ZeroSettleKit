@@ -120,3 +120,30 @@ final class ZSMigrationManagerPresentDemoGateTests: XCTestCase {
         XCTAssertEqual(manager.state, .ineligible)
     }
 }
+
+final class ZSMigrationManagerPreloadCheckoutDemoGateTests: XCTestCase {
+
+    @MainActor
+    func testPreloadCheckoutReturnsNilInDemoMode() async {
+        defer { ZSMigrationManager.demoMode = false }
+
+        let manager = ZSMigrationManager(userId: "test-user")
+        ZSMigrationManager.demoMode = true
+
+        let result = await manager.preloadCheckout(stripeCustomerId: nil)
+
+        XCTAssertNil(result, "preloadCheckout must not initiate checkout in demo mode")
+    }
+
+    @MainActor
+    func testStartCheckoutReturnsNilInDemoMode() async {
+        defer { ZSMigrationManager.demoMode = false }
+
+        let manager = ZSMigrationManager(userId: "test-user")
+        ZSMigrationManager.demoMode = true
+
+        let result = await manager.startCheckout(stripeCustomerId: nil)
+
+        XCTAssertNil(result, "startCheckout must not initiate checkout in demo mode")
+    }
+}
