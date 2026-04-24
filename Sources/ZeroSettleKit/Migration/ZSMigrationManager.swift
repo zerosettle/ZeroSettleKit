@@ -158,10 +158,21 @@ public final class ZSMigrationManager: ObservableObject {
 
     /// `true` when the user tapped the CTA while ``demoMode`` was on.
     ///
-    /// Bound to a SwiftUI `.alert(isPresented:)` modifier by ``MigrationTipView``.
-    /// SwiftUI flips it back to `false` on OK-dismiss; you typically don't read
-    /// or write this directly. Part of the demo-mode plumbing.
+    /// Read-only from outside the manager. ``MigrationTipView`` binds this to
+    /// a SwiftUI `.alert(isPresented:)` via a custom `Binding(get:set:)` that
+    /// calls ``dismissDemoModeAlert()`` when SwiftUI sets the binding to
+    /// `false` on dismiss. You typically don't read or write this directly —
+    /// it's part of the demo-mode plumbing.
     @Published public private(set) var showDemoModeAlert: Bool = false
+
+    /// Dismisses the demo-mode alert.
+    ///
+    /// Called by ``MigrationTipView``'s SwiftUI `.alert` binding when the
+    /// user taps OK. Safe to call at any time; a no-op if the alert isn't
+    /// currently showing. You typically don't call this directly.
+    public func dismissDemoModeAlert() {
+        showDemoModeAlert = false
+    }
 
     // MARK: - Region Override
 
