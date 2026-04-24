@@ -613,6 +613,14 @@ public final class ZSMigrationManager: ObservableObject {
     /// Call this when you show the migration offer UI or begin the checkout flow.
     public func present() {
         guard state == .eligible else { return }
+        if Self.demoMode {
+            showDemoModeAlert = true
+            ZSLogger.info(
+                "[MigrationManager] CTA tap blocked: demoMode is true — alert shown, no checkout initiated",
+                category: .migration
+            )
+            return
+        }
         state = .presented
     }
 

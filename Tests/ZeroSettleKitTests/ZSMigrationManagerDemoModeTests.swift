@@ -75,3 +75,48 @@ final class ZSMigrationManagerSynthesizeDemoEntitlementTests: XCTestCase {
         XCTAssertGreaterThan(result!.expiresAt!, Date())
     }
 }
+
+final class ZSMigrationManagerPresentDemoGateTests: XCTestCase {
+
+    @MainActor
+    func testPresentInDemoModeSetsAlertAndKeepsStateEligible() {
+        defer { ZSMigrationManager.demoMode = false }
+
+        let manager = ZSMigrationManager(userId: "test-user")
+        manager._setStateForTesting(.eligible)
+        ZSMigrationManager.demoMode = true
+
+        manager.present()
+
+        XCTAssertTrue(manager.showDemoModeAlert)
+        XCTAssertEqual(manager.state, .eligible)
+    }
+
+    @MainActor
+    func testPresentOutsideDemoModeTransitionsToPresented() {
+        defer { ZSMigrationManager.demoMode = false }
+
+        let manager = ZSMigrationManager(userId: "test-user")
+        manager._setStateForTesting(.eligible)
+        ZSMigrationManager.demoMode = false
+
+        manager.present()
+
+        XCTAssertFalse(manager.showDemoModeAlert)
+        XCTAssertEqual(manager.state, .presented)
+    }
+
+    @MainActor
+    func testPresentInDemoModeWithNonEligibleStateIsNoop() {
+        defer { ZSMigrationManager.demoMode = false }
+
+        let manager = ZSMigrationManager(userId: "test-user")
+        manager._setStateForTesting(.ineligible)
+        ZSMigrationManager.demoMode = true
+
+        manager.present()
+
+        XCTAssertFalse(manager.showDemoModeAlert)
+        XCTAssertEqual(manager.state, .ineligible)
+    }
+}
