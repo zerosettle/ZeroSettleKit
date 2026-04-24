@@ -28,7 +28,7 @@ private struct EntitlementsResponse: Decodable {
 /// and the config parsing is done manually in Backend. We test product array
 /// decoding and config decoding separately.
 private struct ProductsResponse: Decodable {
-    let products: [Product]
+    let products: [ZSProduct]
     let config: ConfigResponse?
 }
 
@@ -252,7 +252,7 @@ final class BackendResponseTests: XCTestCase {
     // MARK: - Product Catalog Response
 
     func testProductCatalogResponseDecoding() throws {
-        // Product model uses custom CodingKeys: appStorePrice encodes as "storekitPrice",
+        // ZSProduct model uses custom CodingKeys: appStorePrice encodes as "storekitPrice",
         // syncedToAppStoreConnect encodes as "syncedToAsc".
         // Price encodes amount as "amountMicros" on the wire (micros = cents * 10,000).
         let json = """

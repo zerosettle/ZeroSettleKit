@@ -94,7 +94,7 @@ final class PriceTests: XCTestCase {
 
 final class ProductTests: XCTestCase {
     func testProductCodable() throws {
-        let product = Product(
+        let product = ZSProduct(
             id: "com.app.premium",
             displayName: "Premium",
             productDescription: "Unlock all features",
@@ -104,7 +104,7 @@ final class ProductTests: XCTestCase {
         )
 
         let data = try JSONEncoder().encode(product)
-        let decoded = try JSONDecoder().decode(Product.self, from: data)
+        let decoded = try JSONDecoder().decode(ZSProduct.self, from: data)
 
         XCTAssertEqual(decoded.id, "com.app.premium")
         XCTAssertEqual(decoded.displayName, "Premium")
@@ -120,7 +120,7 @@ final class ProductTests: XCTestCase {
             expiresAt: nil,
             type: .percentOff
         )
-        let product = Product(
+        let product = ZSProduct(
             id: "com.app.pro",
             displayName: "Pro",
             productDescription: "Pro tier",
@@ -130,7 +130,7 @@ final class ProductTests: XCTestCase {
         )
 
         let data = try JSONEncoder().encode(product)
-        let decoded = try JSONDecoder().decode(Product.self, from: data)
+        let decoded = try JSONDecoder().decode(ZSProduct.self, from: data)
 
         XCTAssertNotNil(decoded.promotion)
         XCTAssertEqual(decoded.promotion?.id, "promo_1")
@@ -138,10 +138,10 @@ final class ProductTests: XCTestCase {
     }
 
     func testProductTypeRawValues() {
-        XCTAssertEqual(Product.ProductType.autoRenewableSubscription.rawValue, "auto_renewable_subscription")
-        XCTAssertEqual(Product.ProductType.nonRenewingSubscription.rawValue, "non_renewing_subscription")
-        XCTAssertEqual(Product.ProductType.consumable.rawValue, "consumable")
-        XCTAssertEqual(Product.ProductType.nonConsumable.rawValue, "non_consumable")
+        XCTAssertEqual(ZSProduct.ProductType.autoRenewableSubscription.rawValue, "auto_renewable_subscription")
+        XCTAssertEqual(ZSProduct.ProductType.nonRenewingSubscription.rawValue, "non_renewing_subscription")
+        XCTAssertEqual(ZSProduct.ProductType.consumable.rawValue, "consumable")
+        XCTAssertEqual(ZSProduct.ProductType.nonConsumable.rawValue, "non_consumable")
     }
 }
 
