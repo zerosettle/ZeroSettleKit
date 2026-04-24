@@ -396,26 +396,10 @@ public final class ZSMigrationManager: ObservableObject {
             ZSLogger.info("[MigrationTip] Jurisdiction: \(jurisdiction.rawValue) — eligible region", category: .migration)
         }
 
-        // ── Check 4: Demo mode (bypasses all real checks) ──
-        if Self.demoMode {
-            let demoProductId = iap.products.first?.id ?? "com.example.subscription"
-            let prompt = MigrationPrompt(
-                productId: demoProductId,
-                discountPercent: 15,
-                title: "Switch & Save",
-                message: "Switch to direct billing and get 15% off forever. Same features, fewer platform fees, and we pass the savings onto you.",
-                ctaText: "Save 15% Forever"
-            )
-            state = .eligible
-            offerData = MigrationOffer.OfferData(
-                prompt: prompt,
-                freeTrialDays: 7,
-                activeStoreKitProductId: demoProductId,
-                storekitSubscriptionEnd: Date().addingTimeInterval(7 * 86400),
-                activeStoreKitOriginalTransactionId: nil
-            )
-            return
-        }
+        // Demo-mode capture for gate bypasses below. Real backend config still
+        // flows through — we just skip the gates that would prevent the tip
+        // from surfacing on a device without a real sandbox purchase.
+        let usingDemoMode = Self.demoMode
 
         // ── Check 5: Not permanently dismissed (per-user, with global fallback) ──
         guard !Self.isPermanentlyDismissed(forUserId: userId) && !Self.isPermanentlyDismissed else {
@@ -430,7 +414,21 @@ public final class ZSMigrationManager: ObservableObject {
             $0.type == .autoRenewableSubscription || $0.type == .nonRenewingSubscription
         }.map { $0.id })
         let storeKitEntitlements = iap.entitlements.filter { $0.source == .storeKit }
-        let activeStoreKitEntitlements = storeKitEntitlements.filter { $0.isActive }
+        var activeStoreKitEntitlements = storeKitEntitlements.filter { $0.isActive }
+
+        // Demo mode: synthesize a virtual active StoreKit entitlement against the
+        // server-configured migration prompt when the device has none. Server-data-only —
+        // no fallback to the catalog, so if the tenant hasn't configured a campaign,
+        // the tip resolves ineligible (which is the honest answer).
+        if usingDemoMode && activeStoreKitEntitlements.isEmpty {
+            if let synthesized = Self.synthesizeDemoEntitlement(from: iap.remoteConfig?.migration) {
+                activeStoreKitEntitlements = [synthesized]
+                ZSLogger.info(
+                    "[MigrationTip] DEMO MODE: synthesized active StoreKit entitlement for productId=\(synthesized.productId)",
+                    category: .migration
+                )
+            }
+        }
         let webEntitlements = iap.entitlements.filter { $0.source == .webCheckout }
         // Only consider web *subscriptions* — consumable purchases (streak savers, etc.) are irrelevant for migration
         let activeWebSubscriptions = webEntitlements.filter { $0.isActive && subscriptionProductIds.contains($0.productId) }
@@ -443,8 +441,10 @@ public final class ZSMigrationManager: ObservableObject {
             return
         }
 
-        // ── Check 7: Both StoreKit + web subscription active ──
-        if !activeWebSubscriptions.isEmpty && !activeStoreKitEntitlements.isEmpty {
+        // ── Check 7: Both StoreKit + web subscription active (skipped in demo mode) ──
+        // Demo mode always renders the eligible tip regardless of existing web subs,
+        // so the dev can preview copy without deleting test data.
+        if !usingDemoMode && !activeWebSubscriptions.isEmpty && !activeStoreKitEntitlements.isEmpty {
             let appleWillRenew = activeStoreKitEntitlements.first?.willRenew ?? true
             if appleWillRenew {
                 // Apple still renewing → prompt user to cancel
@@ -459,12 +459,14 @@ public final class ZSMigrationManager: ObservableObject {
         }
         let catalogProducts = iap.products
 
-        // ── Check 8: Web subscription check (uses activeWebSubscriptions from above) ──
-        guard activeWebSubscriptions.isEmpty else {
-            state = .ineligible
-            offerData = nil
-            ZSLogger.info("[MigrationTip] SKIP: already has active web subscription", category: .migration)
-            return
+        // ── Check 8: Already has web subscription (skipped in demo mode) ──
+        if !usingDemoMode {
+            guard activeWebSubscriptions.isEmpty else {
+                state = .ineligible
+                offerData = nil
+                ZSLogger.info("[MigrationTip] SKIP: already has active web subscription", category: .migration)
+                return
+            }
         }
 
         // ── Check 9: Migration prompt resolved from backend ──
@@ -478,18 +480,20 @@ public final class ZSMigrationManager: ObservableObject {
         let prompt = resolved.prompt
         let matchedEntitlement = resolved.matchedEntitlement
 
-        // ── Check 9.5: Rollout ──
-        let rolloutPercent = prompt.rolloutPercent ?? 0
-        let digest = SHA256.hash(data: Data(userId.utf8))
-        var bucket = 0
-        for byte in digest {
-            bucket = (bucket &* 256 &+ Int(byte)) % 100
-        }
-        guard bucket < rolloutPercent else {
-            state = .ineligible
-            offerData = nil
-            ZSLogger.info("[MigrationTip] SKIP: user not in rollout cohort (bucket=\(bucket), rollout=\(rolloutPercent)%)", category: .migration)
-            return
+        // ── Check 9.5: Rollout (skipped in demo mode) ──
+        if !usingDemoMode {
+            let rolloutPercent = prompt.rolloutPercent ?? 0
+            let digest = SHA256.hash(data: Data(userId.utf8))
+            var bucket = 0
+            for byte in digest {
+                bucket = (bucket &* 256 &+ Int(byte)) % 100
+            }
+            guard bucket < rolloutPercent else {
+                state = .ineligible
+                offerData = nil
+                ZSLogger.info("[MigrationTip] SKIP: user not in rollout cohort (bucket=\(bucket), rollout=\(rolloutPercent)%)", category: .migration)
+                return
+            }
         }
 
         // ── Check 10: Target product exists in catalog ──
@@ -500,7 +504,13 @@ public final class ZSMigrationManager: ObservableObject {
             return
         }
 
-        // ── Check 11: Subscription tenure from StoreKit ──
+        // ── Check 11: Subscription tenure from StoreKit (skipped in demo mode) ──
+        // Demo mode has no real StoreKit transaction, so calculateStoreKitTenure
+        // would return 0 and fail any non-zero min_subscription_days gate.
+        if usingDemoMode {
+            applyEligible(prompt: prompt, matchedEntitlement: matchedEntitlement, targetProduct: targetProduct)
+            return
+        }
         let productId = matchedEntitlement.productId
         Task { [weak self] in
             guard let self else { return }
