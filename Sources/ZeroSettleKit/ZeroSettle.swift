@@ -290,6 +290,26 @@ public final class ZeroSettle: ObservableObject {
     /// Populated after `fetchProducts()`. Defaults to `.row` if detection fails.
     public private(set) var detectedJurisdiction: Jurisdiction?
 
+    /// Debug / preview override for the SDK's effective jurisdiction.
+    ///
+    /// When non-nil, ``effectiveJurisdiction`` — and every jurisdiction-sensitive
+    /// computed property (``checkoutType``, ``isWebCheckoutEnabled``, offer
+    /// eligibility gates in ``ZSMigrationManager`` and ``ZSOfferManager``) —
+    /// uses this value instead of the device's real ``detectedJurisdiction``.
+    /// Set to `nil` to restore real detection.
+    ///
+    /// - Important: Debug / preview only. Gate assignments behind `#if DEBUG`.
+    ///   There's no compile-time enforcement; the SDK trusts the integrator.
+    /// - SeeAlso: ``effectiveJurisdiction``, ``detectedJurisdiction``
+    public var forcedJurisdiction: Jurisdiction?
+
+    /// The jurisdiction the SDK treats as current: ``forcedJurisdiction`` if set,
+    /// otherwise ``detectedJurisdiction``, falling back to ``Jurisdiction/row``
+    /// when Storefront detection hasn't yet populated.
+    public var effectiveJurisdiction: Jurisdiction {
+        forcedJurisdiction ?? detectedJurisdiction ?? .row
+    }
+
     /// Whether ``bootstrap(userId:)`` has completed.
     public private(set) var isBootstrapped: Bool = false
 
@@ -371,7 +391,7 @@ public final class ZeroSettle: ObservableObject {
     /// Returns `.webView` if remote config hasn't been fetched yet.
     public var checkoutType: CheckoutType {
         guard let config = remoteConfig?.checkout else { return .webView }
-        let jurisdiction = detectedJurisdiction ?? .row
+        let jurisdiction = effectiveJurisdiction
         if let override = config.jurisdictions[jurisdiction] {
             return override.sheetType
         }
@@ -382,7 +402,7 @@ public final class ZeroSettle: ObservableObject {
     /// Checks jurisdiction override first, then falls back to the global setting.
     public var isWebCheckoutEnabled: Bool {
         guard let config = remoteConfig?.checkout else { return true }
-        let jurisdiction = detectedJurisdiction ?? .row
+        let jurisdiction = effectiveJurisdiction
         if let override = config.jurisdictions[jurisdiction] {
             return override.isEnabled
         }
@@ -948,7 +968,6 @@ public final class ZeroSettle: ObservableObject {
         }
 
         // Log the effective checkout routing decision
-        let effectiveJurisdiction = detectedJurisdiction ?? .row
         let effectiveType = checkoutType
         ZSLogger.info("Checkout routing: product=\(productId), jurisdiction=\(effectiveJurisdiction.rawValue), checkoutType=\(effectiveType.rawValue), webCheckoutEnabled=\(isWebCheckoutEnabled)", category: .checkout)
 

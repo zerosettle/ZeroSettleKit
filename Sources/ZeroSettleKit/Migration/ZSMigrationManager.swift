@@ -111,7 +111,7 @@ public final class ZSMigrationManager: ObservableObject {
     /// ## Still enforced
     ///
     /// - SDK configured via ``ZeroSettle/configure(_:)`` and bootstrapped via ``ZeroSettle/bootstrap(userId:)``
-    /// - US jurisdiction (or ``forceUSARegion()``)
+    /// - Web checkout enabled for the effective jurisdiction (``ZeroSettle/isWebCheckoutEnabled``)
     /// - Permanent dismissal
     /// - Server returned a ``RemoteConfig/migration`` payload. If the tenant's
     ///   dashboard has no migration campaign configured, demo mode resolves to
@@ -141,7 +141,7 @@ public final class ZSMigrationManager: ObservableObject {
     ///   so the property cannot be enabled in a production TestFlight or App
     ///   Store build. The SDK logs a prominent warning the first time the flag
     ///   flips to `true` in a process, but never prevents it.
-    /// - SeeAlso: ``forceUSARegion()``, ``resetDismissedState()``,
+    /// - SeeAlso: ``ZeroSettle/forcedJurisdiction``, ``resetDismissedState()``,
     ///   ``showDemoModeAlert``, ``ZSOfferManager/demoMode``
     public static var demoMode: Bool = false {
         didSet {
@@ -174,31 +174,51 @@ public final class ZSMigrationManager: ObservableObject {
         showDemoModeAlert = false
     }
 
-    // MARK: - Region Override
+    // MARK: - Region Override (deprecated)
 
-    /// Forces the jurisdiction check to return `.us`, bypassing the real device locale/storefront.
+    /// Whether the jurisdiction is force-set to `.us`.
     ///
-    /// Useful for debugging the migration flow from non-US regions.
-    /// Call ``forceUSARegion()`` to enable or set directly:
-    /// ```swift
-    /// ZSMigrationManager.isUSARegionForced = true
-    /// ```
-    public static var isUSARegionForced: Bool = false
-
-    /// Enables the US region override so the migration tip appears regardless of the device's actual region.
+    /// Getter returns `true` iff ``ZeroSettle/forcedJurisdiction`` is `.us`. Setter
+    /// writes the shared override: `true` → `.us`, `false` → clears any US-force
+    /// but does NOT clobber a non-US override (writing `false` while the override
+    /// is `.eu` is a no-op).
     ///
-    /// ```swift
-    /// ZSMigrationManager.forceUSARegion()
-    /// ```
-    public static func forceUSARegion() {
-        ZSLogger.info("[MigrationManager] forceUSARegion() called — jurisdiction check will always pass as .us", category: .migration)
-        isUSARegionForced = true
+    /// - Warning: The new SDK-wide override ``ZeroSettle/forcedJurisdiction``
+    ///   supports all ``Jurisdiction`` cases and applies to every jurisdiction-
+    ///   sensitive computed property, not just the migration tip. Prefer it for
+    ///   new code.
+    @available(*, deprecated, message: "Use `ZeroSettle.shared.forcedJurisdiction = .us` (or nil). The shared override supports all jurisdictions and applies SDK-wide.")
+    public static var isUSARegionForced: Bool {
+        get { ZeroSettle.shared.forcedJurisdiction == .us }
+        set {
+            if newValue {
+                ZeroSettle.shared.forcedJurisdiction = .us
+            } else if ZeroSettle.shared.forcedJurisdiction == .us {
+                // Clear only if it was US — don't clobber an unrelated override.
+                ZeroSettle.shared.forcedJurisdiction = nil
+            }
+        }
     }
 
-    /// Disables the US region override, restoring normal jurisdiction detection.
+    /// Force the SDK-wide jurisdiction override to `.us`.
+    ///
+    /// Equivalent to `ZeroSettle.shared.forcedJurisdiction = .us`. Prefer that
+    /// form for new code — it documents the full shape of the override (any
+    /// ``Jurisdiction`` case) and the scope (SDK-wide, not migration-only).
+    @available(*, deprecated, message: "Use `ZeroSettle.shared.forcedJurisdiction = .us`.")
+    public static func forceUSARegion() {
+        ZSLogger.info("[MigrationManager] forceUSARegion() called — setting ZeroSettle.shared.forcedJurisdiction = .us", category: .migration)
+        ZeroSettle.shared.forcedJurisdiction = .us
+    }
+
+    /// Clear the SDK-wide jurisdiction override, restoring real Storefront detection.
+    ///
+    /// - Note: Clears the override regardless of what it was set to. Matches the
+    ///   legacy semantics of clearing any forced region.
+    @available(*, deprecated, message: "Use `ZeroSettle.shared.forcedJurisdiction = nil`.")
     public static func resetRegionOverride() {
-        ZSLogger.info("[MigrationManager] resetRegionOverride() called — restoring real jurisdiction detection", category: .migration)
-        isUSARegionForced = false
+        ZSLogger.info("[MigrationManager] resetRegionOverride() called — clearing ZeroSettle.shared.forcedJurisdiction", category: .migration)
+        ZeroSettle.shared.forcedJurisdiction = nil
     }
 
     // MARK: - Persistence
@@ -382,18 +402,17 @@ public final class ZSMigrationManager: ObservableObject {
             return
         }
 
-        // ── Check 3: US-only ──
-        let jurisdiction = Self.isUSARegionForced ? .us : (iap.detectedJurisdiction ?? .row)
-        guard jurisdiction == .us else {
+        // ── Check 3: Web checkout enabled for this jurisdiction (tenant-configured) ──
+        // Authoritative gate is the server's JurisdictionCheckoutConfig for the
+        // device's effective jurisdiction. No more SDK-side US-only hardcode.
+        guard iap.isWebCheckoutEnabled else {
             state = .ineligible
             offerData = nil
-            ZSLogger.info("[MigrationTip] SKIP: jurisdiction=\(jurisdiction.rawValue), migration is US-only", category: .migration)
+            ZSLogger.info(
+                "[MigrationTip] SKIP: web checkout disabled for jurisdiction=\(iap.effectiveJurisdiction.rawValue)",
+                category: .migration
+            )
             return
-        }
-        if Self.isUSARegionForced {
-            ZSLogger.info("[MigrationTip] Jurisdiction: .us (forced via forceUSARegion()) — eligible region", category: .migration)
-        } else {
-            ZSLogger.info("[MigrationTip] Jurisdiction: \(jurisdiction.rawValue) — eligible region", category: .migration)
         }
 
         // Demo-mode capture for gate bypasses below. Real backend config still

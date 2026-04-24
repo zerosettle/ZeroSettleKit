@@ -305,6 +305,20 @@ public final class ZSOfferManager: ObservableObject {
             return
         }
 
+        // Web checkout disabled for this jurisdiction — tenant hasn't enabled
+        // it for the user's region via JurisdictionCheckoutConfig, or the remote
+        // config hasn't loaded yet (isWebCheckoutEnabled defaults to true
+        // pre-load, so this only bites once config arrives). The offer tip would
+        // fail at checkout time anyway; skip rendering it.
+        guard iap.isWebCheckoutEnabled else {
+            state = .ineligible
+            ZSLogger.info(
+                "[OfferManager] SKIP: web checkout disabled for jurisdiction=\(iap.effectiveJurisdiction.rawValue)",
+                category: .migration
+            )
+            return
+        }
+
         // Prefer the unified `offer` field from the server
         if let offer = iap.remoteConfig?.offer {
             resolveFromOffer(offer, iap: iap)
