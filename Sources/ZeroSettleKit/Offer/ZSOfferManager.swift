@@ -51,6 +51,96 @@ public final class ZSOfferManager: ObservableObject {
     @Published public private(set) var isLoading = false
     @Published public private(set) var storekitCancelRequired = false
 
+    // MARK: - Demo Mode
+
+    /// Previews the tenant-configured offer tip on a device without a sandbox StoreKit purchase.
+    ///
+    /// When `true`, ``evaluateEligibility()`` uses the tenant's real server-side
+    /// offer (``Offer/OfferData``) — same title, message, CTA, discount, and
+    /// `checkout_presentation` the end user would see in production — but bypasses
+    /// gates that would otherwise require an active StoreKit or web subscription.
+    ///
+    /// ## Bypassed gates
+    ///
+    /// - active StoreKit subscription (for `needsAppleCancel` offers)
+    /// - rollout bucket hash
+    /// - min / max subscription-tenure
+    /// - "already has active web subscription"
+    ///
+    /// ## Still enforced
+    ///
+    /// - SDK configured via ``ZeroSettle/configure(_:)`` and bootstrapped via ``ZeroSettle/bootstrap(userId:)``
+    /// - Permanent dismissal
+    /// - Server returned ``RemoteConfig/offer`` or ``RemoteConfig/migration``.
+    ///   If the tenant's dashboard has no offer configured, demo mode resolves
+    ///   to ``Offer/State/ineligible`` — there is no hardcoded fallback.
+    ///
+    /// ## Known limitation: upgrade preview
+    ///
+    /// Upgrade offers (``Offer/FlowType/upgradeStorekitToWeb`` and
+    /// ``Offer/FlowType/upgradeWebToWeb``) are computed server-side from the
+    /// user's current subscription. A user with no entitlements receives no
+    /// offer from the server regardless of demo mode. To preview upgrade
+    /// tips, a real sandbox StoreKit purchase is still required. Migration
+    /// tips are previewable without a purchase because ``RemoteConfig/migration``
+    /// is returned unconditionally when configured.
+    ///
+    /// ## Transactions are disabled in demo mode
+    ///
+    /// Tapping the tip's CTA while ``demoMode`` is `true` does **not** open
+    /// checkout. The SDK sets ``showDemoModeAlert`` and leaves ``state`` at
+    /// ``Offer/State/eligible``; the tip view renders a local alert explaining
+    /// the block. No `PaymentIntent` or `SetupIntent` is created. To verify
+    /// the real checkout flow, disable demo mode and complete a StoreKit
+    /// sandbox purchase.
+    ///
+    /// ## Usage
+    ///
+    /// ```swift
+    /// #if DEBUG
+    /// ZSOfferManager.demoMode = true
+    /// #endif
+    ///
+    /// ZeroSettle.shared.configure(.init(publishableKey: "zs_pk_test_..."))
+    /// try? await ZeroSettle.shared.bootstrap(userId: "test-user")
+    /// ```
+    ///
+    /// - Important: Gate assignments behind a debug build flag (`#if DEBUG`)
+    ///   so the property cannot be enabled in a production TestFlight or App
+    ///   Store build. The SDK logs a prominent warning the first time the flag
+    ///   flips to `true` in a process, but never prevents it.
+    /// - SeeAlso: ``showDemoModeAlert``, ``ZSMigrationManager/demoMode``
+    public static var demoMode: Bool = false {
+        didSet {
+            if demoMode && !oldValue {
+                ZSLogger.info(
+                    "[OfferManager] ⚠️ demoMode=true — offer tip will preview real " +
+                    "dashboard config without an active subscription. Checkout CTA is " +
+                    "disabled to prevent real charges. Never ship with demoMode on.",
+                    category: ZSLogger.Category.migration
+                )
+            }
+        }
+    }
+
+    /// `true` when the user tapped the CTA while ``demoMode`` was on.
+    ///
+    /// Read-only from outside the manager. ``OfferTipView`` binds this to a
+    /// SwiftUI `.alert(isPresented:)` via a custom `Binding(get:set:)` that
+    /// calls ``dismissDemoModeAlert()`` when SwiftUI sets the binding to
+    /// `false` on dismiss. You typically don't read or write this directly —
+    /// it's part of the demo-mode plumbing.
+    @Published public private(set) var showDemoModeAlert: Bool = false
+
+    /// Dismisses the demo-mode alert.
+    ///
+    /// Called by ``OfferTipView``'s SwiftUI `.alert` binding when the user
+    /// taps OK. Safe to call at any time; a no-op if the alert isn't
+    /// currently showing. You typically don't call this directly.
+    public func dismissDemoModeAlert() {
+        showDemoModeAlert = false
+    }
+
     // MARK: - Public Properties
 
     /// The user ID this manager was created for.
@@ -614,4 +704,11 @@ public final class ZSOfferManager: ObservableObject {
             defaults.removeObject(forKey: key)
         }
     }
+
+    #if DEBUG
+    /// Test-only: force the manager into a given state. Never call from app code.
+    internal func _setStateForTesting(_ newState: Offer.State) {
+        state = newState
+    }
+    #endif
 }
