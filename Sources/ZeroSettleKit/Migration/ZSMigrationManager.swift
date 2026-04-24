@@ -346,7 +346,7 @@ public final class ZSMigrationManager: ObservableObject {
 
         // ── Always sync Apple subscription status to backend ──
         let syncEntitlement = iap.entitlements.first(where: { $0.source == .storeKit })
-            ?? iap.entitlements.first(where: { $0.source == .webCheckout })
+        ?? iap.entitlements.first(where: { $0.source == .webCheckout })
         let syncProductId = syncEntitlement?.productId
         let syncOrigTxnId = syncEntitlement?.storekitOriginalTransactionId
         if let syncProductId {
@@ -467,11 +467,11 @@ public final class ZSMigrationManager: ObservableObject {
             return
         }
 
-        // ── Check 9: Migration prompt resolved from backend or sandbox ──
+        // ── Check 9: Migration prompt resolved from backend ──
         guard let resolved = resolveMigrationPrompt(activeStoreKitEntitlements: activeStoreKitEntitlements) else {
             state = .ineligible
             offerData = nil
-            ZSLogger.info("[MigrationTip] SKIP: no migration prompt from backend or sandbox", category: .migration)
+            ZSLogger.info("[MigrationTip] SKIP: no migration prompt from backend", category: .migration)
             return
         }
 
@@ -542,20 +542,27 @@ public final class ZSMigrationManager: ObservableObject {
     /// - Returns: A tuple of the resolved prompt (with `productId` set to the matched product)
     ///   and the matched entitlement, or `nil` if no match is found.
     private func resolveMigrationPrompt(activeStoreKitEntitlements: [Entitlement]) -> (prompt: MigrationPrompt, matchedEntitlement: Entitlement)? {
+        // Sandbox and live follow the same resolution path — the backend is
+        // the single source of truth. No sandbox-only synthesis: to exercise
+        // the tip in sandbox, configure a real Switch & Save campaign for
+        // the app in sandbox mode.
         let iap = ZeroSettle.shared
 
-        // Use backend-provided prompt if available
-        if let backendPrompt = iap.remoteConfig?.migration {
-            // Find the first active StoreKit entitlement whose productId is in the eligible list
-            guard let matchedEntitlement = activeStoreKitEntitlements.first(where: { backendPrompt.eligibleProductIds.contains($0.productId) }) else {
-                return nil
-            }
+        guard let backendPrompt = iap.remoteConfig?.migration else {
+            return nil
+        }
 
-            // Build a prompt with productId set to the matched entitlement's product,
-            // using per-product data when available for accurate discount/text
-            let resolvedPrompt: MigrationPrompt
-            if let perProduct = backendPrompt.perProductPrompts?[matchedEntitlement.productId] {
-                resolvedPrompt = MigrationPrompt(
+        guard let matchedEntitlement = activeStoreKitEntitlements.first(where: {
+            backendPrompt.eligibleProductIds.contains($0.productId)
+        }) else {
+            return nil
+        }
+
+        // Build a prompt with productId set to the matched entitlement's product,
+        // using per-product data when available for accurate discount/text.
+        if let perProduct = backendPrompt.perProductPrompts?[matchedEntitlement.productId] {
+            return (
+                MigrationPrompt(
                     productId: matchedEntitlement.productId,
                     eligibleProductIds: backendPrompt.eligibleProductIds,
                     discountPercent: perProduct.discountPercent,
@@ -567,39 +574,26 @@ public final class ZSMigrationManager: ObservableObject {
                     ctaText: perProduct.ctaText,
                     rolloutPercent: backendPrompt.rolloutPercent,
                     perProductPrompts: backendPrompt.perProductPrompts
-                )
-            } else {
-                resolvedPrompt = MigrationPrompt(
-                    productId: matchedEntitlement.productId,
-                    eligibleProductIds: backendPrompt.eligibleProductIds,
-                    discountPercent: backendPrompt.discountPercent,
-                    minSubscriptionDays: backendPrompt.minSubscriptionDays,
-                    maxSubscriptionDays: backendPrompt.maxSubscriptionDays,
-                    freeTrialDays: backendPrompt.freeTrialDays,
-                    title: backendPrompt.title,
-                    message: backendPrompt.message,
-                    ctaText: backendPrompt.ctaText,
-                    rolloutPercent: backendPrompt.rolloutPercent,
-                    perProductPrompts: backendPrompt.perProductPrompts
-                )
-            }
-            return (resolvedPrompt, matchedEntitlement)
-        }
-
-        // In sandbox mode, synthesize a prompt so developers can always test the flow
-        if iap.isSandbox {
-            guard let firstEntitlement = activeStoreKitEntitlements.first else { return nil }
-            let prompt = MigrationPrompt(
-                productId: firstEntitlement.productId,
-                discountPercent: 15,
-                title: "Switch & Save",
-                message: "Switch to direct billing and get 15% off forever. Same features, fewer platform fees.",
-                ctaText: "Save 15% Forever"
+                ),
+                matchedEntitlement
             )
-            return (prompt, firstEntitlement)
         }
-
-        return nil
+        return (
+            MigrationPrompt(
+                productId: matchedEntitlement.productId,
+                eligibleProductIds: backendPrompt.eligibleProductIds,
+                discountPercent: backendPrompt.discountPercent,
+                minSubscriptionDays: backendPrompt.minSubscriptionDays,
+                maxSubscriptionDays: backendPrompt.maxSubscriptionDays,
+                freeTrialDays: backendPrompt.freeTrialDays,
+                title: backendPrompt.title,
+                message: backendPrompt.message,
+                ctaText: backendPrompt.ctaText,
+                rolloutPercent: backendPrompt.rolloutPercent,
+                perProductPrompts: backendPrompt.perProductPrompts
+            ),
+            matchedEntitlement
+        )
     }
 
     // MARK: - State Transitions
@@ -727,9 +721,9 @@ public final class ZSMigrationManager: ObservableObject {
 
         // Sheet dismissed — verify cancellation via server-side Apple API (real-time)
         let productId = offerData?.activeStoreKitProductId
-            ?? ZeroSettle.shared.entitlements.first(where: { $0.source == .storeKit && $0.isActive })?.productId
+        ?? ZeroSettle.shared.entitlements.first(where: { $0.source == .storeKit && $0.isActive })?.productId
         let origTxnId = offerData?.activeStoreKitOriginalTransactionId
-            ?? ZeroSettle.shared.entitlements.first(where: { $0.source == .storeKit && $0.isActive })?.storekitOriginalTransactionId
+        ?? ZeroSettle.shared.entitlements.first(where: { $0.source == .storeKit && $0.isActive })?.storekitOriginalTransactionId
         let txnId = checkoutTransactionId
 
         // Try server-side first (real-time), fall back to on-device StoreKit
@@ -989,6 +983,10 @@ public final class ZSMigrationManager: ObservableObject {
             willRenew: true,
             purchasedAt: now.addingTimeInterval(-60 * 86_400),
             storekitOriginalTransactionId: nil,
+            // Intentional: matches `purchasedAt` exactly. A real StoreKit
+            // entitlement's originalPurchaseDate equals purchasedAt for the
+            // first transaction in a subscription group, so the synthesized
+            // demo entitlement mirrors that shape.
             originalPurchaseDate: now.addingTimeInterval(-60 * 86_400)
         )
     }

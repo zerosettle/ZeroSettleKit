@@ -6,14 +6,15 @@
 import XCTest
 @testable import ZeroSettleKit
 
-@MainActor
 final class ZSMigrationManagerSynthesizeDemoEntitlementTests: XCTestCase {
 
+    @MainActor
     func testReturnsNilWhenPromptIsNil() {
         let result = ZSMigrationManager.synthesizeDemoEntitlement(from: nil)
         XCTAssertNil(result)
     }
 
+    @MainActor
     func testReturnsNilWhenEligibleProductIdsIsEmpty() {
         let prompt = MigrationPrompt(
             productId: "",
@@ -25,6 +26,7 @@ final class ZSMigrationManagerSynthesizeDemoEntitlementTests: XCTestCase {
         XCTAssertNil(result)
     }
 
+    @MainActor
     func testReturnsEntitlementWithFirstEligibleProduct() {
         let prompt = MigrationPrompt(
             productId: "com.app.pro",
@@ -39,8 +41,12 @@ final class ZSMigrationManagerSynthesizeDemoEntitlementTests: XCTestCase {
         XCTAssertTrue(result?.isActive ?? false)
         XCTAssertEqual(result?.status, .active)
         XCTAssertTrue(result?.willRenew ?? false)
+        // Lock the sentinel-id contract so future code keying on the prefix
+        // (e.g., analytics exclusion, admin UI filtering) doesn't silently break.
+        XCTAssertTrue(result?.id.hasPrefix("demo-synth-") ?? false)
     }
 
+    @MainActor
     func testSynthesizedEntitlementHasPastPurchaseDate() {
         let prompt = MigrationPrompt(
             productId: "com.app.pro",
@@ -56,6 +62,7 @@ final class ZSMigrationManagerSynthesizeDemoEntitlementTests: XCTestCase {
         XCTAssertGreaterThan(daysAgo, 30)
     }
 
+    @MainActor
     func testSynthesizedEntitlementHasFutureExpiration() {
         let prompt = MigrationPrompt(
             productId: "com.app.pro",
