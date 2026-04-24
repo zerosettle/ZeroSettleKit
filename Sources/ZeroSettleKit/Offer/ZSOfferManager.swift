@@ -321,8 +321,8 @@ public final class ZSOfferManager: ObservableObject {
     }
 
     private func resolveFromOffer(_ offer: Offer.OfferData, iap: ZeroSettle) {
-        // Rollout cohort check (SHA-256, consistent with ZSMigrationManager)
-        if let rollout = offer.rolloutPercent, rollout < 100 {
+        // Rollout cohort check (skipped in demo mode — devs always see their tip)
+        if !Self.demoMode, let rollout = offer.rolloutPercent, rollout < 100 {
             let digest = SHA256.hash(data: Data(userId.utf8))
             let firstBytes = digest.prefix(4)
             let hashValue = firstBytes.reduce(0) { ($0 << 8) | UInt32($1) }
@@ -342,8 +342,8 @@ public final class ZSOfferManager: ObservableObject {
         }
 
         // Migration and storekit_to_web flows require an active StoreKit subscription
-        // to migrate from — skip if the user doesn't have one.
-        if offer.needsAppleCancel {
+        // (skipped in demo mode — the dev is previewing without a real purchase).
+        if !Self.demoMode, offer.needsAppleCancel {
             guard !activeStoreKitEntitlements.isEmpty else {
                 ZSLogger.info("[OfferManager] Skipping: no active StoreKit subscription to migrate", category: .migration)
                 state = .ineligible
@@ -387,8 +387,19 @@ public final class ZSOfferManager: ObservableObject {
     }
 
     private func resolveFromMigration(_ migration: MigrationPrompt, iap: ZeroSettle) {
-        // Legacy path: requires StoreKit subscription (same as ZSMigrationManager)
-        let skEntitlements = activeStoreKitEntitlements
+        // Legacy path: requires StoreKit subscription (same as ZSMigrationManager).
+        // Demo mode: synthesize a virtual SK entitlement against the server's
+        // migration prompt so the dev can preview without a real sandbox purchase.
+        var skEntitlements = activeStoreKitEntitlements
+        if Self.demoMode && skEntitlements.isEmpty {
+            if let synthesized = Self.synthesizeDemoEntitlement(from: migration) {
+                skEntitlements = [synthesized]
+                ZSLogger.info(
+                    "[OfferManager] DEMO MODE: synthesized active StoreKit entitlement for productId=\(synthesized.productId)",
+                    category: .migration
+                )
+            }
+        }
         guard !skEntitlements.isEmpty else {
             state = .ineligible
             return
@@ -705,6 +716,42 @@ public final class ZSOfferManager: ObservableObject {
         for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(dismissedKeyPrefix) {
             defaults.removeObject(forKey: key)
         }
+    }
+
+    /// Synthesizes a virtual active StoreKit ``Entitlement`` for demo mode from
+    /// the server-configured migration prompt. Picks the first product in the
+    /// prompt's `eligibleProductIds`. Returns `nil` if the prompt is missing
+    /// or has no eligible products.
+    ///
+    /// Used only by the legacy-migration fallback path (``resolveFromMigration(_:iap:)``)
+    /// in ``evaluateEligibility()``. The unified offer path (``resolveFromOffer(_:iap:)``)
+    /// doesn't need a synthesizer because the server already returned a
+    /// resolved offer payload.
+    ///
+    /// The synthetic entitlement's `purchasedAt` is 60 days in the past so any
+    /// reasonable min-tenure check that slipped past the demo bypass would still
+    /// pass; `expiresAt` is 30 days in the future so the downstream migration
+    /// flow sees it as active.
+    internal static func synthesizeDemoEntitlement(from prompt: MigrationPrompt?) -> Entitlement? {
+        guard let prompt else { return nil }
+        guard let productId = prompt.eligibleProductIds.first else { return nil }
+        let now = Date()
+        return Entitlement(
+            id: "demo-synth-\(productId)",
+            productId: productId,
+            source: .storeKit,
+            isActive: true,
+            status: .active,
+            expiresAt: now.addingTimeInterval(30 * 86_400),
+            willRenew: true,
+            // Intentional: matches `purchasedAt` exactly. A real StoreKit
+            // entitlement's originalPurchaseDate equals purchasedAt for the
+            // first transaction in a subscription group, so the synthesized
+            // demo entitlement mirrors that shape.
+            purchasedAt: now.addingTimeInterval(-60 * 86_400),
+            storekitOriginalTransactionId: nil,
+            originalPurchaseDate: now.addingTimeInterval(-60 * 86_400)
+        )
     }
 
     #if DEBUG
