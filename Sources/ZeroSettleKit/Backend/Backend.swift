@@ -59,15 +59,16 @@ internal final class Backend: @unchecked Sendable {
             queryItems.append(URLQueryItem(name: "user_id", value: userId))
         }
         // Demo-mode preview: when the dev has flipped ZSOfferManager.demoMode,
-        // ask the server to surface the dashboard-configured migration prompt
-        // regardless of the user's real subscription state. The backend honors
-        // this flag only on test publishable keys (live keys ignore it), so
-        // production builds with demoMode somehow set still receive the
-        // real, user-state-resolved response.
-        // demoMode is @MainActor-isolated (ZSOfferManager is @MainActor); hop
-        // explicitly since fetchProducts is non-isolated async.
-        if await MainActor.run(body: { ZSOfferManager.demoMode }) {
-            queryItems.append(URLQueryItem(name: "demo", value: "true"))
+        // ask the server to surface the dashboard-configured campaign of the
+        // chosen flow (migration or upgrade) regardless of the user's real
+        // subscription state. The backend honors this flag only on test
+        // publishable keys (live keys ignore it), so production builds with
+        // demoMode somehow set still receive the real, user-state-resolved
+        // response. demoMode is @MainActor-isolated; hop explicitly since
+        // fetchProducts is non-isolated async.
+        let demoMode = await MainActor.run { ZSOfferManager.demoMode }
+        if demoMode.isActive {
+            queryItems.append(URLQueryItem(name: "demo", value: demoMode.rawValue))
         }
         if !queryItems.isEmpty {
             components.queryItems = queryItems

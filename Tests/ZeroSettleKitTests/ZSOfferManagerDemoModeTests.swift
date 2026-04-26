@@ -44,11 +44,11 @@ final class ZSOfferManagerPresentDemoGateTests: XCTestCase {
 
     @MainActor
     func testPresentInDemoModeSetsAlertAndKeepsStateEligible() {
-        defer { ZSOfferManager.demoMode = false }
+        defer { ZSOfferManager.demoMode = .off }
 
         let manager = ZSOfferManager(userId: "test-user")
         manager._setStateForTesting(.eligible)
-        ZSOfferManager.demoMode = true
+        ZSOfferManager.demoMode = .migration
 
         manager.present()
 
@@ -58,11 +58,11 @@ final class ZSOfferManagerPresentDemoGateTests: XCTestCase {
 
     @MainActor
     func testPresentOutsideDemoModeTransitionsToPresented() {
-        defer { ZSOfferManager.demoMode = false }
+        defer { ZSOfferManager.demoMode = .off }
 
         let manager = ZSOfferManager(userId: "test-user")
         manager._setStateForTesting(.eligible)
-        ZSOfferManager.demoMode = false
+        ZSOfferManager.demoMode = .off
 
         manager.present()
 
@@ -72,11 +72,11 @@ final class ZSOfferManagerPresentDemoGateTests: XCTestCase {
 
     @MainActor
     func testPresentInDemoModeWithNonEligibleStateIsNoop() {
-        defer { ZSOfferManager.demoMode = false }
+        defer { ZSOfferManager.demoMode = .off }
 
         let manager = ZSOfferManager(userId: "test-user")
         manager._setStateForTesting(.ineligible)
-        ZSOfferManager.demoMode = true
+        ZSOfferManager.demoMode = .migration
 
         manager.present()
 
@@ -89,10 +89,10 @@ final class ZSOfferManagerPreloadCheckoutDemoGateTests: XCTestCase {
 
     @MainActor
     func testPreloadCheckoutReturnsNilInDemoMode() async {
-        defer { ZSOfferManager.demoMode = false }
+        defer { ZSOfferManager.demoMode = .off }
 
         let manager = ZSOfferManager(userId: "test-user")
-        ZSOfferManager.demoMode = true
+        ZSOfferManager.demoMode = .migration
 
         let result = await manager.preloadCheckout(stripeCustomerId: nil)
 
@@ -101,10 +101,10 @@ final class ZSOfferManagerPreloadCheckoutDemoGateTests: XCTestCase {
 
     @MainActor
     func testStartCheckoutReturnsNilInDemoMode() async {
-        defer { ZSOfferManager.demoMode = false }
+        defer { ZSOfferManager.demoMode = .off }
 
         let manager = ZSOfferManager(userId: "test-user")
-        ZSOfferManager.demoMode = true
+        ZSOfferManager.demoMode = .migration
 
         let result = await manager.startCheckout(stripeCustomerId: nil)
 

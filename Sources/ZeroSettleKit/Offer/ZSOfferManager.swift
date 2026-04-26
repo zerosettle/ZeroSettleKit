@@ -53,14 +53,16 @@ public final class ZSOfferManager: ObservableObject {
 
     // MARK: - Demo Mode
 
-    /// Previews the tenant-configured offer tip on a device without a sandbox StoreKit purchase.
+    /// Previews the tenant-configured offer tip on a device without a real subscription.
     ///
-    /// When `true`, ``evaluateEligibility()`` uses the tenant's real server-side
-    /// offer (``Offer/OfferData``) — same title, message, CTA, discount, and
-    /// `checkout_presentation` the end user would see in production — but bypasses
-    /// gates that would otherwise require an active StoreKit or web subscription.
+    /// Set to ``ZSDemoMode/migration`` to preview Switch & Save, or
+    /// ``ZSDemoMode/upgrade`` to preview Upgrade & Save. The SDK bypasses
+    /// client-side eligibility gates AND tells the backend (via
+    /// `?demo=migration` / `?demo=upgrade` on the products endpoint) to
+    /// surface the corresponding dashboard-configured campaign regardless
+    /// of the user's real subscription state.
     ///
-    /// ## Bypassed gates
+    /// ## Bypassed gates (SDK-side)
     ///
     /// - active StoreKit subscription (for `needsAppleCancel` offers)
     /// - rollout bucket hash
@@ -72,33 +74,23 @@ public final class ZSOfferManager: ObservableObject {
     /// - SDK configured via ``ZeroSettle/configure(_:)`` and bootstrapped via ``ZeroSettle/bootstrap(userId:)``
     /// - Permanent dismissal
     /// - Server returned ``RemoteConfig/offer`` or ``RemoteConfig/migration``.
-    ///   If the tenant's dashboard has no offer configured, demo mode resolves
-    ///   to ``Offer/State/ineligible`` — there is no hardcoded fallback.
-    ///
-    /// ## Known limitation: upgrade preview
-    ///
-    /// Upgrade offers (``Offer/FlowType/upgradeStorekitToWeb`` and
-    /// ``Offer/FlowType/upgradeWebToWeb``) are computed server-side from the
-    /// user's current subscription. A user with no entitlements receives no
-    /// offer from the server regardless of demo mode. To preview upgrade
-    /// tips, a real sandbox StoreKit purchase is still required. Migration
-    /// tips are previewable without a purchase because ``RemoteConfig/migration``
-    /// is returned unconditionally when configured.
+    ///   If the tenant's dashboard has no campaign of the requested kind,
+    ///   demo mode resolves to ``Offer/State/ineligible`` — no hardcoded fallback.
     ///
     /// ## Transactions are disabled in demo mode
     ///
-    /// Tapping the tip's CTA while ``demoMode`` is `true` does **not** open
+    /// Tapping the tip's CTA while ``demoMode`` is active does **not** open
     /// checkout. The SDK sets ``showDemoModeAlert`` and leaves ``state`` at
     /// ``Offer/State/eligible``; the tip view renders a local alert explaining
-    /// the block. No `PaymentIntent` or `SetupIntent` is created. To verify
-    /// the real checkout flow, disable demo mode and complete a StoreKit
-    /// sandbox purchase.
+    /// the block. No `PaymentIntent` or `SetupIntent` is created.
     ///
     /// ## Usage
     ///
     /// ```swift
     /// #if DEBUG
-    /// ZSOfferManager.demoMode = true
+    /// ZSOfferManager.demoMode = .migration   // preview Switch & Save
+    /// // or
+    /// ZSOfferManager.demoMode = .upgrade     // preview Upgrade & Save
     /// #endif
     ///
     /// ZeroSettle.shared.configure(.init(publishableKey: "zs_pk_test_..."))
@@ -106,19 +98,21 @@ public final class ZSOfferManager: ObservableObject {
     /// ```
     ///
     /// - Important: Gate assignments behind a debug build flag (`#if DEBUG`)
-    ///   so the property cannot be enabled in a production TestFlight or App
+    ///   so the property cannot be activated in a production TestFlight or App
     ///   Store build. The SDK logs a prominent warning the first time the flag
-    ///   flips to `true` in a process, but never prevents it.
-    /// - SeeAlso: ``showDemoModeAlert``. For the deprecated predecessor's
-    ///   equivalent flag, see ``ZSMigrationManager/demoMode``.
-    public static var demoMode: Bool = false {
+    ///   leaves ``ZSDemoMode/off``, but never prevents it. The backend
+    ///   honors the demo signal only on test-mode publishable keys
+    ///   (`zs_pk_test_*`) — additional defense in depth.
+    /// - SeeAlso: ``showDemoModeAlert``, ``ZSDemoMode``. For the deprecated
+    ///   predecessor's equivalent flag, see ``ZSMigrationManager/demoMode``.
+    public static var demoMode: ZSDemoMode = .off {
         didSet {
-            if demoMode && !oldValue {
+            if demoMode != .off && oldValue == .off {
                 ZSLogger.info(
-                    "[OfferManager] ⚠️ demoMode=true — migration-offer tips preview " +
-                    "without any subscription; upgrade-offer tips still need a real " +
-                    "subscription (server-driven). Checkout CTA is disabled to prevent " +
-                    "real charges. Never ship with demoMode on.",
+                    "[OfferManager] ⚠️ demoMode=\(demoMode.rawValue) — previewing " +
+                    "tenant-configured \(demoMode.rawValue) offer without real " +
+                    "subscription. Checkout CTA is disabled to prevent real charges. " +
+                    "Never ship with demoMode active.",
                     category: ZSLogger.Category.migration
                 )
             }
@@ -289,7 +283,7 @@ public final class ZSOfferManager: ObservableObject {
         let _diagOldState = state
         defer {
             ZSLogger.info(
-                "[diag] evaluateEligibility outcome: \(_diagOldState) → \(self.state) demoMode=\(Self.demoMode) isBootstrapped=\(iap.isBootstrapped) hasOffer=\(iap.remoteConfig?.offer != nil) hasMigration=\(iap.remoteConfig?.migration != nil) webEnabled=\(iap.isWebCheckoutEnabled) jurisdiction=\(iap.effectiveJurisdiction.rawValue) entitlements=\(iap.entitlements.count) skEntitlements=\(self.activeStoreKitEntitlements.count)",
+                "[diag] evaluateEligibility outcome: \(_diagOldState) → \(self.state) demoMode=\(Self.demoMode.rawValue) isBootstrapped=\(iap.isBootstrapped) hasOffer=\(iap.remoteConfig?.offer != nil) hasMigration=\(iap.remoteConfig?.migration != nil) webEnabled=\(iap.isWebCheckoutEnabled) jurisdiction=\(iap.effectiveJurisdiction.rawValue) entitlements=\(iap.entitlements.count) skEntitlements=\(self.activeStoreKitEntitlements.count)",
                 category: .migration
             )
         }
@@ -343,7 +337,7 @@ public final class ZSOfferManager: ObservableObject {
 
     private func resolveFromOffer(_ offer: Offer.OfferData, iap: ZeroSettle) {
         // Rollout cohort check (skipped in demo mode — devs always see their tip)
-        if !Self.demoMode, let rollout = offer.rolloutPercent, rollout < 100 {
+        if !Self.demoMode.isActive, let rollout = offer.rolloutPercent, rollout < 100 {
             let digest = SHA256.hash(data: Data(userId.utf8))
             let firstBytes = digest.prefix(4)
             let hashValue = firstBytes.reduce(0) { ($0 << 8) | UInt32($1) }
@@ -364,7 +358,7 @@ public final class ZSOfferManager: ObservableObject {
 
         // Migration and storekit_to_web flows require an active StoreKit subscription
         // (skipped in demo mode — the dev is previewing without a real purchase).
-        if !Self.demoMode, offer.needsAppleCancel {
+        if !Self.demoMode.isActive, offer.needsAppleCancel {
             guard !activeStoreKitEntitlements.isEmpty else {
                 ZSLogger.info("[OfferManager] Skipping: no active StoreKit subscription to migrate", category: .migration)
                 state = .ineligible
@@ -412,7 +406,7 @@ public final class ZSOfferManager: ObservableObject {
         // Demo mode: synthesize a virtual SK entitlement against the server's
         // migration prompt so the dev can preview without a real sandbox purchase.
         var skEntitlements = activeStoreKitEntitlements
-        if Self.demoMode && skEntitlements.isEmpty {
+        if Self.demoMode.isActive && skEntitlements.isEmpty {
             if let synthesized = Self.synthesizeDemoEntitlement(from: migration) {
                 skEntitlements = [synthesized]
                 ZSLogger.info(
@@ -475,10 +469,10 @@ public final class ZSOfferManager: ObservableObject {
             ZSLogger.info("[OfferManager] present() skipped — state is \(state), expected .eligible", category: .migration)
             return
         }
-        if Self.demoMode {
+        if Self.demoMode.isActive {
             showDemoModeAlert = true
             ZSLogger.info(
-                "[OfferManager] CTA tap blocked: demoMode is true — alert shown, no checkout initiated",
+                "[OfferManager] CTA tap blocked: demoMode=\(Self.demoMode.rawValue) — alert shown, no checkout initiated",
                 category: .migration
             )
             return
@@ -491,7 +485,7 @@ public final class ZSOfferManager: ObservableObject {
     public func startCheckout(stripeCustomerId: String? = nil) async -> URL? {
         // Demo mode: never initiate a real PaymentIntent. The view layer
         // should already have short-circuited; this is defense in depth.
-        if Self.demoMode { return nil }
+        if Self.demoMode.isActive { return nil }
         guard let data = offerData else { return nil }
         isLoading = true
         checkoutError = nil
@@ -668,7 +662,7 @@ public final class ZSOfferManager: ObservableObject {
     public func preloadCheckout(stripeCustomerId: String? = nil) async -> URL? {
         // Demo mode: never initiate a real PaymentIntent. The tip view's
         // .alert handles the CTA; preload is a no-op in demo mode.
-        if Self.demoMode { return nil }
+        if Self.demoMode.isActive { return nil }
         guard let data = offerData else { return nil }
 
         // Web-to-web doesn't need preloading (no WebView)

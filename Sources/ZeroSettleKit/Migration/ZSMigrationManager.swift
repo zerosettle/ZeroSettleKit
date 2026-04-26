@@ -143,13 +143,14 @@ public final class ZSMigrationManager: ObservableObject {
     ///   flips to `true` in a process, but never prevents it.
     /// - SeeAlso: ``ZeroSettle/forcedJurisdiction``, ``resetDismissedState()``,
     ///   ``showDemoModeAlert``, ``ZSOfferManager/demoMode``
-    public static var demoMode: Bool = false {
+    public static var demoMode: ZSDemoMode = .off {
         didSet {
-            if demoMode && !oldValue {
+            if demoMode != .off && oldValue == .off {
                 ZSLogger.info(
-                    "[MigrationManager] ⚠️ demoMode=true — migration tip will preview " +
-                    "real dashboard config without a StoreKit subscription. Checkout " +
-                    "CTA is disabled to prevent real charges. Never ship with demoMode on.",
+                    "[MigrationManager] ⚠️ demoMode=\(demoMode.rawValue) — migration tip " +
+                    "will preview real dashboard config without a StoreKit subscription. " +
+                    "Checkout CTA is disabled to prevent real charges. Never ship with " +
+                    "demoMode active.",
                     category: ZSLogger.Category.migration
                 )
             }
@@ -349,7 +350,7 @@ public final class ZSMigrationManager: ObservableObject {
         }
 
         // Demo mode: force out of dismissed state so re-evaluation can proceed
-        if Self.demoMode && state == .dismissed {
+        if Self.demoMode.isActive && state == .dismissed {
             state = .loading
         }
 
@@ -418,7 +419,7 @@ public final class ZSMigrationManager: ObservableObject {
         // Demo-mode capture for gate bypasses below. Real backend config still
         // flows through — we just skip the gates that would prevent the tip
         // from surfacing on a device without a real sandbox purchase.
-        let usingDemoMode = Self.demoMode
+        let usingDemoMode = Self.demoMode.isActive
 
         // ── Check 5: Not permanently dismissed (per-user, with global fallback) ──
         guard !Self.isPermanentlyDismissed(forUserId: userId) && !Self.isPermanentlyDismissed else {
@@ -632,10 +633,10 @@ public final class ZSMigrationManager: ObservableObject {
     /// Call this when you show the migration offer UI or begin the checkout flow.
     public func present() {
         guard state == .eligible else { return }
-        if Self.demoMode {
+        if Self.demoMode.isActive {
             showDemoModeAlert = true
             ZSLogger.info(
-                "[MigrationManager] CTA tap blocked: demoMode is true — alert shown, no checkout initiated",
+                "[MigrationManager] CTA tap blocked: demoMode=\(Self.demoMode.rawValue) — alert shown, no checkout initiated",
                 category: .migration
             )
             return
@@ -657,7 +658,7 @@ public final class ZSMigrationManager: ObservableObject {
     public func startCheckout(stripeCustomerId: String? = nil) async -> URL? {
         // Demo mode: never initiate a real PaymentIntent. The view layer
         // should already have short-circuited; this is defense in depth.
-        if Self.demoMode { return nil }
+        if Self.demoMode.isActive { return nil }
         guard let offerData else {
             ZSLogger.error("[MigrationManager] startCheckout() failed — no offerData available", category: .migration)
             checkoutError = ZeroSettleError.notConfigured
@@ -876,7 +877,7 @@ public final class ZSMigrationManager: ObservableObject {
     internal func preloadCheckout(stripeCustomerId: String? = nil) async -> URL? {
         // Demo mode: never initiate a real PaymentIntent. The tip view's
         // .alert handles the CTA; preload is a no-op in demo mode.
-        if Self.demoMode { return nil }
+        if Self.demoMode.isActive { return nil }
         guard offerData != nil, state == .eligible else { return nil }
 
         // Cache hit

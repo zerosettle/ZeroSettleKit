@@ -236,8 +236,8 @@ public struct OfferTipView: View {
             Button("OK", role: .cancel) { }
         } message: {
             Text(
-                "Checkout is disabled while demoMode is on to prevent real charges. "
-                + "Set ZSOfferManager.demoMode = false and complete a StoreKit "
+                "Checkout is disabled while demoMode is active to prevent real charges. "
+                + "Set ZSOfferManager.demoMode = .off and complete a StoreKit "
                 + "sandbox purchase to test checkout end-to-end."
             )
         }

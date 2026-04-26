@@ -80,11 +80,11 @@ final class ZSMigrationManagerPresentDemoGateTests: XCTestCase {
 
     @MainActor
     func testPresentInDemoModeSetsAlertAndKeepsStateEligible() {
-        defer { ZSMigrationManager.demoMode = false }
+        defer { ZSMigrationManager.demoMode = .off }
 
         let manager = ZSMigrationManager(userId: "test-user")
         manager._setStateForTesting(.eligible)
-        ZSMigrationManager.demoMode = true
+        ZSMigrationManager.demoMode = .migration
 
         manager.present()
 
@@ -94,11 +94,11 @@ final class ZSMigrationManagerPresentDemoGateTests: XCTestCase {
 
     @MainActor
     func testPresentOutsideDemoModeTransitionsToPresented() {
-        defer { ZSMigrationManager.demoMode = false }
+        defer { ZSMigrationManager.demoMode = .off }
 
         let manager = ZSMigrationManager(userId: "test-user")
         manager._setStateForTesting(.eligible)
-        ZSMigrationManager.demoMode = false
+        ZSMigrationManager.demoMode = .off
 
         manager.present()
 
@@ -108,11 +108,11 @@ final class ZSMigrationManagerPresentDemoGateTests: XCTestCase {
 
     @MainActor
     func testPresentInDemoModeWithNonEligibleStateIsNoop() {
-        defer { ZSMigrationManager.demoMode = false }
+        defer { ZSMigrationManager.demoMode = .off }
 
         let manager = ZSMigrationManager(userId: "test-user")
         manager._setStateForTesting(.ineligible)
-        ZSMigrationManager.demoMode = true
+        ZSMigrationManager.demoMode = .migration
 
         manager.present()
 
@@ -125,10 +125,10 @@ final class ZSMigrationManagerPreloadCheckoutDemoGateTests: XCTestCase {
 
     @MainActor
     func testPreloadCheckoutReturnsNilInDemoMode() async {
-        defer { ZSMigrationManager.demoMode = false }
+        defer { ZSMigrationManager.demoMode = .off }
 
         let manager = ZSMigrationManager(userId: "test-user")
-        ZSMigrationManager.demoMode = true
+        ZSMigrationManager.demoMode = .migration
 
         let result = await manager.preloadCheckout(stripeCustomerId: nil)
 
@@ -137,10 +137,10 @@ final class ZSMigrationManagerPreloadCheckoutDemoGateTests: XCTestCase {
 
     @MainActor
     func testStartCheckoutReturnsNilInDemoMode() async {
-        defer { ZSMigrationManager.demoMode = false }
+        defer { ZSMigrationManager.demoMode = .off }
 
         let manager = ZSMigrationManager(userId: "test-user")
-        ZSMigrationManager.demoMode = true
+        ZSMigrationManager.demoMode = .migration
 
         let result = await manager.startCheckout(stripeCustomerId: nil)
 
