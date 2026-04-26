@@ -764,6 +764,15 @@ public final class ZeroSettle: ObservableObject {
     ///   - name: Optional customer name to associate with the Stripe Customer
     ///   - email: Optional customer email to associate with the Stripe Customer
     /// - Returns: A ``ProductCatalog`` containing products and remote configuration
+    /// Tracks an in-flight bootstrap so concurrent calls for the same userId
+    /// share a single network round-trip. SwiftUI's `.task(id:)` can fire its
+    /// body more than once during cold-launch scene-phase transitions (even
+    /// when the id value is unchanged), and without single-flighting, the
+    /// first call's URLSession data tasks get cooperatively cancelled
+    /// (NSURLError -999) when SwiftUI cancels the first task body's parent.
+    @ObservationIgnored
+    private var inFlightBootstrap: (userId: String, task: Task<ProductCatalog, Error>)?
+
     @discardableResult
     public func bootstrap(userId: String, name: String? = nil, email: String? = nil) async throws -> ProductCatalog {
         let _diagStack = Thread.callStackSymbols.dropFirst().prefix(8).joined(separator: " ← ")
@@ -773,6 +782,30 @@ public final class ZeroSettle: ObservableObject {
             throw ZeroSettleError.invalidUserId
         }
 
+        // Single-flight: if a bootstrap for the same userId is already running,
+        // join it instead of starting a parallel call. The in-flight Task is
+        // unstructured (`Task { ... }`) so it survives this caller's parent
+        // being cancelled — both callers end up with the same result.
+        if let inFlight = inFlightBootstrap, inFlight.userId == userId {
+            ZSLogger.info("[diag] bootstrap() joining in-flight call for userId=\(userId)", category: .general)
+            return try await inFlight.task.value
+        }
+
+        // Detached-style unstructured Task (`Task { @MainActor in ... }`) so
+        // SwiftUI's parent-Task cancellation does NOT propagate and tear down
+        // our in-flight URLSession requests. Clear the in-flight reference
+        // INSIDE the Task body — clearing in the outer caller's frame would
+        // race with caller cancellation and leave the second call to start a
+        // new bootstrap on top of the still-running one.
+        let task = Task<ProductCatalog, Error> { @MainActor in
+            defer { self.inFlightBootstrap = nil }
+            return try await self._runBootstrap(userId: userId, name: name, email: email)
+        }
+        inFlightBootstrap = (userId, task)
+        return try await task.value
+    }
+
+    private func _runBootstrap(userId: String, name: String?, email: String?) async throws -> ProductCatalog {
         // Reset user-scoped state so back-to-back bootstrap() calls (with or
         // without an intervening logout()) never leak data across users.
         customerName = nil
