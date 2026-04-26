@@ -47,4 +47,15 @@ public enum ZSDemoMode: String, Sendable, CaseIterable {
 
     /// Whether any preview flow is active.
     public var isActive: Bool { self != .off }
+
+    /// Stable, human-readable label for debug UI badges. Decoupled from
+    /// ``rawValue`` so renaming a case never silently changes the
+    /// rendered label.
+    public var displayLabel: String {
+        switch self {
+        case .off: return "OFF"
+        case .migration: return "MIGRATION"
+        case .upgrade: return "UPGRADE"
+        }
+    }
 }
