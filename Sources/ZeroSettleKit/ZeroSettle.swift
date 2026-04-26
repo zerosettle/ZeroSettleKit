@@ -699,6 +699,8 @@ public final class ZeroSettle: ObservableObject {
     ///
     /// - Parameter config: The IAP configuration with your publishable key
     public func configure(_ config: Configuration) {
+        let _diagStack = Thread.callStackSymbols.dropFirst().prefix(6).joined(separator: " ← ")
+        ZSLogger.info("[diag] configure() called pkPrefix=\(config.publishableKey.prefix(20)) stack=\(_diagStack)", category: .general)
         // Clear cached checkout URLs from the previous environment to prevent
         // stale sandbox PIs being served after switching to live (or vice versa).
         Task { await CheckoutResponseCache.shared.clearAll() }
@@ -764,6 +766,8 @@ public final class ZeroSettle: ObservableObject {
     /// - Returns: A ``ProductCatalog`` containing products and remote configuration
     @discardableResult
     public func bootstrap(userId: String, name: String? = nil, email: String? = nil) async throws -> ProductCatalog {
+        let _diagStack = Thread.callStackSymbols.dropFirst().prefix(8).joined(separator: " ← ")
+        ZSLogger.info("[diag] bootstrap() entry userId=\(userId) name=\(name ?? "nil") stack=\(_diagStack)", category: .general)
         guard !userId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             ZSLogger.error("bootstrap() called with empty userId — this is a no-op. Pass a valid user identifier.", category: .entitlements)
             throw ZeroSettleError.invalidUserId
