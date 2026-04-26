@@ -286,6 +286,13 @@ public final class ZSOfferManager: ObservableObject {
         guard [.loading, .ineligible, .eligible].contains(state) else { return }
 
         let iap = ZeroSettle.shared
+        let _diagOldState = state
+        defer {
+            ZSLogger.info(
+                "[diag] evaluateEligibility outcome: \(_diagOldState) → \(self.state) demoMode=\(Self.demoMode) isBootstrapped=\(iap.isBootstrapped) hasOffer=\(iap.remoteConfig?.offer != nil) hasMigration=\(iap.remoteConfig?.migration != nil) webEnabled=\(iap.isWebCheckoutEnabled) jurisdiction=\(iap.effectiveJurisdiction.rawValue) entitlements=\(iap.entitlements.count) skEntitlements=\(self.activeStoreKitEntitlements.count)",
+                category: .migration
+            )
+        }
         guard iap.isBootstrapped else { return }
 
         // Nudge the StoreKit monitor to re-pull renewal state. Transaction.updates
