@@ -177,10 +177,19 @@ internal struct WindowLevelSheetBridge<SheetHeader: View>: View {
     @State private var scrimVisible = false
 
     var body: some View {
-        Color.black.opacity(scrimVisible ? 0.6 : 0)
-            .ignoresSafeArea()
-            .accessibilityHidden(true)
-            .animation(.easeOut(duration: 0.35), value: scrimVisible)
+        // Scrim isolated inside a ZStack so the .sheet modifier below attaches
+        // to the wrapper, not to the Color directly. With .sheet on the same
+        // view as the scrim, SwiftUI interpolates the Color's opacity during
+        // the system's drag-to-dismiss re-render, and the implicit
+        // .animation(value:) below latches onto that interpolation. On
+        // drag-and-snap-back, the value-of-record is the post-drag (reduced)
+        // opacity, so the scrim never returns to 0.6.
+        ZStack {
+            Color.black.opacity(scrimVisible ? 0.6 : 0)
+                .ignoresSafeArea()
+                .accessibilityHidden(true)
+                .animation(.easeOut(duration: 0.35), value: scrimVisible)
+        }
             .onAppear { scrimVisible = true }
             .sheet(isPresented: $showSheet, onDismiss: {
                 onDismissed()
