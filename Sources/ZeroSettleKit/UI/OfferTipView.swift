@@ -845,10 +845,13 @@ public struct OfferTipView: View {
                 }
             }
         case "apple_pay_detected":
+            // Don't override contentHeight here — the body.scrollHeight
+            // ResizeObserver on the inline WebView already drives accurate
+            // height. Hard-coding applePayCollapsedHeight (180) inflates
+            // the card when only Apple Pay is rendered (no card row), and
+            // because the ResizeObserver only fires on actual body resizes,
+            // a single override above the measured value never recovers.
             hasApplePay = true
-            withAnimation(.easeInOut(duration: 0.25)) {
-                contentHeight = Self.applePayCollapsedHeight
-            }
         case "card_expanded":
             break // Expansion height is driven by onContentHeightChanged
         case "card_collapsed":
