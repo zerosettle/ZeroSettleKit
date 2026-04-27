@@ -10,6 +10,55 @@ internal import ZeroSettleCore
 import SafariServices
 #endif
 
+#if os(iOS)
+/// Manages the lifecycle of an imperatively presented `SFSafariViewController`
+/// for offer-flow browser checkouts. Two responsibilities:
+///   1. Reset `OfferTipView.ctaTapped` on user-initiated dismissal. Both
+///      delegate paths must be wired: `safariViewControllerDidFinish` fires
+///      only on the Done/X button; swipe-down dismissal goes exclusively
+///      through `presentationControllerDidDismiss`.
+///   2. Programmatically dismiss the sheet when the offer manager advances
+///      past `.presented` (e.g., a Universal Link callback transitions to
+///      `.accepted`). Without this the SafariVC stays on top of the success
+///      view, hiding it.
+@MainActor
+private final class OfferSafariCoordinator: NSObject {
+    var onDismiss: (() -> Void)?
+    weak var presentedSafari: SFSafariViewController?
+
+    fileprivate func fireOnce() {
+        let onDismiss = self.onDismiss
+        self.onDismiss = nil
+        onDismiss?()
+        presentedSafari = nil
+    }
+
+    /// Dismisses the SafariVC if it's still presented. Use after the manager
+    /// state advances past `.presented` (success path). Neither delegate
+    /// callback fires for programmatic dismiss, so this also nils `onDismiss`
+    /// to release the captured `manager` reference.
+    func dismissIfPresented() {
+        guard let safari = presentedSafari, safari.presentingViewController != nil else { return }
+        onDismiss = nil
+        safari.dismiss(animated: true) { [weak self] in
+            self?.presentedSafari = nil
+        }
+    }
+}
+
+extension OfferSafariCoordinator: @preconcurrency SFSafariViewControllerDelegate {
+    func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
+        fireOnce()
+    }
+}
+
+extension OfferSafariCoordinator: @preconcurrency UIAdaptivePresentationControllerDelegate {
+    func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+        fireOnce()
+    }
+}
+#endif
+
 // MARK: - Unified Offer Tip View
 
 /// Unified offer tip card for both migration and upgrade flows.
@@ -74,6 +123,13 @@ public struct OfferTipView: View {
     @State private var preloadTriggered = false
     /// True when performing a web-to-web upgrade (no WebView, just a spinner).
     @State private var webToWebInProgress = false
+
+    #if os(iOS)
+    /// Retains the `SFSafariViewController` delegate so we receive the
+    /// `safariViewControllerDidFinish` callback for resetting `ctaTapped`.
+    /// Stored as `@State` to survive view redraws while the sheet is open.
+    @State private var safariCoordinator = OfferSafariCoordinator()
+    #endif
 
     // Sheet checkout state (used when checkoutPresentation == .sheet)
     @State private var sheetCheckoutProduct: ZSProduct?
@@ -182,6 +238,19 @@ public struct OfferTipView: View {
             if newState != .eligible && newState != .presented {
                 preloader.reset()
                 preloadTriggered = false
+            }
+            #if os(iOS)
+            // Dismiss any presented browser checkout sheet so the success view
+            // isn't hidden underneath it. UL callback / programmatic transitions
+            // don't auto-dismiss SFSafariViewController.
+            if newState != .presented {
+                safariCoordinator.dismissIfPresented()
+            }
+            #endif
+            // Failure path (poll detected `.failed`) bounces back to .eligible —
+            // unstick the CTA so the user can retry.
+            if newState == .eligible {
+                ctaTapped = false
             }
         }
         .onChange(of: preloader.buttonsReady) { _, ready in
@@ -561,8 +630,11 @@ public struct OfferTipView: View {
         case .sheet:
             startSheetCheckout()
             return
-        case .safariVC, .safari:
-            startBrowserCheckout()
+        case .safariVC:
+            startBrowserCheckout(.safariVC)
+            return
+        case .safari:
+            startBrowserCheckout(.safari)
             return
         case nil:
             break // No override — use global checkoutType below
@@ -588,7 +660,7 @@ public struct OfferTipView: View {
         case .webView, .nativePay:
             startInlineWebViewCheckout()
         case .safari, .safariVC:
-            startBrowserCheckout()
+            startBrowserCheckout(checkoutType)
         }
     }
 
@@ -644,27 +716,72 @@ public struct OfferTipView: View {
         }
     }
 
-    private func startBrowserCheckout() {
+    #if os(iOS)
+    /// Suspend until the app's next foreground transition. Used by the
+    /// external-Safari checkout path to detect when the user has returned
+    /// from Safari (with or without completing payment).
+    @MainActor
+    private static func waitForAppForeground() async {
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            var token: NSObjectProtocol?
+            token = NotificationCenter.default.addObserver(
+                forName: UIApplication.willEnterForegroundNotification,
+                object: nil,
+                queue: .main
+            ) { _ in
+                if let token { NotificationCenter.default.removeObserver(token) }
+                cont.resume()
+            }
+        }
+    }
+    #endif
+
+    /// Browser-based checkout. `.safari` opens the system Safari app;
+    /// `.safariVC` presents `SFSafariViewController` in-app as a slide-up sheet.
+    /// Always requests the `browser` checkout template — the `native` template
+    /// targets `WKWebView` with a `messageHandlers` bridge and only works via
+    /// fallback paths when opened in standalone Safari.
+    private func startBrowserCheckout(_ presentation: CheckoutType) {
         Task { @MainActor in
             guard manager.offerData != nil else {
                 ctaTapped = false
                 return
             }
 
-            let url = await manager.startCheckout(stripeCustomerId: stripeCustomerId)
+            let url = await manager.startCheckout(
+                stripeCustomerId: stripeCustomerId,
+                checkoutMode: .browser
+            )
             guard let checkoutURL = url else {
                 ctaTapped = false
                 return
             }
 
             #if os(iOS)
-            guard let scene = UIApplication.shared.connectedScenes
-                .compactMap({ $0 as? UIWindowScene })
-                .first,
-                let rootVC = scene.windows.first(where: \.isKeyWindow)?
-                    .rootViewController
-            else {
+            if presentation == .safari {
                 await UIApplication.shared.open(checkoutURL)
+                // Poll so the manager advances when the user returns to the
+                // app after paying — `processCheckoutCallback` won't do it.
+                manager.startCheckoutCompletionPoll()
+                // External Safari has no dismissal callback; if the user
+                // returns without paying, release the .presented lock so
+                // the CTA becomes tappable again. The brief delay gives a
+                // successful UL callback / poll iteration time to advance
+                // the state first — if it does, this is a no-op.
+                Task { @MainActor [manager] in
+                    await Self.waitForAppForeground()
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    if manager.state == .presented {
+                        manager.releasePendingCheckout()
+                    }
+                }
+                return
+            }
+
+            guard let topVC = SafariPresentation.topViewController() else {
+                // No foreground-active scene — fall back to the system Safari app.
+                await UIApplication.shared.open(checkoutURL)
+                manager.startCheckoutCompletionPoll()
                 return
             }
 
@@ -673,7 +790,26 @@ public struct OfferTipView: View {
             let safari = SFSafariViewController(url: checkoutURL, configuration: config)
             safari.preferredBarTintColor = UIColor(backgroundColor)
             safari.preferredControlTintColor = .white
-            rootVC.present(safari, animated: true)
+            safari.applyZSPageSheetPresentation()
+            safari.delegate = safariCoordinator
+            safari.presentationController?.delegate = safariCoordinator
+            safariCoordinator.presentedSafari = safari
+            safariCoordinator.onDismiss = { [manager] in
+                // User dismissed without completing checkout — release the
+                // .presented lock so the CTA is tappable again. Skip on the
+                // success path: the UL callback already advanced the state.
+                // The view's `onChange(of: manager.state)` resets `ctaTapped`
+                // when state lands on `.eligible`.
+                manager.releasePendingCheckout()
+            }
+            topVC.present(safari, animated: true)
+            // Poll the transaction status. SafariVC can't intercept Stripe's
+            // redirect to fire UL, and the UL callback path doesn't transition
+            // the manager state. Polling drives `markCheckoutSucceeded` on
+            // success and reverts to `.eligible` on failure — both handled by
+            // the view's `onChange(of: manager.state)` observer (sheet dismiss,
+            // CTA reset).
+            manager.startCheckoutCompletionPoll()
             #endif
 
             // Wait for the manager to transition to .accepted or .completed

@@ -982,7 +982,11 @@ public final class ZeroSettle: ObservableObject {
     ///     Must match your RevenueCat app user ID if using RC.
     /// - Returns: The verified ``CheckoutTransaction`` on success
     @discardableResult
-    public func purchase(productId: String, userId: String? = nil) async throws -> CheckoutTransaction {
+    public func purchase(
+        productId: String,
+        userId: String? = nil,
+        presentation: CheckoutType? = nil
+    ) async throws -> CheckoutTransaction {
         guard let checkoutFlow, let backend else {
             throw ZeroSettleError.notConfigured
         }
@@ -999,8 +1003,9 @@ public final class ZeroSettle: ObservableObject {
             try validateUserIdIfRequired(for: product, userId: userId)
         }
 
-        // Log the effective checkout routing decision
-        let effectiveType = checkoutType
+        // Per-call override (e.g. server-driven `Offer.checkoutPresentation`)
+        // beats the global setting. Falls back to the global type when nil.
+        let effectiveType = presentation ?? checkoutType
         ZSLogger.info("Checkout routing: product=\(productId), jurisdiction=\(effectiveJurisdiction.rawValue), checkoutType=\(effectiveType.rawValue), webCheckoutEnabled=\(isWebCheckoutEnabled)", category: .checkout)
 
         // Check if web checkout is enabled for the detected jurisdiction
@@ -1020,7 +1025,7 @@ public final class ZeroSettle: ObservableObject {
 
         // Native Pay: use STPApplePayContext when trait is enabled + device supports it
 #if NativePay
-        if checkoutType == .nativePay, let nativePayFlow {
+        if effectiveType == .nativePay, let nativePayFlow {
             if let merchantId = resolvedMerchantId, nativePayFlow.canMakePayments() {
                 ZSLogger.info("Starting native Apple Pay checkout for \(productId)", category: .checkout)
                 do {
@@ -1062,7 +1067,8 @@ public final class ZeroSettle: ObservableObject {
         do {
             let session = try await checkoutFlow.beginCheckout(
                 productId: productId,
-                userId: userId
+                userId: userId,
+                presentation: presentation
             )
 
             ZSLogger.info("Checkout browser dismissed for \(productId), transaction: \(session.transactionId ?? "none")", category: .checkout)
@@ -1086,14 +1092,22 @@ public final class ZeroSettle: ObservableObject {
             }
 
             // No callback — verify the transaction with the backend before
-            // assuming the user abandoned. The Stripe webhook may still be
-            // processing, so verifyTransaction polls until confirmed.
-            // This is the primary completion path for Safari / SafariVC
-            // checkouts (universal links are unreliable in practice).
+            // assuming the user abandoned. Use a single attempt (≈1.7s with
+            // verifyTransaction's built-in 1.5s webhook-grace sleep) rather
+            // than the default 6× retry: in this path the UL did NOT fire,
+            // which empirically correlates much more with "user backgrounded
+            // Safari without paying" than with "payment succeeded but the
+            // webhook is slow". A long poll just delays user feedback. The
+            // rare slow-webhook + UL-flake case still resolves on the next
+            // entitlement refresh — the user just sees a brief retry
+            // affordance instead of a 13s spinner.
             if let transactionId = session.transactionId {
                 ZSLogger.debug("No callback — verifying transaction \(transactionId) with backend", category: .checkout)
                 do {
-                    let transaction = try await backend.verifyTransaction(transactionId: transactionId)
+                    let transaction = try await backend.verifyTransaction(
+                        transactionId: transactionId,
+                        maxAttempts: 1
+                    )
                     ZSLogger.info("Transaction \(transactionId) confirmed via backend verification", category: .checkout)
                     pendingCheckout = false
                     delegate?.zeroSettleCheckoutDidComplete(transaction: transaction)

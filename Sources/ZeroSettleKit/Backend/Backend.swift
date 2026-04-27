@@ -209,7 +209,7 @@ internal final class Backend: @unchecked Sendable {
 
     /// Initiate a checkout for the given product.
     /// The backend creates the Transaction, PaymentIntent/SetupIntent, and returns a `checkoutUrl`.
-    func initiateCheckout(productId: String, userId: String? = nil, stripeCustomerId: String? = nil, storekitSubscriptionEnd: Date? = nil, storekitOriginalTransactionId: String? = nil, checkoutMode: String? = nil, externalPurchaseToken: String? = nil) async throws -> CheckoutResponse {
+    func initiateCheckout(productId: String, userId: String? = nil, stripeCustomerId: String? = nil, storekitSubscriptionEnd: Date? = nil, storekitOriginalTransactionId: String? = nil, checkoutMode: CheckoutMode? = nil, externalPurchaseToken: String? = nil) async throws -> CheckoutResponse {
         let url = apiURL("iap/payment-intents/")
         let iso8601End: String? = storekitSubscriptionEnd.map {
             $0.formatted(.iso8601)
@@ -255,7 +255,7 @@ internal final class Backend: @unchecked Sendable {
             stripeCustomerId: stripeCustomerId,
             storekitSubscriptionEnd: iso8601End,
             storekitOriginalTransactionId: resolvedOriginalTxnId,
-            checkoutMode: checkoutMode,
+            checkoutMode: checkoutMode?.rawValue,
             customerName: custName,
             customerEmail: custEmail,
             externalPurchaseToken: externalPurchaseToken,

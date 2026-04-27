@@ -625,20 +625,23 @@ public struct MigrationTipView: View {
     private func startCheckout() {
         onEvent?(.ctaTapped)
 
-        // Checkout presentation override from dashboard config.
+        // Per-offer checkout presentation override from dashboard config.
         // When set, takes priority over the global checkoutType.
         // When nil, falls through to the global checkoutType switch.
-        let presentation = ZeroSettle.shared.remoteConfig?.offer?.checkoutPresentation
+        let offerPresentation = ZeroSettle.shared.remoteConfig?.offer?.checkoutPresentation
 
-        switch presentation {
+        switch offerPresentation {
         case .inline:
             startWebViewCheckout()
             return
         case .sheet:
             startSheetCheckout()
             return
-        case .safariVC, .safari:
-            startBrowserCheckout()
+        case .safariVC:
+            startBrowserCheckout(presentation: .safariVC)
+            return
+        case .safari:
+            startBrowserCheckout(presentation: .safari)
             return
         case nil:
             break // No override — use global checkoutType below
@@ -649,7 +652,8 @@ public struct MigrationTipView: View {
         case .webView, .nativePay:
             startWebViewCheckout()
         case .safari, .safariVC:
-            startBrowserCheckout()
+            // Global already matches — no override needed.
+            startBrowserCheckout(presentation: nil)
         }
     }
 
@@ -743,7 +747,12 @@ public struct MigrationTipView: View {
         }
     }
 
-    private func startBrowserCheckout() {
+    /// Browser-based checkout. `presentation` lets the per-offer
+    /// `Offer.checkoutPresentation` server config beat the global
+    /// `ZeroSettle.shared.checkoutType` for `.safari` vs `.safariVC` —
+    /// without it, both override values would collapse to whichever the
+    /// global was set to.
+    private func startBrowserCheckout(presentation: CheckoutType?) {
         guard let offerData = manager.offerData else { return }
         manager.present()
         // If present() didn't transition to .presented (demo-mode gate fired,
@@ -756,7 +765,11 @@ public struct MigrationTipView: View {
         Task { @MainActor in
             let iap = ZeroSettle.shared
             do {
-                try await iap.purchase(productId: offerData.activeStoreKitProductId, userId: userId)
+                try await iap.purchase(
+                    productId: offerData.activeStoreKitProductId,
+                    userId: userId,
+                    presentation: presentation
+                )
                 await manager.markCheckoutSucceeded()
                 onEvent?(.checkoutCompleted)
             } catch {

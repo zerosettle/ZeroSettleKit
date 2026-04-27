@@ -418,6 +418,44 @@ final class WebCheckoutFlowTests: XCTestCase {
 
         XCTAssertNil(callback)
     }
+
+    // Stripe's `confirmPayment({ return_url })` appends `redirect_status=succeeded`
+    // (not `status=success`) to the return URL. The PaymentIntent / browser-checkout
+    // flow relies on Stripe owning the redirect, so the SDK must accept this form.
+    func testHandleCallbackStripeRedirectStatusSucceeded() {
+        let url = URL(string: "https://api.zerosettle.io/checkout/callback?app_id=1&transaction_id=txn_abc&product_id=com.app.premium&payment_intent=pi_123&payment_intent_client_secret=pi_123_secret&redirect_status=succeeded")!
+        let callback = flow.handleCallback(url: url)
+
+        XCTAssertNotNil(callback)
+        XCTAssertEqual(callback?.transactionId, "txn_abc")
+        XCTAssertEqual(callback?.productId, "com.app.premium")
+        XCTAssertTrue(callback?.success ?? false)
+    }
+
+    // The Django callback page appends a `_zs_open=...` sentinel to the
+    // button URL. If iOS doesn't fire UL on the first tap, the page can
+    // re-render with the sentinel already in QUERY_STRING and end up with
+    // duplicate copies. Until the backend strips-and-replaces, and even
+    // after, the SDK must never crash on duplicate query keys — repeated
+    // keys are valid HTTP.
+    func testHandleCallbackToleratesDuplicateQueryParams() {
+        let url = URL(string: "https://api.zerosettle.io/checkout/callback?app_id=1&transaction_id=txn_abc&product_id=com.app.premium&redirect_status=succeeded&_zs_open=1&_zs_open=1&_zs_open=1")!
+        let callback = flow.handleCallback(url: url)
+
+        XCTAssertNotNil(callback)
+        XCTAssertEqual(callback?.transactionId, "txn_abc")
+        XCTAssertEqual(callback?.productId, "com.app.premium")
+        XCTAssertTrue(callback?.success ?? false)
+    }
+
+    func testHandleCallbackStripeRedirectStatusFailed() {
+        let url = URL(string: "https://api.zerosettle.io/checkout/callback?app_id=1&transaction_id=txn_def&product_id=com.app.pro&redirect_status=failed")!
+        let callback = flow.handleCallback(url: url)
+
+        XCTAssertNotNil(callback)
+        XCTAssertEqual(callback?.transactionId, "txn_def")
+        XCTAssertFalse(callback?.success ?? true)
+    }
 }
 
 // MARK: - Error Tests

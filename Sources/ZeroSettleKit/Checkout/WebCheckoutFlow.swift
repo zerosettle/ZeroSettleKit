@@ -55,7 +55,11 @@ internal final class WebCheckoutFlow: NSObject {
     ///   - productId: The product to purchase
     ///   - userId: The developer's user identifier
     /// - Returns: The checkout session (contains transactionId for status polling)
-    func beginCheckout(productId: String, userId: String? = nil) async throws -> CheckoutSession {
+    func beginCheckout(
+        productId: String,
+        userId: String? = nil,
+        presentation: CheckoutType? = nil
+    ) async throws -> CheckoutSession {
         ZSLogger.info("Creating checkout session for product: \(productId)", category: .checkout)
 
         // WebCheckoutFlow uses checkoutMode=browser which produces a different
@@ -63,7 +67,7 @@ internal final class WebCheckoutFlow: NSObject {
         let response = try await backend.initiateCheckout(
             productId: productId,
             userId: userId,
-            checkoutMode: CheckoutConstants.CheckoutMode.browser
+            checkoutMode: .browser
         )
 
         guard let checkoutUrl = URL(string: response.checkoutUrl) else {
@@ -78,8 +82,9 @@ internal final class WebCheckoutFlow: NSObject {
 
         ZSLogger.info("Checkout session created, transaction: \(session.transactionId ?? "none")", category: .checkout)
 
-        // Determine checkout type from remote config
-        let checkoutType = ZeroSettle.shared.checkoutType
+        // Per-call override (e.g. server-driven `Offer.checkoutPresentation`)
+        // beats the global setting. Falls back to the global type when nil.
+        let checkoutType = presentation ?? ZeroSettle.shared.checkoutType
 
         switch checkoutType {
         case .safari:
@@ -124,20 +129,27 @@ internal final class WebCheckoutFlow: NSObject {
             return nil
         }
 
+        // Use uniquingKeysWith — `Dictionary(uniqueKeysWithValues:)` traps
+        // when an upstream re-render accumulates duplicate sentinel params.
         let queryItems = components.queryItems ?? []
-        let params = Dictionary(uniqueKeysWithValues: queryItems.compactMap { item in
-            item.value.map { (item.name, $0) }
-        })
+        let params = Dictionary(
+            queryItems.compactMap { item in item.value.map { (item.name, $0) } },
+            uniquingKeysWith: { first, _ in first }
+        )
         ZSLogger.debug("handleCallback: query params: \(params)", category: .checkout)
 
+        // Stripe Checkout (hosted) sets `status=success`/`status=cancelled` via
+        // the success_url / cancel_url we hand to Stripe. The PaymentIntent flow
+        // (browser-checkout.html) hands the redirect off to Stripe's confirmPayment,
+        // which appends `redirect_status=succeeded`/`failed` instead. Accept both.
         guard let transactionId = params["transaction_id"],
               let productId = params["product_id"],
-              let statusString = params["status"] else {
+              let statusString = params["status"] ?? params["redirect_status"] else {
             ZSLogger.error("Checkout callback missing required parameters: \(url)", category: .checkout)
             return nil
         }
 
-        let success = statusString == "success"
+        let success = statusString == "success" || statusString == "succeeded"
 
         ZSLogger.info("Checkout callback received: transaction=\(transactionId), status=\(statusString)", category: .checkout)
 
@@ -221,20 +233,11 @@ internal final class WebCheckoutFlow: NSObject {
     private func openInSafariVC(_ url: URL, transactionId: String? = nil) async {
         ZSLogger.info("openInSafariVC: opening URL: \(url.absoluteString)", category: .checkout)
 
-        guard let windowScene = UIApplication.shared.connectedScenes
-            .compactMap({ $0 as? UIWindowScene })
-            .first(where: { $0.activationState == .foregroundActive }),
-              let rootViewController = windowScene.windows.first(where: { $0.isKeyWindow })?.rootViewController else {
+        guard let topController = SafariPresentation.topViewController() else {
             ZSLogger.error("Unable to find root view controller for inline checkout", category: .checkout)
             // Fall back to external browser
             await openInSafari(url)
             return
-        }
-
-        // Find the topmost presented view controller
-        var topController = rootViewController
-        while let presented = topController.presentedViewController {
-            topController = presented
         }
         ZSLogger.debug("openInSafariVC: presenting from: \(type(of: topController))", category: .checkout)
 
@@ -242,42 +245,34 @@ internal final class WebCheckoutFlow: NSObject {
         safari.delegate = self
         safari.preferredControlTintColor = .systemGreen
         safari.dismissButtonStyle = .close
-
-        // Present as a sheet on iOS 15+
-        if #available(iOS 15.0, *) {
-            safari.modalPresentationStyle = .pageSheet
-            if let sheet = safari.sheetPresentationController {
-                sheet.detents = [.large()]
-                sheet.prefersGrabberVisible = true
-            }
-        } else {
-            safari.modalPresentationStyle = .formSheet
-        }
+        safari.applyZSPageSheetPresentation()
 
         self.safariViewController = safari
         self.presentedSafariVC = safari
 
         // SFSafariViewController can't intercept redirect navigations as universal links.
         // Poll the transaction status in the background and auto-dismiss the sheet
-        // once the Stripe webhook confirms the payment succeeded.
+        // once it reaches a terminal state (completion or failure).
         let pollTask: Task<Void, Never>?
         if let transactionId {
             ZSLogger.debug("openInSafariVC: starting transaction poll for \(transactionId)", category: .checkout)
             pollTask = Task { [weak self] in
-                // Give the user time to start the payment flow before polling
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
-                for attempt in 1...20 {
-                    guard !Task.isCancelled else { return }
-                    let txn = try? await self?.backend.getTransaction(transactionId: transactionId)
-                    ZSLogger.debug("openInSafariVC: poll #\(attempt)/20 for \(transactionId): status=\(txn?.status.rawValue ?? "nil")", category: .checkout)
-                    if let txn, txn.status == .completed || txn.status == .processing {
-                        ZSLogger.info("Transaction \(transactionId) confirmed via polling, dismissing SFSafariViewController", category: .checkout)
-                        self?.dismissInlineCheckout()
-                        return
-                    }
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard let self else { return }
+                let outcome = await CheckoutTransactionPoller.poll(
+                    transactionId: transactionId,
+                    backend: self.backend,
+                    shouldContinue: { self.safariViewController != nil }
+                )
+                switch outcome {
+                case .completed:
+                    ZSLogger.info("Transaction \(transactionId) confirmed via polling, dismissing SFSafariViewController", category: .checkout)
+                    self.dismissInlineCheckout()
+                case .failed:
+                    ZSLogger.info("Transaction \(transactionId) failed; dismissing SFSafariViewController", category: .checkout)
+                    self.dismissInlineCheckout()
+                case .exhausted:
+                    ZSLogger.error("openInSafariVC: polling exhausted 20 attempts for \(transactionId) without confirmation", category: .checkout)
                 }
-                ZSLogger.error("openInSafariVC: polling exhausted 20 attempts for \(transactionId) without confirmation", category: .checkout)
             }
         } else {
             pollTask = nil

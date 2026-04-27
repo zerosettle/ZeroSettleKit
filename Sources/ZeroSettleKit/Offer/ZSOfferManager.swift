@@ -157,6 +157,7 @@ public final class ZSOfferManager: ObservableObject {
     private var checkoutTransactionId: String?
     private var preloadTask: Task<URL?, Never>?
     private var monitorObservationTask: Task<Void, Never>?
+    private var checkoutPollTask: Task<Void, Never>?
 
     // Persistence keys
     private static let dismissedKeyPrefix = "com.zerosettle.offerTipDismissed"
@@ -475,7 +476,15 @@ public final class ZSOfferManager: ObservableObject {
 
     /// Start the checkout flow. Returns the checkout URL for WebView,
     /// or nil for web-to-web upgrades (handled internally).
-    public func startCheckout(stripeCustomerId: String? = nil) async -> URL? {
+    /// - Parameters:
+    ///   - stripeCustomerId: Optional Stripe customer ID for unified billing portal.
+    ///   - checkoutMode: Pass `.browser` for Safari / SFSafariViewController paths.
+    ///     `nil` defers to the backend default (`.native`, the WebView-embed template).
+    ///     Mismatching the mode and the presentation renders the wrong checkout page.
+    public func startCheckout(
+        stripeCustomerId: String? = nil,
+        checkoutMode: CheckoutMode? = nil
+    ) async -> URL? {
         // Demo mode: never initiate a real PaymentIntent. The view layer
         // should already have short-circuited; this is defense in depth.
         if Self.demoMode.isActive { return nil }
@@ -493,7 +502,8 @@ public final class ZSOfferManager: ObservableObject {
             default:
                 let url = try await startWebViewCheckout(
                     data: data,
-                    stripeCustomerId: stripeCustomerId ?? self.stripeCustomerId
+                    stripeCustomerId: stripeCustomerId ?? self.stripeCustomerId,
+                    checkoutMode: checkoutMode
                 )
                 isLoading = false
                 return url
@@ -545,6 +555,70 @@ public final class ZSOfferManager: ObservableObject {
                 } catch {
                     ZSLogger.error("[OfferManager] Conversion tracking failed: \(error)", category: .migration)
                 }
+            }
+        }
+    }
+
+    /// Abort an in-flight browser checkout — cancels the poll task and
+    /// reverts `state` from `.presented` back to `.eligible` so the offer
+    /// card's CTA becomes tappable again. Safe to call from user-abort
+    /// signals (SafariVC dismissal without paying, app foreground after
+    /// the user returned from external Safari without completing).
+    ///
+    /// If the user later does complete the original checkout in Safari,
+    /// the UL callback path refreshes entitlements and `evaluateEligibility`'s
+    /// Check 7 (active StoreKit + active web sub) advances state to
+    /// `.accepted` — this method only releases the lock, it doesn't
+    /// prevent eventual success.
+    internal func releasePendingCheckout() {
+        guard state == .presented else { return }
+        checkoutPollTask?.cancel()
+        checkoutPollTask = nil
+        state = .eligible
+    }
+
+    /// Poll the active checkout transaction until it reaches a terminal state.
+    ///
+    /// Browser-checkout flows (`.safari` / `.safariVC`) don't get an automatic
+    /// state transition from the universal-link callback path —
+    /// `processCheckoutCallback` in `ZeroSettle` updates entitlements and fires
+    /// the host-app delegate but doesn't call `markCheckoutSucceeded`.
+    /// Polling closes that gap so the offer manager advances on its own:
+    ///   - `completed` / `processing` → `markCheckoutSucceeded(transactionId:)`,
+    ///     transitioning to `.accepted` and dismissing the in-app sheet via
+    ///     the view's `onChange(of: state)` observer.
+    ///   - `failed` → state reverts to `.eligible`, `checkoutError` is set so
+    ///     callers can render a retry affordance, and the sheet dismisses.
+    ///
+    /// Cancels any prior poll task. Exits early if `state` advances away from
+    /// `.presented` (success path completed by another mechanism, or user
+    /// abandoned and the manager was reset).
+    internal func startCheckoutCompletionPoll() {
+        checkoutPollTask?.cancel()
+        guard let transactionId = checkoutTransactionId else { return }
+        let backend: Backend
+        do {
+            backend = try makeBackend()
+        } catch {
+            ZSLogger.error("[OfferManager] Checkout poll could not resolve backend: \(error)", category: .migration)
+            return
+        }
+        checkoutPollTask = Task { @MainActor [weak self] in
+            let outcome = await CheckoutTransactionPoller.poll(
+                transactionId: transactionId,
+                backend: backend,
+                shouldContinue: { self?.state == .presented }
+            )
+            guard let self else { return }
+            switch outcome {
+            case .completed:
+                await self.markCheckoutSucceeded(transactionId: transactionId)
+            case .failed:
+                ZSLogger.info("[OfferManager] Checkout poll terminal: failed (txn=\(transactionId))", category: .migration)
+                self.state = .eligible
+                self.checkoutError = ZeroSettleError.checkoutFailed(reason: .other("Payment failed"))
+            case .exhausted:
+                ZSLogger.error("[OfferManager] Checkout poll exhausted (txn=\(transactionId))", category: .migration)
             }
         }
     }
@@ -669,7 +743,11 @@ public final class ZSOfferManager: ObservableObject {
 
     // MARK: - Private Checkout Helpers
 
-    private func startWebViewCheckout(data: Offer.OfferData, stripeCustomerId: String?) async throws -> URL {
+    private func startWebViewCheckout(
+        data: Offer.OfferData,
+        stripeCustomerId: String?,
+        checkoutMode: CheckoutMode? = nil
+    ) async throws -> URL {
         let backend = try makeBackend()
 
         // Find StoreKit subscription end for migration trial alignment
@@ -687,7 +765,8 @@ public final class ZSOfferManager: ObservableObject {
             userId: userId,
             stripeCustomerId: stripeCustomerId,
             storekitSubscriptionEnd: storekitEnd,
-            storekitOriginalTransactionId: storekitOrigTxnId
+            storekitOriginalTransactionId: storekitOrigTxnId,
+            checkoutMode: checkoutMode
         )
 
         checkoutTransactionId = checkout.transactionId

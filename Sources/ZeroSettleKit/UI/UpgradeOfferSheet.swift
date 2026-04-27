@@ -210,7 +210,7 @@ private struct UpgradeOfferSheetView: View {
                             .padding(.vertical, 14)
                             .background(Color.green.opacity(0.4), in: RoundedRectangle(cornerRadius: 12))
                     } else {
-                        Text(display?.ctaText ?? "Upgrade Now")
+                        Text(display?.ctaText ?? "Claim my 15%")
                             .font(.body.weight(.semibold))
                             .foregroundStyle(.white)
                             .frame(maxWidth: .infinity)
