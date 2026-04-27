@@ -404,6 +404,12 @@ public struct CheckoutSheet<Header: View>: View {
     /// Heights are animated and the settle guard won't re-arm until this expires.
     @State private var settleBypassExpiry: Date?
 
+    /// Height of the clear-color inset reserved at the bottom of the sheet.
+    /// Used in two places that must agree: the safeAreaInset that creates the
+    /// breathing room, and the presentationDetent calculation that adds the
+    /// inset back so the ScrollView content area equals natural content size.
+    private let bottomInset: CGFloat = 20
+
     // MARK: - Public Initialization (without preloading)
 
     public init(
@@ -571,8 +577,12 @@ extension CheckoutSheet {
             }
         }
         .scrollBounceBehavior(.basedOnSize)
-        .scrollDisabled(sheetHeight <= scrollFrameHeight)
-        .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: 20) }
+        // FP tolerance: sheetHeight and scrollFrameHeight come from separate
+        // GeometryProxy reads and can differ by ~1e-15 even when "the same."
+        // Without slack, that flips scrollDisabled to false and the user can
+        // drag content into the safeAreaInset's empty space.
+        .scrollDisabled(sheetHeight <= scrollFrameHeight + 1.0)
+        .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: bottomInset) }
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.height
         } action: { newHeight in
@@ -597,9 +607,13 @@ extension CheckoutSheet {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .presentationDetents(sheetHeight > UIScreen.main.bounds.height * 0.55
-            ? [.height(sheetHeight), .large]
-            : [.height(sheetHeight)])
+        // The safeAreaInset above adds bottomInset pt of clear space at the
+        // bottom of the ScrollView. The detent must include that or the
+        // ScrollView's content area shrinks below the natural content size,
+        // and the user sees the bottom rows clipped behind the inset.
+        .presentationDetents(sheetHeight + bottomInset > UIScreen.main.bounds.height * 0.55
+            ? [.height(sheetHeight + bottomInset), .large]
+            : [.height(sheetHeight + bottomInset)])
         .presentationDragIndicator(.hidden)
         .presentationBackground(.clear)
         .interactiveDismissDisabled(!dismissible)
