@@ -555,6 +555,15 @@ extension CheckoutSheet {
                 }
             }
             .frame(maxWidth: .infinity)
+            // Bottom breathing room. Done as inner content padding (not as a
+            // safeAreaInset on the ScrollView) so the inset is part of the
+            // natural VStack size, sheetHeight reflects the visible total,
+            // and the detent stays on the same scale as the measured content.
+            // Wiring it through safeAreaInset required adding bottomInset to
+            // the detent calculation, which broke dynamic resize on card
+            // collapse — SwiftUI's presentationDetents didn't follow the
+            // value transition cleanly.
+            .padding(.bottom, bottomInset)
             // Geometry observer → sheetHeight → .presentationDetents.
             // Animation gating (see file header §4):
             //   isLoading=true  → always instant, don't set hasInitialHeight
@@ -580,9 +589,8 @@ extension CheckoutSheet {
         // FP tolerance: sheetHeight and scrollFrameHeight come from separate
         // GeometryProxy reads and can differ by ~1e-15 even when "the same."
         // Without slack, that flips scrollDisabled to false and the user can
-        // drag content into the safeAreaInset's empty space.
+        // drag content into empty space below the visible content.
         .scrollDisabled(sheetHeight <= scrollFrameHeight + 1.0)
-        .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: bottomInset) }
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.height
         } action: { newHeight in
@@ -607,13 +615,15 @@ extension CheckoutSheet {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        // The safeAreaInset above adds bottomInset pt of clear space at the
-        // bottom of the ScrollView. The detent must include that or the
-        // ScrollView's content area shrinks below the natural content size,
-        // and the user sees the bottom rows clipped behind the inset.
-        .presentationDetents(sheetHeight + bottomInset > UIScreen.main.bounds.height * 0.55
-            ? [.height(sheetHeight + bottomInset), .large]
-            : [.height(sheetHeight + bottomInset)])
+        // Detent uses sheetHeight directly (no bottomInset add). The VStack
+        // gets bottomInset of bottom padding below so the breathing room is
+        // part of natural content size — this keeps the detent and the
+        // measured sheetHeight on the same scale and lets dynamic resize
+        // (card expand/collapse) animate cleanly. Adding the inset to the
+        // detent caused the sheet not to shrink back on collapse.
+        .presentationDetents(sheetHeight > UIScreen.main.bounds.height * 0.55
+            ? [.height(sheetHeight), .large]
+            : [.height(sheetHeight)])
         .presentationDragIndicator(.hidden)
         .presentationBackground(.clear)
         .interactiveDismissDisabled(!dismissible)
