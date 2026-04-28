@@ -212,10 +212,11 @@ extension View {
 
 extension ZeroSettle {
 
-    /// Deprecated: use ``migrationManager(for:)`` instead.
-    @available(*, deprecated, renamed: "migrationManager(for:)")
+    /// Deprecated: use ``identify(userId:name:email:)`` then ``migrationManager(stripeCustomerId:)``.
+    @available(*, deprecated, message: "Call identify(userId:) once, then migrationManager(stripeCustomerId:) without userId. Will be removed in ZeroSettleKit 2.0.")
     public func getOrCreateMigrationManager(userId: String) -> ZSMigrationManager {
-        migrationManager(for: userId)
+        setActiveUserId(userId)
+        return _getOrCreateMigrationManager(userId: userId, stripeCustomerId: nil)
     }
 
     /// Removed: use ``presentCancelFlow(productId:userId:)`` for cancellation,
@@ -232,12 +233,13 @@ extension ZeroSettle {
         fatalError()
     }
 
-    /// Deprecated: use ``pauseSubscription(productId:userId:pauseDurationDays:)`` instead.
-    @available(*, deprecated, message: "Use pauseSubscription(productId:userId:pauseDurationDays:) instead")
+    /// Deprecated: use ``identify(userId:name:email:)`` then ``pauseSubscription(productId:pauseDurationDays:)``.
+    @available(*, deprecated, message: "Call identify(userId:) once, then pauseSubscription(productId:pauseDurationDays:) without userId. Will be removed in ZeroSettleKit 2.0.")
     public func pauseSubscription(productId: String, userId: String, pauseOptionId: Int) async throws -> Date? {
         let durationDays = cancelFlowConfig?.pause?.options
             .first(where: { $0.id == pauseOptionId })?.durationDays
-        return try await pauseSubscription(
+        setActiveUserId(userId)
+        return try await _pauseSubscriptionImpl(
             productId: productId,
             userId: userId,
             pauseDurationDays: durationDays

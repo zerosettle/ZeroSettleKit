@@ -193,7 +193,11 @@ public struct OfferTipView: View {
         self.borderColor = borderColor
         self.onEvent = onEvent
 
-        let mgr = ZeroSettle.shared.offerManager(for: userId, stripeCustomerId: stripeCustomerId)
+        ZeroSettle.shared.setActiveUserId(userId)
+        // try? — fall back to a fresh manager if userId is somehow nil; the
+        // view's userId param is non-optional so this should never fail.
+        let mgr = (try? ZeroSettle.shared.offerManager(stripeCustomerId: stripeCustomerId))
+            ?? ZSOfferManager(userId: userId, stripeCustomerId: stripeCustomerId)
         _manager = ObservedObject(wrappedValue: mgr)
     }
 

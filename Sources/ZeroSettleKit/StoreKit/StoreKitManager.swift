@@ -182,12 +182,16 @@ internal final class StoreKitManager {
     /// - Parameter product: The StoreKit product to purchase
     /// - Returns: The verified transaction
     func purchase(_ product: StoreKit.Product) async throws -> SKTransaction {
-        // Set appAccountToken so ASSN v2 webhooks can resolve the correct
-        // user identity without waiting for the SDK sync. Only set when the
-        // user ID is a valid UUID — for other formats, the backend reassigns
-        // synthetic identities when the SDK sync arrives.
+        // Set appAccountToken so the backend can attribute cross-account
+        // ownership transfers without waiting for an SDK sync. Apple requires
+        // a UUID; for non-UUID `userId` formats (Firebase, Privy, Auth0, ...)
+        // we derive a stable UUIDv5 with a tenant-scoped namespace. The
+        // backend's `apple_verified_current_owner` check accepts both the
+        // literal-UUID form and the derived form. See AppAccountToken.swift
+        // (and the matching api/services/appaccount_token.py on the server).
         var purchaseOptions: Set<StoreKit.Product.PurchaseOption> = []
-        if let uid = userId, let token = UUID(uuidString: uid) {
+        if let uid = userId, !uid.isEmpty, let bundleId = Bundle.main.bundleIdentifier, !bundleId.isEmpty {
+            let token = AppAccountToken.derive(userId: uid, bundleId: bundleId)
             purchaseOptions.insert(.appAccountToken(token))
         }
 
@@ -407,9 +411,25 @@ internal final class StoreKitManager {
     private func handleVerifiedTransaction(_ transaction: SKTransaction, jwsRepresentation: String) async {
         ZSLogger.info("StoreKit transaction received: \(transaction.productID) (id: \(transaction.id))", category: .entitlements)
 
-        // If no userId is set, finish immediately and return (preserves pre-retry-queue behavior)
+        // If no userId is set, leave the transaction unfinished and return.
+        // StoreKit will redeliver via Transaction.updates on the next launch,
+        // giving the developer another chance to identify the user before the
+        // sync fires. We do NOT enqueue here — without a userId we can't
+        // attribute the retry to anyone.
         guard let userId = userId else {
-            ZSLogger.error("No userId set — transaction \(transaction.id) for \(transaction.productID) left unfinished to prevent payment loss. Set userId before StoreKit purchase.", category: .entitlements)
+            ZSLogger.error(
+                "ZeroSettleKit: StoreKit transaction \(transaction.id) for product '\(transaction.productID)' will NOT sync to the backend because no user is identified. " +
+                "Call ZeroSettle.shared.identify(userId:) (or bootstrap(userId:) on 1.x) at app launch BEFORE any purchase can complete. " +
+                "The transaction is left unfinished so StoreKit will redeliver it once you identify the user.",
+                category: .entitlements
+            )
+#if DEBUG
+            assertionFailure(
+                "ZeroSettleKit: StoreKit transaction received but no userId is set. " +
+                "Call ZeroSettle.shared.identify(userId:) before StoreKit transactions can fire. " +
+                "This assertion only fires in DEBUG; in RELEASE the transaction is left unfinished and will be retried."
+            )
+#endif
             return
         }
 

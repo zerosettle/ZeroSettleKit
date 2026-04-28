@@ -551,7 +551,8 @@ public final class ZSOfferManager: ObservableObject {
         if data.flowType == .migration || data.upgradeType == .storekitToWeb {
             Task {
                 do {
-                    try await ZeroSettle.shared.trackMigrationConversion(userId: userId)
+                    ZeroSettle.shared.setActiveUserId(userId)
+                    try await ZeroSettle.shared._trackMigrationConversionImpl(userId: userId)
                 } catch {
                     ZSLogger.error("[OfferManager] Conversion tracking failed: \(error)", category: .migration)
                 }

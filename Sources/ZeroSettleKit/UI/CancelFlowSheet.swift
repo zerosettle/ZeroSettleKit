@@ -964,9 +964,9 @@ private struct CancelFlowModifier: ViewModifier {
             .onChange(of: isPresented) { _, newValue in
                 if newValue {
                     Task { @MainActor in
+                        ZeroSettle.shared.setActiveUserId(userId)
                         let result = await ZeroSettle.shared.presentCancelFlow(
-                            productId: productId,
-                            userId: userId
+                            productId: productId
                         )
                         isPresented = false
                         onResult(result)

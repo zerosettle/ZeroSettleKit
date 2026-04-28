@@ -111,9 +111,11 @@ public struct MigrationTipView: View {
         self.ctaFont = ctaFont
         self.borderColor = borderColor
         self.onEvent = onEvent
-        // Always use the shared singleton manager. migrationManager(for:) guarantees
-        // a single instance — whether bootstrap ran first or the view was created first.
-        let mgr = ZeroSettle.shared.migrationManager(for: userId, stripeCustomerId: stripeCustomerId)
+        // Always use the shared singleton manager. migrationManager(...) guarantees
+        // a single instance — whether identify() ran first or the view was created first.
+        ZeroSettle.shared.setActiveUserId(userId)
+        let mgr = (try? ZeroSettle.shared.migrationManager(stripeCustomerId: stripeCustomerId))
+            ?? ZSMigrationManager(userId: userId, stripeCustomerId: stripeCustomerId)
         _manager = ObservedObject(wrappedValue: mgr)
         ZSLogger.info("[MigrateTipView] init — manager.state=.\(mgr.state), offerData=\(mgr.offerData != nil ? "present" : "nil"), userId=\(userId)", category: .migration)
     }
