@@ -138,6 +138,14 @@ internal final class StoreKitManager {
         updateListenerTask = nil
     }
 
+    /// Drop every pending sync from the persistent retry queue. Used by
+    /// ``ZeroSettle/logout()`` so a previous user's queued syncs never
+    /// run under a new user. The transactions remain unfinished in
+    /// StoreKit and will be redelivered next launch.
+    func clearSyncQueue() async {
+        await syncQueue.clearAll()
+    }
+
     /// Update the user ID for subsequent sync operations.
     /// Pass `nil` to clear (e.g., on logout).
     func setUserId(_ userId: String?) {
@@ -289,12 +297,20 @@ internal final class StoreKitManager {
                 }
                 ZSLogger.info("[syncCurrentTransactions] txn id=\(transaction.id) origID=\(transaction.originalID) product=\(transaction.productID) ownership=\(transaction.ownershipType) → backend owned=\(response.owned ?? true) origTxnId=\(response.originalTransactionId ?? "nil")", category: .entitlements)
             } catch {
-                // On error, optimistically include directly-owned transactions only.
-                let origId = String(transaction.originalID)
-                if isDirectlyOwned && transaction.originalID != 0 {
-                    ownedOriginalTransactionIds.insert(origId)
-                }
-                ZSLogger.error("[syncCurrentTransactions] FAILED txn id=\(transaction.id) origID=\(transaction.originalID) product=\(transaction.productID) ownership=\(transaction.ownershipType): \(error)", category: .entitlements)
+                // Do NOT optimistically mark this transaction as owned on
+                // error. Pre-1.2.5 we did, on the assumption that a directly-
+                // owned transaction "must" belong to this user. But during a
+                // transient backend hiccup, this could mask a real cross-
+                // account collision: another ZS account had previously
+                // claimed this OTID, and the backend would normally have
+                // returned owned=false. Optimistic insertion gave the user
+                // an entitlement they shouldn't have until the next refresh.
+                //
+                // Now: log and skip. The user will retry via the next
+                // restoreEntitlements() / identify() call. Worst case the
+                // user briefly doesn't see an entitlement they own — which
+                // is recoverable. Better than briefly seeing one they don't.
+                ZSLogger.error("[syncCurrentTransactions] FAILED txn id=\(transaction.id) origID=\(transaction.originalID) product=\(transaction.productID) ownership=\(transaction.ownershipType): \(error). Skipping — will retry on next sync.", category: .entitlements)
             }
         }
 

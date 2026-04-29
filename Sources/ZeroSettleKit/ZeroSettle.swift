@@ -642,6 +642,16 @@ public final class ZeroSettle: ObservableObject {
 
         // StoreKit listener userId + identified-user state
         setActiveUserId(nil)
+
+        // Persistent sync queue (StoreKitSyncQueue) holds JWS-tokens keyed
+        // by the previous user's id. If we don't drop them, the next
+        // launch's retryAll() would replay them under the wrong user —
+        // attributing the previous user's purchases to whoever's signed
+        // in next. The transactions remain unfinished in StoreKit and
+        // will be redelivered when the next user identifies.
+        if let storeKitManager {
+            Task { await storeKitManager.clearSyncQueue() }
+        }
     }
 
     // MARK: - Delegate
@@ -759,6 +769,12 @@ public final class ZeroSettle: ObservableObject {
     @ObservationIgnored
     private var storeKitManager: StoreKitManager?
 
+    /// Handle to the deferred "no user identified after configure()" warning
+    /// task. Cancelled when ``configure(_:)`` is called again so the warning
+    /// doesn't fire spuriously against the new configuration.
+    @ObservationIgnored
+    private var configureWarningTask: Task<Void, Never>?
+
     /// The currently identified user, set by ``identify(userId:name:email:)`` /
     /// ``bootstrap(userId:)`` (or, in 1.x, by any user-scoped method that
     /// accepts `userId`). Cleared by ``logout()``. Read-only externally —
@@ -813,6 +829,24 @@ public final class ZeroSettle: ObservableObject {
         // stale sandbox PIs being served after switching to live (or vice versa).
         Task { await CheckoutResponseCache.shared.clearAll() }
 
+        // Tear down any previous configuration cleanly. configure() can be
+        // called more than once (debug environment toggles, key rotation,
+        // multi-tenant testing). Without this, the previous StoreKitManager's
+        // Transaction.updates listener keeps running with a stale Backend +
+        // userId, doubling sync attempts and binding new transactions to the
+        // wrong publishable key.
+        if let previousManager = self.storeKitManager {
+            previousManager.stopListening()
+            self.storeKitManager = nil
+        }
+        // Cancel the previous deferred-warning task so the warning doesn't
+        // fire spuriously later under the new configuration.
+        configureWarningTask?.cancel()
+        configureWarningTask = nil
+        // Tear down preloaded WebViews tied to the previous publishable key —
+        // they hold client_secrets from the previous environment.
+        CheckoutPreloaderPool.shared.resetAll()
+
         self.config = config
 
 #if DEBUG
@@ -852,10 +886,14 @@ public final class ZeroSettle: ObservableObject {
         // Warn if no user is identified within ~10s of configure(). Without
         // identification, StoreKit purchases that arrive via Transaction.updates
         // can't be attributed to a user and will be left unfinished. See the
-        // lqwTc... postmortem (2026-04-28) for the canonical incident.
-        Task { [weak self] in
+        // lqwTc... postmortem (2026-04-28) for the canonical incident. The
+        // task handle is stored so a subsequent configure() call can cancel
+        // it (above) — otherwise rapid reconfigure cycles accumulate Tasks
+        // that fire spurious warnings against the new state.
+        configureWarningTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 10_000_000_000) // 10s
             guard let self else { return }
+            guard !Task.isCancelled else { return }
             if self.currentUserId == nil {
                 ZSLogger.error(
                     "ZeroSettleKit: configure() was called 10s ago but no user has been identified yet. " +
@@ -934,12 +972,30 @@ public final class ZeroSettle: ObservableObject {
             throw ZeroSettleError.invalidUserId
         }
 
-        // Single-flight: if a bootstrap for the same userId is already running,
+        // Single-flight: if a bootstrap for the SAME userId is already running,
         // join it instead of starting a parallel call. The in-flight Task is
         // unstructured (`Task { ... }`) so it survives this caller's parent
         // being cancelled — both callers end up with the same result.
         if let inFlight = inFlightBootstrap, inFlight.userId == userId {
             return try await inFlight.task.value
+        }
+
+        // Concurrent identify with a DIFFERENT userId: cancel the previous
+        // in-flight bootstrap before starting the new one. Without this, two
+        // concurrent identify(A) / identify(B) calls would both run to
+        // completion and the LATER-finishing one would clobber state set by
+        // the earlier one (currentUserId, customerName, entitlements,
+        // ownedStoreKitTransactionIds, the StoreKit listener's userId).
+        // This caused wrong-user attribution in apps with fast account-switch
+        // flows. Cancelling here means the loser's await throws CancellationError
+        // and the winner (this call) holds the canonical state.
+        if let inFlight = inFlightBootstrap {
+            ZSLogger.info(
+                "identify(userId: \(userId)) cancelled in-flight identify(userId: \(inFlight.userId)) — newer wins",
+                category: .general
+            )
+            inFlight.task.cancel()
+            inFlightBootstrap = nil
         }
 
         // Detached-style unstructured Task (`Task { @MainActor in ... }`) so
@@ -1570,15 +1626,23 @@ public final class ZeroSettle: ObservableObject {
             allEntitlements.append(contentsOf: webEntitlements)
         } catch {
             ZSLogger.error("Failed to fetch web entitlements: \(error)", category: .entitlements)
-            // Read the live list right before merging (not pre-await) so any
-            // fallback appended during the fetch window is preserved. See
-            // EntitlementMerge for the preservation rule.
-            let merged = EntitlementMerge.preservingLocalFallbacks(
-                fresh: allEntitlements, prior: entitlements
-            )
-            updateEntitlements(merged)
+            // Atomic semantics (post-1.2.5): on backend failure, do NOT
+            // mutate the published `entitlements` property. Pre-1.2.5 we
+            // would publish the StoreKit-only partial set AND throw
+            // restoreEntitlementsFailed — this gave callers contradictory
+            // signals (UI showed an error toast while feature gates flipped
+            // on based on the partial state). Now: throw and leave the
+            // previously-published state intact. The dev gets one clear
+            // signal: "the call failed; the published entitlements are
+            // unchanged." If they want to fall back to local-only, they can
+            // read getCurrentEntitlements() directly.
+            //
+            // The error case still carries `partialEntitlements` so callers
+            // who explicitly want to opt into partial behavior can do so —
+            // but the published property is the source of truth and won't
+            // disagree with the thrown error.
             throw ZeroSettleError.restoreEntitlementsFailed(
-                partialEntitlements: merged,
+                partialEntitlements: allEntitlements,
                 underlyingError: error
             )
         }

@@ -106,6 +106,17 @@ internal actor StoreKitSyncQueue {
         save(syncs)
     }
 
+    /// Drop every pending sync. Called by ``ZeroSettle/logout()`` so that
+    /// transactions queued under a previous user don't get retried under a
+    /// different user on the next launch (which would attribute User A's
+    /// purchases to User B). The transactions remain unfinished in StoreKit
+    /// — Apple will redeliver them via ``Transaction.updates`` once the next
+    /// user identifies, at which point they'll be re-evaluated against the
+    /// new ``userId``.
+    func clearAll() {
+        save([])
+    }
+
     // MARK: - Retry
 
     /// Retry all pending syncs with exponential backoff.
