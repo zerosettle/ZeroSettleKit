@@ -657,6 +657,12 @@ public final class ZeroSettle: ObservableObject {
 
         // Refresh entitlements to pick up the new claim
         _ = try await _restoreEntitlementsImpl(userId: userId)
+
+        // Clear the pending claim so any view bound to pendingClaims stops
+        // showing the "transfer this purchase?" prompt after the user accepts.
+        if response.claimed == true {
+            removePendingClaim(productId: productId)
+        }
     }
 
     /// Resolve the Apple Pay merchant ID: local override > backend default > nil.
@@ -720,6 +726,11 @@ public final class ZeroSettle: ObservableObject {
         migrationManager = nil
         offerManager = nil
         ownedStoreKitTransactionIds = nil
+
+        // Pending claims — clear so the prior user's "transfer this purchase?"
+        // hint is not visible to the next user (privacy + UX).
+        objectWillChange.send()
+        pendingClaims = []
 
         // Cached checkout sessions (PaymentIntents for previous user)
         Task { await CheckoutResponseCache.shared.clearAll() }
