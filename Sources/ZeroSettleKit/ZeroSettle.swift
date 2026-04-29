@@ -504,42 +504,64 @@ public final class ZeroSettle: ObservableObject {
         return AppAccountToken.derive(userId: userId, bundleId: bundleId)
     }
 
-    // MARK: - Entitlement Claiming
+    // MARK: - StoreKit Ownership Transfer
 
-    /// Claims a StoreKit entitlement for the current user, even if another
-    /// ZeroSettle account originally purchased it on this Apple ID.
+    /// **Destructive.** Transfer ownership of an Apple StoreKit subscription
+    /// from whoever currently owns it on the backend to the currently
+    /// identified user. Used to consolidate sub ownership when a user has
+    /// purchased through Apple under one ZeroSettle account and now wants
+    /// the entitlement attached to a different ZeroSettle account.
     ///
-    /// Use this for:
-    /// - **Testing**: switching between accounts on the same Apple sandbox ID
-    /// - **Account migration**: moving a subscription to a new account
-    /// - **Support**: resolving "wrong account" issues
+    /// **Use this only as a deliberate operations action.** Common cases:
+    /// - **Testing**: switching between ZS test accounts on the same Apple sandbox ID.
+    /// - **Account migration**: a user's sub was on account A, they now want it on account B.
+    /// - **Customer support**: an agent is moving an entitlement on the user's behalf.
     ///
-    /// Only applicable to subscriptions and non-consumables. Consumables cannot
-    /// be claimed.
+    /// **What it does**:
+    /// 1. Locates the StoreKit transaction for `productId` on the device's current Apple ID.
+    /// 2. POSTs the JWS to the backend's `/v1/iap/claim-entitlement/` endpoint.
+    /// 3. The backend `TRANSFERRED_OUT`s the entitlement from its current
+    ///    owner and `GRANTED`s it to the syncing user. Atomic on the backend.
     ///
-    /// Requires ``bootstrap(userId:)`` to have been called first.
+    /// Only applicable to subscriptions and non-consumables. Consumables
+    /// cannot be transferred (they're single-use).
+    ///
+    /// Requires ``identify(userId:name:email:)`` to have been called.
     ///
     /// ```swift
-    /// try await ZeroSettle.shared.claimEntitlement(
+    /// // After auth state changes:
+    /// try await ZeroSettle.shared.identify(userId: newUser.id)
+    /// try await ZeroSettle.shared.transferStoreKitOwnershipToCurrentUser(
     ///     productId: "com.myapp.premium.monthly"
     /// )
     /// ```
     ///
-    /// - Parameters:
-    ///   - productId: The product to claim from the current Apple ID's transactions.
-    ///   - userId: The current user's ID. Must match the ID used in ``bootstrap(userId:)``.
-    /// - Throws: ``ZeroSettleError`` if the product is not found in StoreKit transactions,
-    ///   or if the server rejects the claim.
+    /// - Parameter productId: The product whose ownership should move to the
+    ///   currently identified user.
+    /// - Throws: ``ZeroSettleError/productNotFound(_:)`` if the product has
+    ///   no StoreKit transaction on this Apple ID;
+    ///   ``ZeroSettleError/userNotIdentified`` if `identify()` has not been
+    ///   called; or other ``ZeroSettleError`` cases for backend failures.
     @MainActor
-    /// Claim a StoreKit entitlement for the currently identified user.
-    /// Requires ``identify(userId:name:email:)`` to have been called.
+    public func transferStoreKitOwnershipToCurrentUser(productId: String) async throws {
+        let userId = try requireIdentifiedUserId()
+        ZSLogger.info("[ZeroSettle] Initiating destructive StoreKit ownership transfer: product=\(productId) → userId=\(userId)", category: .entitlements)
+        try await _claimEntitlementImpl(productId: productId, userId: userId)
+    }
+
+    /// Deprecated alias for ``transferStoreKitOwnershipToCurrentUser(productId:)``.
+    /// The original name read as a passive lookup but the operation is a
+    /// destructive ownership transfer; the name was changed to surface that.
+    /// Same behavior; kept for source compat. Will be removed in 2.0.
+    @MainActor
+    @available(*, deprecated, renamed: "transferStoreKitOwnershipToCurrentUser(productId:)", message: "Renamed for clarity — claimEntitlement is a destructive ownership transfer, not a lookup. Use transferStoreKitOwnershipToCurrentUser(productId:). Will be removed in ZeroSettleKit 2.0.")
     public func claimEntitlement(productId: String) async throws {
         let userId = try requireIdentifiedUserId()
         try await _claimEntitlementImpl(productId: productId, userId: userId)
     }
 
-    /// Deprecated. Use ``claimEntitlement(productId:)`` after ``identify(userId:name:email:)``.
-    @available(*, deprecated, renamed: "claimEntitlement(productId:)", message: "Call identify(userId:) once, then claimEntitlement(productId:) without userId. Will be removed in ZeroSettleKit 2.0.")
+    /// Deprecated. Use ``transferStoreKitOwnershipToCurrentUser(productId:)`` after ``identify(userId:name:email:)``.
+    @available(*, deprecated, renamed: "transferStoreKitOwnershipToCurrentUser(productId:)", message: "Call identify(userId:) once, then transferStoreKitOwnershipToCurrentUser(productId:). Will be removed in ZeroSettleKit 2.0.")
     public func claimEntitlement(productId: String, userId: String) async throws {
         setActiveUserId(userId)
         try await _claimEntitlementImpl(productId: productId, userId: userId)
