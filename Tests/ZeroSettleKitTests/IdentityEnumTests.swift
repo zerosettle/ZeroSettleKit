@@ -110,4 +110,38 @@ final class IdentityEnumTests: XCTestCase {
         XCTAssertNotNil(UserDefaults.standard.string(forKey: key),
                         ".deferred → .anonymous must transition into the anonymous flow")
     }
+
+    /// Pins the invariant that `.user` and `.anonymous` clear the deferred
+    /// flag. If a future refactor moves the `deferredIdentification = false`
+    /// assignment in `identify(_:)`, the configure() warning would silently
+    /// stay suppressed across identify cycles.
+    func testIdentifyUserClearsDeferredFlag() async {
+        _ = try? await ZeroSettle.shared.identify(.deferred)
+        XCTAssertTrue(ZeroSettle.shared.deferredIdentification,
+                      ".deferred must arm the suppression flag")
+
+        do {
+            _ = try await ZeroSettle.shared.identify(.user(id: "test_user_42"))
+        } catch { }
+        XCTAssertFalse(ZeroSettle.shared.deferredIdentification,
+                       ".user(id:) must clear the deferred flag set by a prior .deferred")
+    }
+
+    func testIdentifyAnonymousClearsDeferredFlag() async {
+        _ = try? await ZeroSettle.shared.identify(.deferred)
+        XCTAssertTrue(ZeroSettle.shared.deferredIdentification)
+
+        do { _ = try await ZeroSettle.shared.identify(.anonymous) } catch { }
+        XCTAssertFalse(ZeroSettle.shared.deferredIdentification,
+                       ".anonymous must clear the deferred flag set by a prior .deferred")
+    }
+
+    func testLogoutClearsDeferredFlag() async {
+        _ = try? await ZeroSettle.shared.identify(.deferred)
+        XCTAssertTrue(ZeroSettle.shared.deferredIdentification)
+
+        ZeroSettle.shared.logout()
+        XCTAssertFalse(ZeroSettle.shared.deferredIdentification,
+                       "logout() must clear the deferred flag")
+    }
 }

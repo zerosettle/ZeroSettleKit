@@ -903,8 +903,10 @@ public final class ZeroSettle: ObservableObject {
     /// ``Identity/deferred``, signalling that auth resolves on a later
     /// screen. Suppresses the 10s no-user warning. Cleared on a subsequent
     /// ``identify(_:)`` with `.user` or `.anonymous`, or on ``logout()``.
+    /// Exposed `internal private(set)` so the test target can pin the
+    /// invariant that `.user`/`.anonymous` clear it.
     @ObservationIgnored
-    private var deferredIdentification: Bool = false
+    internal private(set) var deferredIdentification: Bool = false
 
     /// The currently identified user, set by ``identify(_:)``
     /// (any case other than ``Identity/deferred``). Cleared by ``logout()``.
