@@ -34,7 +34,7 @@ internal struct SubscriptionStateReconciler {
 
         // Pass 1: collect a renewal-info JWS per OTID we touch by querying
         // each unique subscription group exactly once.
-        for await result in SKTransaction.all {
+        for await result in StoreKit.Transaction.all {
             guard let txn = try? result.payloadValue else { continue }
             guard let groupID = txn.subscriptionGroupID else { continue }
             if queriedGroups.contains(groupID) { continue }
@@ -57,7 +57,7 @@ internal struct SubscriptionStateReconciler {
         }
 
         // Pass 2: build one entry per unique transaction ID.
-        for await result in SKTransaction.all {
+        for await result in StoreKit.Transaction.all {
             guard let txn = try? result.payloadValue else { continue }
             if seenTransactionIDs.contains(txn.id) { continue }
             seenTransactionIDs.insert(txn.id)
