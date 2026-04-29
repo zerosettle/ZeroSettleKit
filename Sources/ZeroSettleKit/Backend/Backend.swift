@@ -876,11 +876,19 @@ internal struct SyncStoreKitTransactionResponse: Decodable {
     let status: String
     let owned: Bool?
     let originalTransactionId: String?
+    // Cross-user OTID conflict signals (backend Task 5 of Spec 1).
+    // Optional for backward compat: older backends omit these.
+    let conflict: Bool?
+    let claimAvailable: Bool?
+    let existingOwnerHint: String?
 
     enum CodingKeys: String, CodingKey {
         case status
         case owned
         case originalTransactionId = "original_transaction_id"
+        case conflict
+        case claimAvailable = "claim_available"
+        case existingOwnerHint = "existing_owner_hint"
     }
 }
 

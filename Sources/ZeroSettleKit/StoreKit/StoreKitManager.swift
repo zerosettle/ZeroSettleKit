@@ -295,6 +295,25 @@ internal final class StoreKitManager {
                 if response.owned == false {
                     ZSLogger.info("[syncCurrentTransactions] Server returned owned=false for txn id=\(transaction.id) product=\(transaction.productID) ownership=\(transaction.ownershipType) — not tracked", category: .entitlements)
                 }
+                // Cross-user OTID conflict — surface as a PendingClaim so the
+                // consuming app can prompt the user. SDK never auto-claims.
+                if response.conflict == true,
+                   response.claimAvailable == true,
+                   let otid = response.originalTransactionId,
+                   let hint = response.existingOwnerHint {
+                    let claim = PendingClaim(
+                        productId: transaction.productID,
+                        originalTransactionId: otid,
+                        existingOwnerHint: hint
+                    )
+                    await MainActor.run {
+                        ZeroSettle.shared.addPendingClaim(claim)
+                    }
+                    ZSLogger.info(
+                        "[pending_claim] productId=\(transaction.productID) otid=\(otid) hint=\(hint)",
+                        category: .entitlements
+                    )
+                }
                 ZSLogger.info("[syncCurrentTransactions] txn id=\(transaction.id) origID=\(transaction.originalID) product=\(transaction.productID) ownership=\(transaction.ownershipType) → backend owned=\(response.owned ?? true) origTxnId=\(response.originalTransactionId ?? "nil")", category: .entitlements)
             } catch {
                 // Do NOT optimistically mark this transaction as owned on
@@ -496,6 +515,25 @@ internal final class StoreKitManager {
             )
             if response.owned == false {
                 ZSLogger.error("Server returned owned=false for a new purchase — unexpected. product=\(transaction.productID)", category: .entitlements)
+            }
+            // Cross-user OTID conflict — surface as a PendingClaim so the
+            // consuming app can prompt the user. SDK never auto-claims.
+            if response.conflict == true,
+               response.claimAvailable == true,
+               let otid = response.originalTransactionId,
+               let hint = response.existingOwnerHint {
+                let claim = PendingClaim(
+                    productId: transaction.productID,
+                    originalTransactionId: otid,
+                    existingOwnerHint: hint
+                )
+                await MainActor.run {
+                    ZeroSettle.shared.addPendingClaim(claim)
+                }
+                ZSLogger.info(
+                    "[pending_claim] productId=\(transaction.productID) otid=\(otid) hint=\(hint)",
+                    category: .entitlements
+                )
             }
 
             // Sync succeeded — dequeue any previous retry entry, then finish
