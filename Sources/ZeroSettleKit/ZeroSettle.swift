@@ -205,6 +205,53 @@ public enum FunnelEventType: String, Sendable {
     case checkoutAbandoned = "checkout_abandoned"
 }
 
+// MARK: - Identity
+
+/// The user identity passed to ``ZeroSettle/identify(_:)``.
+///
+/// ZeroSettleKit needs to know who is making purchases so it can attribute
+/// StoreKit transactions, web checkouts, and entitlements to the right
+/// account. `Identity` is the explicit, type-safe way to declare that —
+/// covering the three states an app can be in at SDK init:
+///
+/// - **`.user(id:name:email:)`** — you have an authenticated user. The
+///   common case. The SDK creates/updates a backend `Identity` for this
+///   `id` and routes every subsequent API call against it.
+/// - **`.anonymous`** — you have no authenticated user yet (or by design)
+///   but want a stable identity for purchases. The SDK generates a UUID
+///   on first call and persists it in `UserDefaults` under
+///   `zerosettle.anonymous_session_uuid`. The same UUID is reused across
+///   launches until ``ZeroSettle/logout()`` is called or the app is
+///   uninstalled. Anonymous purchases attach to this UUID; they can be
+///   reconciled into a real user account later via
+///   `completeIdentification(.user(...))` (added in PR C2 — backend
+///   reconciliation endpoint).
+/// - **`.deferred`** — you intend to identify later (auth happens on a
+///   subsequent screen). Suppresses the 10s "no user identified" warning
+///   and is otherwise a no-op. Call ``ZeroSettle/identify(_:)`` again
+///   with `.user(...)` or `.anonymous` once you know who the user is.
+///
+/// Pick exactly one. Don't mix `.user` with `.anonymous` in the same
+/// session — that would create two backend `Identity` records for what
+/// is logically the same person, defeating the point of the SDK.
+public enum Identity: Sendable {
+    /// An authenticated app user. `id` is your app's user identifier
+    /// (any non-empty string — the SDK derives a UUIDv5 for
+    /// `appAccountToken` internally). `name` and `email` are optional
+    /// metadata stored on the Stripe Customer.
+    case user(id: String, name: String? = nil, email: String? = nil)
+
+    /// No authenticated user. The SDK generates and persists a stable
+    /// session UUID. Suitable for apps that want to allow anonymous
+    /// purchases.
+    case anonymous
+
+    /// Authentication is coming on a later screen. Suppresses the
+    /// "no user identified" warning. Call ``ZeroSettle/identify(_:)``
+    /// again with `.user(...)` or `.anonymous` once auth resolves.
+    case deferred
+}
+
 // MARK: - ZeroSettle IAP
 
 /// Main entry point for the ZeroSettle IAP SDK.
@@ -676,6 +723,19 @@ public final class ZeroSettle: ObservableObject {
         // StoreKit listener userId + identified-user state
         setActiveUserId(nil)
 
+        // Anonymous session UUID — clearing on logout means the next
+        // identify(.anonymous) generates a fresh UUID. This is correct
+        // for shared-device flows: user A logs out, user B taps "Continue
+        // as guest" and gets their own anonymous identity rather than
+        // inheriting A's. The invariant "same UUID across launches" is
+        // scoped to a session, not an install.
+        UserDefaults.standard.removeObject(forKey: Self.anonymousSessionUUIDKey)
+
+        // Deferred-identification flag — logout means we no longer have
+        // an explicit "auth coming later" assertion. The next configure()
+        // / identify() cycle is responsible for re-declaring intent.
+        deferredIdentification = false
+
         // Persistent sync queue (StoreKitSyncQueue) holds JWS-tokens keyed
         // by the previous user's id. If we don't drop them, the next
         // launch's retryAll() would replay them under the wrong user —
@@ -743,6 +803,37 @@ public final class ZeroSettle: ObservableObject {
         storeKitManager?.setUserId(userId)
     }
 
+    /// `UserDefaults` key under which the anonymous session UUID is
+    /// persisted. Stable across app launches; cleared by ``logout()``.
+    /// Namespaced to ZeroSettleKit so it does not collide with whatever
+    /// the app stores under the same key.
+    private static let anonymousSessionUUIDKey = "zerosettle.anonymous_session_uuid"
+
+    /// Returns the persisted anonymous session UUID, generating and
+    /// persisting one if none exists. Used by ``identify(_:)`` when
+    /// passed ``Identity/anonymous``.
+    ///
+    /// We persist in `UserDefaults` (not Keychain) because anonymous
+    /// session continuity is not a security boundary — losing it just
+    /// means the user gets a new anonymous identity, which is fine. The
+    /// invariant is "same UUID across launches until ``logout()``"; that
+    /// holds in `UserDefaults`, and avoids the cross-process / iCloud
+    /// surprises Keychain brings.
+    private func anonymousSessionUserId() -> String {
+        let defaults = UserDefaults.standard
+        if let existing = defaults.string(forKey: Self.anonymousSessionUUIDKey),
+           !existing.isEmpty {
+            return existing
+        }
+        let fresh = UUID().uuidString.lowercased()
+        defaults.set(fresh, forKey: Self.anonymousSessionUUIDKey)
+        ZSLogger.info(
+            "[ZeroSettle] Generated new anonymous session UUID. Persisted to UserDefaults; cleared on logout().",
+            category: .general
+        )
+        return fresh
+    }
+
     /// Returns the currently identified userId, throwing
     /// ``ZeroSettleError/userNotIdentified`` if ``identify(userId:name:email:)``
     /// has not been called. Used by the userId-less public methods added in
@@ -808,10 +899,17 @@ public final class ZeroSettle: ObservableObject {
     @ObservationIgnored
     private var configureWarningTask: Task<Void, Never>?
 
-    /// The currently identified user, set by ``identify(userId:name:email:)`` /
-    /// ``bootstrap(userId:)`` (or, in 1.x, by any user-scoped method that
-    /// accepts `userId`). Cleared by ``logout()``. Read-only externally —
-    /// mutate via ``setActiveUserId(_:)`` to keep ``StoreKitManager`` in sync.
+    /// True when the app explicitly called ``identify(_:)`` with
+    /// ``Identity/deferred``, signalling that auth resolves on a later
+    /// screen. Suppresses the 10s no-user warning. Cleared on a subsequent
+    /// ``identify(_:)`` with `.user` or `.anonymous`, or on ``logout()``.
+    @ObservationIgnored
+    private var deferredIdentification: Bool = false
+
+    /// The currently identified user, set by ``identify(_:)``
+    /// (any case other than ``Identity/deferred``). Cleared by ``logout()``.
+    /// Read-only externally — mutate via ``setActiveUserId(_:)`` to keep
+    /// ``StoreKitManager`` in sync.
     @ObservationIgnored
     internal private(set) var currentUserId: String?
 
@@ -923,16 +1021,20 @@ public final class ZeroSettle: ObservableObject {
         // task handle is stored so a subsequent configure() call can cancel
         // it (above) — otherwise rapid reconfigure cycles accumulate Tasks
         // that fire spurious warnings against the new state.
+        //
+        // The warning is suppressed if the app has explicitly declared
+        // ``Identity/deferred`` — that's the supported "auth comes later"
+        // path. Apps with anonymous-launch flows should call
+        // ``identify(.anonymous)``; that also clears the warning condition.
         configureWarningTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 10_000_000_000) // 10s
             guard let self else { return }
             guard !Task.isCancelled else { return }
-            if self.currentUserId == nil {
+            if self.currentUserId == nil && !self.deferredIdentification {
                 ZSLogger.error(
-                    "ZeroSettleKit: configure() was called 10s ago but no user has been identified yet. " +
-                    "StoreKit purchases will NOT sync to the backend until you call ZeroSettle.shared.identify(userId:) " +
-                    "(or bootstrap(userId:) on 1.x). If your app has an anonymous-launch flow, ignore this — but " +
-                    "make sure you identify before any purchase can complete.",
+                    "ZeroSettleKit: configure() was called 10s ago but no Identity has been declared yet. " +
+                    "StoreKit purchases will NOT sync to the backend until you call ZeroSettle.shared.identify(.user(id:)) " +
+                    "(or .anonymous, or .deferred to suppress this warning). See the Identity enum docs for details.",
                     category: .general
                 )
             }
@@ -943,50 +1045,91 @@ public final class ZeroSettle: ObservableObject {
 
     /// Identify the current user. **Canonical entry point as of SDK 1.2.4.**
     ///
-    /// Sets ``currentUserId``, propagates to internal state (StoreKit listener,
-    /// Stripe customer info), syncs any pending StoreKit transactions to the
-    /// backend, fetches the product catalog, and restores entitlements — all
-    /// in one call. Call this once after ``configure(_:)``, ideally as soon as
-    /// you know who the user is.
+    /// `Identity` is an enum so the SDK can distinguish between three
+    /// states an app can be in at init: an authenticated user
+    /// (``Identity/user(id:name:email:)``), an anonymous session
+    /// (``Identity/anonymous``), or "auth comes later"
+    /// (``Identity/deferred``). The SDK can't infer this from a missing
+    /// argument — the difference between "I have no user yet" and "I have
+    /// no auth and never will" matters for purchase attribution and for
+    /// the no-user warning.
     ///
     /// ```swift
     /// // At app launch
     /// ZeroSettle.shared.configure(.init(publishableKey: "zs_pk_live_..."))
     ///
-    /// // After login (or on every launch if persisted)
-    /// try await ZeroSettle.shared.identify(
-    ///     userId: currentUser.id,
+    /// // ① Authenticated user (the common case)
+    /// try await ZeroSettle.shared.identify(.user(
+    ///     id: currentUser.id,
     ///     name: "Jane Doe",
     ///     email: "jane@example.com"
-    /// )
+    /// ))
+    ///
+    /// // ② No auth — generate a stable session UUID
+    /// try await ZeroSettle.shared.identify(.anonymous)
+    ///
+    /// // ③ Auth comes later — suppress the warning
+    /// try await ZeroSettle.shared.identify(.deferred)
     /// ```
     ///
-    /// After ``identify(userId:name:email:)`` completes, every other user-scoped
-    /// API can be called without re-passing `userId` — they read from
-    /// ``currentUserId``. The legacy userId-accepting overloads still work
-    /// (they're deprecated and slated for removal in 2.0).
+    /// **Sequencing**: call this after ``configure(_:)`` and before any
+    /// user-scoped API. The SDK does not require you to identify before
+    /// configuring, but most user-scoped APIs throw
+    /// ``ZeroSettleError/userNotIdentified`` if no `Identity` has been
+    /// declared. ``Identity/deferred`` is the explicit "I'll call again
+    /// later" — it doesn't satisfy `userNotIdentified` checks.
     ///
-    /// **Why it matters**: without identification, StoreKit purchases that
-    /// arrive via `Transaction.updates` cannot be attributed to a user and
-    /// will be left unfinished (StoreKit will keep redelivering them).
+    /// **State semantics**:
+    /// - `.user(id:)` — sets ``currentUserId`` to the provided id, runs
+    ///   the full bootstrap flow (StoreKit sync, product fetch,
+    ///   entitlement restore, Stripe customer create/update), returns
+    ///   the catalog.
+    /// - `.anonymous` — generates a UUID on first call and persists it
+    ///   in `UserDefaults`. Subsequent `.anonymous` calls reuse the same
+    ///   UUID. Runs the same bootstrap flow against that UUID. Cleared
+    ///   by ``logout()`` (next `.anonymous` generates a fresh UUID).
+    /// - `.deferred` — sets a flag that suppresses the 10s no-user
+    ///   warning, otherwise a no-op. Returns `nil`.
     ///
-    /// - Parameters:
-    ///   - userId: Your app's user identifier (any string — the SDK handles
-    ///     UUID derivation for `appAccountToken` internally).
-    ///   - name: Optional customer name to associate with the Stripe Customer.
-    ///   - email: Optional customer email to associate with the Stripe Customer.
-    /// - Returns: The product catalog (same as ``fetchProducts(userId:)``).
+    /// - Parameter identity: The user identity declaration.
+    /// - Returns: The product catalog for `.user`/`.anonymous`; `nil`
+    ///   for `.deferred`.
+    @discardableResult
+    public func identify(_ identity: Identity) async throws -> ProductCatalog? {
+        switch identity {
+        case .user(let id, let name, let email):
+            deferredIdentification = false
+            return try await _runIdentify(userId: id, name: name, email: email)
+        case .anonymous:
+            deferredIdentification = false
+            let userId = anonymousSessionUserId()
+            return try await _runIdentify(userId: userId, name: nil, email: nil)
+        case .deferred:
+            deferredIdentification = true
+            ZSLogger.info(
+                "[ZeroSettle] identify(.deferred) — suppressing no-user warning. Call identify(.user(...)) or identify(.anonymous) when auth resolves.",
+                category: .general
+            )
+            return nil
+        }
+    }
+
+    /// Deprecated alias for ``identify(_:)`` with ``Identity/user(id:name:email:)``.
+    /// Use `identify(.user(id: ..., name: ..., email: ...))` instead.
+    @available(*, deprecated, message: "Use identify(.user(id: ..., name: ..., email: ...)) instead. The string-based overload will be removed in ZeroSettleKit 2.0.")
     @discardableResult
     public func identify(userId: String, name: String? = nil, email: String? = nil) async throws -> ProductCatalog {
+        deferredIdentification = false
         return try await _runIdentify(userId: userId, name: name, email: email)
     }
 
-    /// Deprecated alias for ``identify(userId:name:email:)``. Same behavior,
-    /// kept for source compatibility with SDK 1.x integrations. Will be
-    /// removed in 2.0.
-    @available(*, deprecated, renamed: "identify(userId:name:email:)", message: "Use identify(userId:name:email:) instead. bootstrap() will be removed in ZeroSettleKit 2.0.")
+    /// Deprecated alias for ``identify(_:)`` with ``Identity/user(id:name:email:)``.
+    /// Same behavior, kept for source compatibility with SDK 1.x integrations.
+    /// Will be removed in 2.0.
+    @available(*, deprecated, message: "Use identify(.user(id: ..., name: ..., email: ...)) instead. bootstrap() will be removed in ZeroSettleKit 2.0.")
     @discardableResult
     public func bootstrap(userId: String, name: String? = nil, email: String? = nil) async throws -> ProductCatalog {
+        deferredIdentification = false
         return try await _runIdentify(userId: userId, name: name, email: email)
     }
 
