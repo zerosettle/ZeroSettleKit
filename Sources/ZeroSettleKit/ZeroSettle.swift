@@ -1117,15 +1117,6 @@ public final class ZeroSettle: ObservableObject {
     }
 
     /// Deprecated alias for ``identify(_:)`` with ``Identity/user(id:name:email:)``.
-    /// Use `identify(.user(id: ..., name: ..., email: ...))` instead.
-    @available(*, deprecated, message: "Use identify(.user(id: ..., name: ..., email: ...)) instead. The string-based overload will be removed in ZeroSettleKit 2.0.")
-    @discardableResult
-    public func identify(userId: String, name: String? = nil, email: String? = nil) async throws -> ProductCatalog {
-        deferredIdentification = false
-        return try await _runIdentify(userId: userId, name: name, email: email)
-    }
-
-    /// Deprecated alias for ``identify(_:)`` with ``Identity/user(id:name:email:)``.
     /// Same behavior, kept for source compatibility with SDK 1.x integrations.
     /// Will be removed in 2.0.
     @available(*, deprecated, message: "Use identify(.user(id: ..., name: ..., email: ...)) instead. bootstrap() will be removed in ZeroSettleKit 2.0.")
