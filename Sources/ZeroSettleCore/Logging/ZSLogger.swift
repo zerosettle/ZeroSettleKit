@@ -39,7 +39,28 @@ public enum ZSLogger {
         category: Category = .general,
         type: OSLogType = .default
     ) {
+        // Apple's `os_log` redacts arguments interpolated as `%{private}@`
+        // when reading device logs from a non-debugger context (Console.app
+        // sysdiagnose, customer-shared logs, third-party log readers). This
+        // is the privacy contract the OS enforces.
+        //
+        // In DEBUG builds we use `%{public}@` so developers see the full
+        // message during integration / local development. In RELEASE builds
+        // we use `%{private}@` so production sysdiagnoses don't leak Stripe
+        // client_secrets, user IDs, transaction IDs, or any other dynamic
+        // log argument the SDK or its consumers pass through.
+        //
+        // Sensitive data should never appear in the format string itself —
+        // only in the substituted argument. Audit ZSLogger call sites with:
+        //   grep -n 'ZSLogger\.\(info\|debug\|error\|fault\|log\)' \\
+        //     Sources/ZeroSettleKit | grep -v '\\(.*\\)'
+        // ...and ensure every dynamic value is interpolated, not concatenated
+        // into the format string.
+        #if DEBUG
         os_log("%{public}@", log: logger(for: category), type: type, message)
+        #else
+        os_log("%{private}@", log: logger(for: category), type: type, message)
+        #endif
     }
 
     public static func debug(_ message: String, category: Category = .general) {

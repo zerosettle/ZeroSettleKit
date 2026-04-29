@@ -112,7 +112,7 @@ internal final class WebCheckoutFlow: NSObject {
     /// - Parameter url: The universal link URL
     /// - Returns: Parsed callback data, or `nil` if the URL is not a ZeroSettle checkout callback
     func handleCallback(url: URL) -> CheckoutCallback? {
-        ZSLogger.info("handleCallback: incoming URL: \(url.absoluteString)", category: .checkout)
+        ZSLogger.info("handleCallback: incoming URL: \(url.redactedForLogs)", category: .checkout)
 
         let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         let parsedScheme = components?.scheme ?? "nil"
@@ -191,7 +191,7 @@ internal final class WebCheckoutFlow: NSObject {
     /// Open a URL in the external Safari browser.
     /// Suspends until the user returns to the app (foreground notification).
     private func openInSafari(_ url: URL) async {
-        ZSLogger.info("openInSafari: opening URL: \(url.absoluteString)", category: .checkout)
+        ZSLogger.info("openInSafari: opening URL: \(url.redactedForLogs)", category: .checkout)
 
         await withCheckedContinuation { continuation in
             UIApplication.shared.open(url, options: [:]) { _ in
@@ -231,7 +231,7 @@ internal final class WebCheckoutFlow: NSObject {
     /// so when a `transactionId` is provided we poll the transaction status in the background
     /// and auto-dismiss the sheet once the Stripe webhook confirms payment success.
     private func openInSafariVC(_ url: URL, transactionId: String? = nil) async {
-        ZSLogger.info("openInSafariVC: opening URL: \(url.absoluteString)", category: .checkout)
+        ZSLogger.info("openInSafariVC: opening URL: \(url.redactedForLogs)", category: .checkout)
 
         guard let topController = SafariPresentation.topViewController() else {
             ZSLogger.error("Unable to find root view controller for inline checkout", category: .checkout)

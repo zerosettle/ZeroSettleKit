@@ -808,7 +808,7 @@ extension CheckoutSheet {
             onComplete(.failure(ZeroSettleError.cancelled))
 
         case .error(let message):
-            ZSLogger.error("[CheckoutSheet] handleWebViewAction: ERROR — message=\"\(message)\" webView.url=\(String(describing: preloadedWebView?.url?.absoluteString.prefix(60)))", category: .checkout)
+            ZSLogger.error("[CheckoutSheet] handleWebViewAction: ERROR — message=\"\(message)\" webView.url=\(preloadedWebView?.url?.redactedForLogs ?? "nil")", category: .checkout)
             dismiss()
             let lowered = message.lowercased()
             if lowered.contains("cancel") {
@@ -884,7 +884,7 @@ private struct PaymentWebView: UIViewRepresentable {
     func makeUIView(context: Context) -> WKWebView {
         // Reuse preloaded WebView if available
         if let preloaded = preloadedWebView {
-            let wvURL = preloaded.url?.absoluteString.prefix(60) ?? "nil"
+            let wvURL = preloaded.url?.redactedForLogs ?? "nil"
             let inWindow = preloaded.window != nil
             ZSLogger.info("[PaymentWebView] makeUIView: reusing preloaded WebView. url=\(wvURL) inWindow=\(inWindow) superview=\(preloaded.superview != nil)", category: .checkout)
 
@@ -1075,18 +1075,18 @@ private struct PaymentWebView: UIViewRepresentable {
         // MARK: - Navigation Delegate
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            ZSLogger.info("[CheckoutSheet] Coordinator: webView didFinish navigation. url=\(webView.url?.absoluteString.prefix(60) ?? "nil")", category: .checkout)
+            ZSLogger.info("[CheckoutSheet] Coordinator: webView didFinish navigation. url=\(webView.url?.redactedForLogs ?? "nil")", category: .checkout)
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            ZSLogger.error("[CheckoutSheet] Coordinator: webView didFail navigation. error=\(error.localizedDescription) url=\(webView.url?.absoluteString.prefix(60) ?? "nil")", category: .checkout)
+            ZSLogger.error("[CheckoutSheet] Coordinator: webView didFail navigation. error=\(error.localizedDescription) url=\(webView.url?.redactedForLogs ?? "nil")", category: .checkout)
             DispatchQueue.main.async {
                 self.isLoading = false
             }
         }
 
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-            ZSLogger.error("[CheckoutSheet] Coordinator: PROCESS TERMINATED while sheet is visible! url=\(webView.url?.absoluteString.prefix(60) ?? "nil")", category: .checkout)
+            ZSLogger.error("[CheckoutSheet] Coordinator: PROCESS TERMINATED while sheet is visible! url=\(webView.url?.redactedForLogs ?? "nil")", category: .checkout)
         }
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {

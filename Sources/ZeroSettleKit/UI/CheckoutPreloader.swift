@@ -137,7 +137,7 @@ internal final class CheckoutPreloader: ObservableObject {
     @MainActor
     func loadAndWait(url: URL) async {
         let start = CFAbsoluteTimeGetCurrent()
-        let shortURL = url.absoluteString.prefix(60)
+        let shortURL = url.redactedForLogs
 
         // Reuse the existing WebView if it already loaded this URL
         if let wv = webView, isReady, loadedURL == url {
@@ -328,7 +328,7 @@ internal final class CheckoutPreloader: ObservableObject {
     /// Called after a successful purchase (to force a fresh PI on next open)
     /// or when explicitly discarding a dead WebView.
     func reset() {
-        let url = loadedURL?.absoluteString.prefix(60) ?? "none"
+        let url = loadedURL?.redactedForLogs ?? "none"
         let urlAlive = webView?.url != nil
         ZSLogger.info("[Preloader] reset() called. wasReady=\(isReady) hadWebView=\(webView != nil) urlWasAlive=\(urlAlive) product=\(url)", category: .checkout)
         cancelCurrentLoad()
@@ -348,8 +348,8 @@ internal final class CheckoutPreloader: ObservableObject {
     /// Does NOT nil the WebView — keeps it for debugging. The `isAlive` check
     /// (`wv.url != nil`) already returns false for a terminated process.
     func handleProcessTermination() {
-        let url = loadedURL?.absoluteString.prefix(60) ?? "unknown"
-        let webViewURLNow = webView?.url?.absoluteString.prefix(40) ?? "nil"
+        let url = loadedURL?.redactedForLogs ?? "unknown"
+        let webViewURLNow = webView?.url?.redactedForLogs ?? "nil"
         ZSLogger.error("[Preloader] PROCESS TERMINATED. wasReady=\(isReady) buttonsReady=\(buttonsReady) webView.url=\(webViewURLNow) product=\(url)", category: .checkout)
         isReady = false
         buttonsReady = false
@@ -363,7 +363,7 @@ internal class PreloaderNavigationDelegate: NSObject, WKNavigationDelegate {
     weak var preloader: CheckoutPreloader?
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        ZSLogger.error("[PreloaderDelegate] webViewWebContentProcessDidTerminate called. webView.url=\(webView.url?.absoluteString.prefix(40) ?? "nil")", category: .checkout)
+        ZSLogger.error("[PreloaderDelegate] webViewWebContentProcessDidTerminate called. webView.url=\(webView.url?.redactedForLogs ?? "nil")", category: .checkout)
         Task { @MainActor [weak preloader] in
             preloader?.handleProcessTermination()
         }

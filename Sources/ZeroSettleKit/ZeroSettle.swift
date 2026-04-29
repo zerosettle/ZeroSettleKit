@@ -444,6 +444,55 @@ public final class ZeroSettle: ObservableObject {
         activeEntitlements.filter { $0.source == .webCheckout && !knownIds.contains($0.id) }
     }
 
+    // MARK: - StoreKit appAccountToken
+
+    /// Returns the deterministic UUID you should pass to Apple's
+    /// `Product.purchase(options: [.appAccountToken(uuid)])` for the
+    /// currently identified user.
+    ///
+    /// Use this **only** if you are calling `StoreKit.Product.purchase()`
+    /// directly. If you call `ZeroSettle.shared.purchaseViaStoreKit(...)`,
+    /// the SDK already sets the correct token for you — you don't need this.
+    ///
+    /// The token is computed via tenant-scoped UUIDv5 derivation:
+    /// ```
+    /// ROOT      = uuid5(NAMESPACE_DNS, "appaccounttoken.zerosettle.com")
+    /// namespace = uuid5(ROOT, Bundle.main.bundleIdentifier)
+    /// derived   = uuid5(namespace, currentUserId)
+    /// ```
+    /// The same algorithm runs server-side on every JWS sync, so the
+    /// `appAccountToken` Apple signs into the JWS will match the syncing
+    /// `user_id` and unlock cross-account ownership transfer (family
+    /// sharing, cancel+rebuy, reinstall+resignin, sandbox OTID reuse).
+    ///
+    /// **Why this matters**: Apple's `appAccountToken` parameter requires
+    /// a `UUID` value. Many developers identify users by non-UUID strings
+    /// (Firebase UIDs, Privy IDs, Auth0 sub claims). Without this helper,
+    /// a hand-rolled "format the user ID as a UUID" implementation will
+    /// silently produce random or invalid UUIDs because `UUID(uuidString:)`
+    /// rejects non-hex characters. Cross-account ownership transfer
+    /// then fails for every user. Use this method instead.
+    ///
+    /// ```swift
+    /// // Inside your purchase code:
+    /// let token = try ZeroSettle.shared.recommendedAppAccountToken()
+    /// let result = try await product.purchase(options: [.appAccountToken(token)])
+    /// ```
+    ///
+    /// - Returns: The UUID to pass as `appAccountToken`. UUID-native user
+    ///   IDs (e.g., RevenueCat-style) are passed through unchanged.
+    /// - Throws: ``ZeroSettleError/userNotIdentified`` if `identify()` has
+    ///   not been called yet.
+    public func recommendedAppAccountToken() throws -> UUID {
+        let userId = try requireIdentifiedUserId()
+        let bundleId = Bundle.main.bundleIdentifier ?? ""
+        precondition(
+            !bundleId.isEmpty,
+            "Bundle.main.bundleIdentifier is nil — cannot derive appAccountToken"
+        )
+        return AppAccountToken.derive(userId: userId, bundleId: bundleId)
+    }
+
     // MARK: - Entitlement Claiming
 
     /// Claims a StoreKit entitlement for the current user, even if another
@@ -1451,7 +1500,7 @@ public final class ZeroSettle: ObservableObject {
     /// - Returns: `true` if the URL was handled by ZeroSettle, `false` otherwise
     @discardableResult
     public func handleUniversalLink(_ url: URL) -> Bool {
-        ZSLogger.info("Incoming URL: \(url.absoluteString)", category: .deepLinks)
+        ZSLogger.info("Incoming URL: \(url.redactedForLogs)", category: .deepLinks)
 
         guard let checkoutFlow else {
             ZSLogger.error("checkoutFlow is nil — SDK not configured", category: .deepLinks)

@@ -164,7 +164,10 @@ public final class HTTPClient: @unchecked Sendable {
 
     /// Parse and log API error responses with debug info for developers.
     private func logAPIError(statusCode: Int, url: URL?, requestBody: Data?, data: Data) {
-        let urlString = url?.absoluteString ?? "unknown"
+        // Redacted: URL query and fragment carry user_id, original_transaction_id,
+        // client_secret etc. Path alone is enough to identify which endpoint
+        // failed for triage purposes.
+        let urlString = url?.redactedForLogs ?? "unknown"
 
         // Extract product identifier from request body if present
         let productContext: String

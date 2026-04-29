@@ -272,6 +272,25 @@ internal struct CheckoutSheetModifier<Header: View>: ViewModifier {
             }
             .task(id: isPresented) {
                 if isPresented {
+                    // Jurisdiction gate: if web checkout is disabled for the
+                    // detected jurisdiction (per the dashboard's per-jurisdiction
+                    // override or global setting), refuse to present the sheet.
+                    // This mirrors `ZeroSettle.shared.purchase()`'s behavior — without
+                    // this gate, devs who set a jurisdiction override on the
+                    // dashboard would silently see the sheet present in disabled
+                    // regions, bypassing their own opt-out.
+                    if !ZeroSettle.shared.isWebCheckoutEnabled {
+                        let jurisdiction = ZeroSettle.shared.effectiveJurisdiction
+                        ZSLogger.error(
+                            "[CheckoutSheet] Refusing to present — web checkout disabled for \(jurisdiction.rawValue) jurisdiction. Configure this in your ZeroSettle dashboard under Checkout Configuration.",
+                            category: .checkout
+                        )
+                        onComplete(.failure(
+                            ZeroSettleError.webCheckoutDisabledForJurisdiction(jurisdiction)
+                        ))
+                        isPresented = false
+                        return
+                    }
                     await preloadAll()
                 } else {
                     showSheet = false
@@ -468,6 +487,19 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
             }
             .task(id: item?.id) {
                 if let product = item {
+                    // Jurisdiction gate — see same comment in CheckoutSheetModifier.
+                    if !ZeroSettle.shared.isWebCheckoutEnabled {
+                        let jurisdiction = ZeroSettle.shared.effectiveJurisdiction
+                        ZSLogger.error(
+                            "[CheckoutSheet] Refusing to present — web checkout disabled for \(jurisdiction.rawValue) jurisdiction. Configure this in your ZeroSettle dashboard under Checkout Configuration.",
+                            category: .checkout
+                        )
+                        onComplete(.failure(
+                            ZeroSettleError.webCheckoutDisabledForJurisdiction(jurisdiction)
+                        ))
+                        item = nil
+                        return
+                    }
                     presentedProduct = product
                     // Clear stale preloaded state from a different product.
                     // Without this, the fast path serves the wrong product's checkout.
@@ -599,7 +631,7 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
             item = nil
             return
         }
-        ZSLogger.info("[Checkout] preloadAll: PI fetched in \(Int((CFAbsoluteTimeGetCurrent() - preloadStart) * 1000))ms (url=\(result.checkoutURL.absoluteString.prefix(80))...)", category: .checkout)
+        ZSLogger.info("[Checkout] preloadAll: PI fetched in \(Int((CFAbsoluteTimeGetCurrent() - preloadStart) * 1000))ms (url=\(result.checkoutURL.redactedForLogs))", category: .checkout)
 
         guard !Task.isCancelled else {
             ZSLogger.info("[Checkout] preloadAll: cancelled after PI fetch", category: .checkout)

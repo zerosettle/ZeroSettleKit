@@ -40,14 +40,14 @@ internal struct ZeroSettleHandlerModifier: ViewModifier {
                     ZSLogger.debug("onContinueUserActivity fired but webpageURL is nil", category: .deepLinks)
                     return
                 }
-                ZSLogger.info("onContinueUserActivity fired with URL: \(url.absoluteString)", category: .deepLinks)
+                ZSLogger.info("onContinueUserActivity fired with URL: \(url.redactedForLogs)", category: .deepLinks)
                 ZeroSettle.shared.handleUniversalLink(url)
             }
             // Safety net: onOpenURL can also deliver universal links in some
             // SwiftUI lifecycle edge cases.  We do NOT register a custom URL
             // scheme — this handler only processes https:// universal links.
             .onOpenURL { url in
-                ZSLogger.info("onOpenURL fired with URL: \(url.absoluteString)", category: .deepLinks)
+                ZSLogger.info("onOpenURL fired with URL: \(url.redactedForLogs)", category: .deepLinks)
                 ZeroSettle.shared.handleUniversalLink(url)
             }
             .onAppear {

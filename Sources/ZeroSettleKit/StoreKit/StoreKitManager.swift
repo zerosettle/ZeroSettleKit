@@ -433,6 +433,34 @@ internal final class StoreKitManager {
             return
         }
 
+        // appAccountToken sanity check: warn if the JWS-signed token doesn't
+        // match the canonical UUIDv5 derivation for this user. The backend's
+        // `apple_verified_current_owner` check requires either literal-match
+        // (UUID-native dev IDs) or derivation-match. A mismatch means cross-
+        // account ownership transfer (family sharing, cancel+rebuy, reinstall+
+        // resignin) will refuse on this transaction. Common cause: dev rolled
+        // their own UUID derivation that produces random or non-deterministic
+        // UUIDs (see DiveGenius incident, 2026-04-28).
+        //
+        // We don't fail the sync — same-user attribution still works, and
+        // failing would prevent legitimate purchases from being recorded.
+        // The warning is loud-and-actionable so the dev fixes it.
+        if let bundleId = Bundle.main.bundleIdentifier, !bundleId.isEmpty,
+           let jwsToken = transaction.appAccountToken {
+            let expected = AppAccountToken.derive(userId: userId, bundleId: bundleId)
+            if jwsToken != expected {
+                ZSLogger.error(
+                    "ZeroSettleKit: appAccountToken mismatch on transaction \(transaction.id). " +
+                    "JWS contains \(jwsToken.uuidString) but expected \(expected.uuidString) for userId='\(userId)'. " +
+                    "Cross-account ownership transfer will not work for this transaction. " +
+                    "Fix: either call ZeroSettle.shared.purchaseViaStoreKit(productId:) (recommended — the SDK handles appAccountToken for you), " +
+                    "or if you must call StoreKit's Product.purchase() directly, get the correct UUID from " +
+                    "ZeroSettle.shared.recommendedAppAccountToken() and pass it as .appAccountToken(...) in the purchase options.",
+                    category: .entitlements
+                )
+            }
+        }
+
         // Refresh monitor state before syncing so the payload reflects the
         // latest willAutoRenew/renewalState for this product. This is what
         // lets the backend detect an Apple cancellation on the next sync
