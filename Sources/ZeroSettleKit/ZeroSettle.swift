@@ -415,6 +415,16 @@ public final class ZeroSettle: ObservableObject {
     /// Starts in `.loading` and transitions after bootstrap completes.
     public private(set) var offerManager: ZSOfferManager?
 
+    /// StoreKit purchases that another ZeroSettle account currently holds.
+    ///
+    /// Populated when sync detects cross-user OTID conflicts (backend returns
+    /// `conflict: true, claim_available: true`). Consuming app observes via
+    /// `@ObservedObject` / `@StateObject` and can render
+    /// "transfer this purchase?" UX. Claim is opt-in via the existing
+    /// `transferStoreKitOwnershipToCurrentUser(productId:)` API — SDK never
+    /// auto-claims.
+    public private(set) var pendingClaims: [PendingClaim] = []
+
     // MARK: - Customer Info
 
     /// Customer name included in all subsequent checkout requests.
@@ -880,6 +890,23 @@ public final class ZeroSettle: ObservableObject {
         entitlements = newEntitlements
         entitlementContinuation?.yield(newEntitlements)
         delegate?.zeroSettleEntitlementsDidUpdate(newEntitlements)
+    }
+
+    /// Add a pending claim if not already present (matched by productId + OTID).
+    /// Internal — populated by StoreKitManager when sync detects a cross-user conflict.
+    internal func addPendingClaim(_ claim: PendingClaim) {
+        if pendingClaims.contains(claim) { return }
+        objectWillChange.send()
+        pendingClaims.append(claim)
+    }
+
+    /// Remove pending claims for a productId. Internal — called when claim
+    /// completes successfully or when the consuming app dismisses the prompt.
+    internal func removePendingClaim(productId: String) {
+        let filtered = pendingClaims.filter { $0.productId != productId }
+        if filtered.count == pendingClaims.count { return }
+        objectWillChange.send()
+        pendingClaims = filtered
     }
 
     // MARK: - Private State
