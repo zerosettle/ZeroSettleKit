@@ -620,6 +620,10 @@ public final class ZSOfferManager: ObservableObject {
                 self.checkoutError = ZeroSettleError.checkoutFailed(reason: .other("Payment failed"))
             case .exhausted:
                 ZSLogger.error("[OfferManager] Checkout poll exhausted (txn=\(transactionId))", category: .migration)
+            case .terminalError(let error):
+                ZSLogger.error("[OfferManager] Checkout poll terminal error (txn=\(transactionId)): \(error.localizedDescription)", category: .migration)
+                self.state = .eligible
+                self.checkoutError = error
             }
         }
     }

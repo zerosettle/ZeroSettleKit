@@ -126,6 +126,15 @@ public enum ZeroSettleError: Error, LocalizedError {
     /// invoking user-scoped APIs like ``ZeroSettle/restoreEntitlements()``.
     case userNotIdentified
 
+    /// The checkout never actually started — `create-payment-intent` did not
+    /// return a transaction ID, so there is no Transaction record on the
+    /// backend to verify, refund, or attribute. Distinct from `.cancelled`
+    /// (user dismissed the sheet) and from `.checkoutFailed` (Stripe rejected
+    /// the payment). The customer was NOT charged. Common causes: backend
+    /// outage during PI creation, malformed request, server-side
+    /// configuration error.
+    case checkoutNotStarted
+
     /// Returns `true` if the error represents a user-initiated cancellation,
     /// regardless of which layer threw it (ZeroSettleKit, StoreKit, or Swift concurrency).
     public static func isCancellation(_ error: Error) -> Bool {
@@ -181,6 +190,8 @@ public enum ZeroSettleError: Error, LocalizedError {
             return "Invalid userId: must be a non-empty string."
         case .userNotIdentified:
             return "ZeroSettle has not identified a user. Call ZeroSettle.shared.identify(userId:) before invoking user-scoped APIs."
+        case .checkoutNotStarted:
+            return "Checkout never started. The PaymentIntent was not created — the customer was NOT charged. Likely a backend or configuration issue at PI-creation time; check Render logs for the `/v1/iap/payment-intents/` request that initiated this checkout."
         }
     }
 }
@@ -1347,7 +1358,15 @@ public final class ZeroSettle: ObservableObject {
                     let transaction = try await backend.getTransaction(transactionId: transactionId)
                     return transaction
                 }
-                throw ZeroSettleError.cancelled
+                // Universal link callback fired (success path) but we have no
+                // transactionId — meaning create-PI never returned one, so
+                // the checkout never had a Transaction record on the backend.
+                // The customer was NOT charged. Pre-1.2.5 we threw .cancelled
+                // here, which mis-told the dev "user dismissed" when the
+                // actual root cause was a backend issue at PI creation.
+                // Now: throw checkoutNotStarted so the dev can distinguish.
+                ZSLogger.error("Universal link callback fired but session.transactionId is nil — checkout never had a backend Transaction. Customer was not charged.", category: .checkout)
+                throw ZeroSettleError.checkoutNotStarted
             }
 
             // No callback — verify the transaction with the backend before

@@ -272,6 +272,9 @@ internal final class WebCheckoutFlow: NSObject {
                     self.dismissInlineCheckout()
                 case .exhausted:
                     ZSLogger.error("openInSafariVC: polling exhausted 20 attempts for \(transactionId) without confirmation", category: .checkout)
+                case .terminalError(let error):
+                    ZSLogger.error("openInSafariVC: terminal error polling \(transactionId): \(error.localizedDescription); dismissing SFSafariViewController", category: .checkout)
+                    self.dismissInlineCheckout()
                 }
             }
         } else {
