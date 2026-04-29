@@ -770,7 +770,8 @@ public struct MigrationTipView: View {
         )
         #endif
 
-        // Task 12 will add: manager.onCheckoutFailure?(failure)
+        // Forward to consuming app
+        manager.onCheckoutFailure?(failure)
     }
 
     /// Browser-based checkout. `presentation` lets the per-offer
