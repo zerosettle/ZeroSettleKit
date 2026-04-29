@@ -437,6 +437,39 @@ internal final class Backend: @unchecked Sendable {
         }
     }
 
+    /// Bulk reconcile of StoreKit subscription states (Spec 3 append-log mode).
+    ///
+    /// POSTs to the same endpoint as syncStoreKitTransaction. Backend
+    /// dispatches based on the `transactions` array key — when present,
+    /// it routes to the bulk reconcile handler. Legacy single-tx callers
+    /// (syncStoreKitTransaction above) are unaffected.
+    ///
+    /// - Parameters:
+    ///   - entries: Built by `SubscriptionStateReconciler.gather()`.
+    ///   - userId: The developer's user identifier.
+    ///   - clientRequestId: SDK-generated UUID per call; logged for support.
+    ///   - clientSdkVersion: For future migration / deprecation tracking.
+    func reconcileSubscriptionStates(
+        entries: [SubscriptionStateEntry],
+        userId: String,
+        clientRequestId: String = UUID().uuidString,
+        clientSdkVersion: String = "unknown"
+    ) async throws -> ReconcileSubscriptionStatesResponse {
+        let url = apiURL("iap/storekit-transactions/")
+        let body = ReconcileSubscriptionStatesRequest(
+            transactions: entries,
+            userId: userId,
+            clientRequestId: clientRequestId,
+            clientSdkVersion: clientSdkVersion
+        )
+        return try await wrapped {
+            try await httpClient.post(
+                url, body: body, headers: authHeaders,
+                responseType: ReconcileSubscriptionStatesResponse.self
+            )
+        }
+    }
+
     /// Explicitly claim a StoreKit entitlement for the current user, even if
     /// another ZeroSettle account originally purchased it on this Apple ID.
     func claimEntitlement(jwsRepresentation: String, userId: String) async throws -> ClaimEntitlementResponse {
@@ -889,6 +922,42 @@ internal struct SyncStoreKitTransactionResponse: Decodable {
         case conflict
         case claimAvailable = "claim_available"
         case existingOwnerHint = "existing_owner_hint"
+    }
+}
+
+internal struct ReconcileSubscriptionStatesRequest: Encodable {
+    let transactions: [SubscriptionStateEntry]
+    let userId: String
+    let clientRequestId: String
+    let clientSdkVersion: String
+
+    enum CodingKeys: String, CodingKey {
+        case transactions
+        case userId = "user_id"
+        case clientRequestId = "client_request_id"
+        case clientSdkVersion = "client_sdk_version"
+    }
+}
+
+internal struct ReconcileSubscriptionStatesResponse: Decodable {
+    let status: String
+    let processed: Int
+    let eventsEmitted: Int
+    let skipped: [SkipEntry]?
+
+    struct SkipEntry: Decodable {
+        let reason: String
+        let transactionId: String?
+
+        enum CodingKeys: String, CodingKey {
+            case reason
+            case transactionId = "transaction_id"
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case status, processed, skipped
+        case eventsEmitted = "events_emitted"
     }
 }
 

@@ -110,6 +110,13 @@ internal final class StoreKitManager {
             }
         }
 
+        // Spec 3: bulk reconcile of subscription states on launch.
+        // Catches lifecycle transitions (EXPIRED, REVOKED, RENEWED, etc.)
+        // that happened while the app was killed.
+        Task(priority: .utility) { [weak self] in
+            await self?.runSubscriptionStateReconcile()
+        }
+
     }
 
     // MARK: - Renewal State Enrichment
@@ -430,16 +437,44 @@ internal final class StoreKitManager {
     // MARK: - Private
 
     private func listenForUpdates() async {
-        for await result in SKTransaction.updates {
+        for await result in StoreKit.Transaction.updates {
             guard !Task.isCancelled else { break }
 
             switch result {
             case .verified(let transaction):
                 let jws = result.jwsRepresentation
                 await handleVerifiedTransaction(transaction, jwsRepresentation: jws)
+                // Spec 3: after each Transaction.updates event, reconcile so
+                // lifecycle changes (renewals, expirations, revocations)
+                // propagate to the backend within seconds.
+                await runSubscriptionStateReconcile()
             case .unverified(_, let error):
                 ZSLogger.error("Unverified transaction: \(error.localizedDescription)", category: .entitlements)
             }
+        }
+    }
+
+    /// Spec 3: gather all known StoreKit subscription states and POST to the
+    /// bulk reconcile endpoint. No-op if userId isn't set yet.
+    private func runSubscriptionStateReconcile() async {
+        guard let userId = userId else { return }
+        let entries = await SubscriptionStateReconciler.gather()
+        if entries.isEmpty {
+            return
+        }
+        do {
+            let response = try await backend.reconcileSubscriptionStates(
+                entries: entries, userId: userId
+            )
+            ZSLogger.info(
+                "[storekit_recon] processed=\(response.processed) emitted=\(response.eventsEmitted)",
+                category: .entitlements
+            )
+        } catch {
+            ZSLogger.warning(
+                "[storekit_recon] reconcile call failed: \(error)",
+                category: .entitlements
+            )
         }
     }
 
