@@ -5,7 +5,6 @@ let package = Package(
     name: "ZeroSettleKit",
     platforms: [
         .iOS(.v17),
-        .macOS(.v12),  // for `swift test` host + XCTest
     ],
 
     // MARK: - Products
