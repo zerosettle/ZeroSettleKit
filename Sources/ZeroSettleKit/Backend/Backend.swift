@@ -317,6 +317,59 @@ internal final class Backend: @unchecked Sendable {
         try await wrapped { try await httpClient.patchVoid(url, body: body, headers: authHeaders) }
     }
 
+    // MARK: - Deferred-mode (X-ZS-SDK-Version >= 1.3.0)
+
+    /// Fetch the display data for a deferred-mode checkout config.
+    ///
+    /// The response carries everything the WebView (or NativePayFlow) needs to
+    /// initialize `stripe.elements({mode, amount, currency, paymentMethodConfiguration})`
+    /// — but NO `client_secret`. The client_secret is materialized later by
+    /// ``finalizePaymentIntent(transactionId:)`` when the user actually
+    /// submits, which is the anti-spoof primitive.
+    ///
+    /// Spec: docs/superpowers/specs/2026-04-29-deferred-mode-architecture-design.md §4.1
+    func getCheckoutConfig(transactionId: String) async throws -> CheckoutConfigResponse {
+        let url = apiURL("iap/checkout-config/\(transactionId)/")
+        return try await wrapped {
+            try await httpClient.get(url, headers: authHeaders, responseType: CheckoutConfigResponse.self)
+        }
+    }
+
+    /// Materialize the Stripe Intent for a deferred-mode checkout config.
+    ///
+    /// The body is intentionally empty — all parameters come from the
+    /// server-resolved Transaction row keyed by `transactionId`. This is the
+    /// anti-spoof primitive: the client cannot influence what amount Stripe
+    /// sees.
+    ///
+    /// Idempotent: a second call returns the same `client_secret` without
+    /// creating a duplicate Stripe intent.
+    ///
+    /// Throws ``ZeroSettleError/checkoutConfigExpired`` if the server returns
+    /// HTTP 410 (the underlying `checkout_config_expires_at` has passed); the
+    /// caller should restart checkout via ``initiateCheckout(productId:userId:stripeCustomerId:storekitSubscriptionEnd:storekitOriginalTransactionId:checkoutMode:externalPurchaseToken:)``
+    /// rather than retrying.
+    ///
+    /// Spec: docs/superpowers/specs/2026-04-29-deferred-mode-architecture-design.md §4.1
+    func finalizePaymentIntent(transactionId: String) async throws -> String {
+        let url = apiURL("iap/payment-intents/\(transactionId)/finalize/")
+        do {
+            let response: FinalizePaymentIntentResponse = try await httpClient.post(
+                url,
+                headers: authHeaders,
+                responseType: FinalizePaymentIntentResponse.self
+            )
+            return response.clientSecret
+        } catch let error as HTTPError {
+            if case .httpError(statusCode: 410, _) = error {
+                throw ZeroSettleError.checkoutConfigExpired
+            }
+            throw Self.wrapError(error)
+        } catch {
+            throw Self.wrapError(error)
+        }
+    }
+
     // MARK: - Transaction Verification
 
     /// Poll the backend to verify a transaction has completed.
@@ -722,12 +775,16 @@ private struct ProductsResponse: Decodable {
 }
 
 private struct ConfigResponse: Decodable {
-    let checkout: CheckoutConfigResponse
+    let checkout: CheckoutFlowConfigResponse
     let migration: MigrationPromptResponse?
     let offer: Offer.OfferData?
 }
 
-private struct CheckoutConfigResponse: Decodable {
+/// Renamed from `CheckoutConfigResponse` to free up that name for the
+/// module-scope deferred-mode model in `Models/CheckoutConfigResponse.swift`.
+/// This struct is the legacy "remote config block" inside `/iap/products/`'s
+/// response — distinct from the new `GET /iap/checkout-config/<id>/` payload.
+private struct CheckoutFlowConfigResponse: Decodable {
     let sheetType: String
     let isEnabled: Bool
     let jurisdictions: [String: JurisdictionConfigResponse]?
@@ -890,6 +947,15 @@ internal struct BatchCheckoutResponse: Decodable {
         }
     }
     let results: [Result]
+}
+
+/// Response shape for `POST /v1/iap/payment-intents/<id>/finalize/`. The
+/// endpoint returns just the freshly-materialized Stripe `client_secret`;
+/// callers don't need the response struct itself, only the secret string.
+/// No explicit `CodingKeys` — the shared decoder's `.convertFromSnakeCase`
+/// handles `client_secret` → `clientSecret`.
+private struct FinalizePaymentIntentResponse: Decodable {
+    let clientSecret: String
 }
 
 private struct SyncStoreKitTransactionRequest: Encodable {

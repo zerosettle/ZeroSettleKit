@@ -97,6 +97,15 @@ public enum ZeroSettleError: Error, LocalizedError {
     /// An API or network error occurred.
     case apiError(APIErrorDetail)
 
+    /// The deferred-mode checkout config has expired (the server-side
+    /// PENDING transaction's `checkout_config_expires_at` has passed). The SDK
+    /// should re-initiate checkout via ``Backend/initiateCheckout(productId:userId:stripeCustomerId:storekitSubscriptionEnd:storekitOriginalTransactionId:checkoutMode:externalPurchaseToken:)``
+    /// to get a fresh config rather than retrying
+    /// ``Backend/finalizePaymentIntent(transactionId:)``.
+    ///
+    /// Maps to HTTP 410 from `POST /v1/iap/payment-intents/<id>/finalize/`.
+    case checkoutConfigExpired
+
     /// The checkout callback URL could not be parsed.
     case invalidCallbackURL
 
@@ -172,6 +181,8 @@ public enum ZeroSettleError: Error, LocalizedError {
             return "Transaction verification failed: \(message)"
         case .apiError(let detail):
             return detail.errorDescription
+        case .checkoutConfigExpired:
+            return "The checkout configuration has expired. Restart checkout to obtain a fresh session."
         case .invalidCallbackURL:
             return "Invalid checkout callback URL."
         case .webCheckoutDisabledForJurisdiction(let jurisdiction):
