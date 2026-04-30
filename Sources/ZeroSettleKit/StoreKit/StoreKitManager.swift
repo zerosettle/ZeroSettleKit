@@ -471,7 +471,7 @@ internal final class StoreKitManager {
                 category: .entitlements
             )
         } catch {
-            ZSLogger.warning(
+            ZSLogger.error(
                 "[storekit_recon] reconcile call failed: \(error)",
                 category: .entitlements
             )

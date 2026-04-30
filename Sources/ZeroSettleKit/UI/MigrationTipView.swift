@@ -764,7 +764,7 @@ public struct MigrationTipView: View {
 
         // Log via ZSLogger for debug + crash-reporting visibility
         #if canImport(ZeroSettleCore)
-        ZSLogger.warning(
+        ZSLogger.error(
             "[checkout_load_failure] \(failure.description)",
             category: .migration
         )

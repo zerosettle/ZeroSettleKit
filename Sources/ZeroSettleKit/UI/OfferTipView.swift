@@ -371,6 +371,9 @@ public struct OfferTipView: View {
                         },
                         onCheckoutSuccess: { transactionId in
                             handleCheckoutSuccess(transactionId: transactionId)
+                        },
+                        onCheckoutFailure: { failure in
+                            handleCheckoutFailure(failure)
                         }
                     )
                     .frame(height: isExpanded ? contentHeight : 0)
@@ -870,6 +873,23 @@ public struct OfferTipView: View {
                 contentHeight = Self.collapsedHeight
             }
         }
+    }
+
+    private func handleCheckoutFailure(_ failure: CheckoutFailure) {
+        // Reset UI state so the CTA reappears for retry.
+        withAnimation(.easeInOut(duration: 0.25)) {
+            isExpanded = false
+            contentHeight = Self.collapsedHeight
+            checkoutURL = nil
+        }
+        ctaTapped = false
+
+        #if canImport(ZeroSettleCore)
+        ZSLogger.error(
+            "[OfferTipView] checkout_load_failure: \(failure.description)",
+            category: .migration
+        )
+        #endif
     }
 
     private func handleCheckoutSuccess(transactionId: String?) {

@@ -8,7 +8,7 @@ import XCTest
 
 // MARK: - Configuration Tests
 
-final class ConfigurationTests: XCTestCase {
+final class IAPConfigurationTests: XCTestCase {
     func testConfigurationDefaults() {
         let config = ZeroSettle.Configuration(publishableKey: "pk_test_abc123")
 

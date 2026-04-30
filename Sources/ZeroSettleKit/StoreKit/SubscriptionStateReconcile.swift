@@ -48,7 +48,7 @@ internal struct SubscriptionStateReconciler {
                 }
             } catch {
                 #if canImport(ZeroSettleCore)
-                ZSLogger.warning(
+                ZSLogger.error(
                     "[storekit_recon] failed to fetch subscriptionStatus for group=\(groupID): \(error)",
                     category: .entitlements
                 )
