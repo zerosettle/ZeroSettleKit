@@ -24,7 +24,12 @@ internal actor CheckoutResponseCache {
 
     private var entries: [String: Entry] = [:]
     private var inFlight: [String: Task<CheckoutResponse?, Never>] = [:]
-    private let ttl: TimeInterval = 300 // 5 minutes
+    // Cache TTL aligned to backend's Transaction.checkout_config_expires_at
+    // (30 minutes). Per spec §3.4: stale configs that survive the in-memory
+    // TTL are caught server-side at /finalize/ → 410, and the SDK falls back
+    // to a fresh /checkout-configs/ fetch. We do NOT revalidate against the
+    // backend on cache hit — that would defeat the preload speedup.
+    fileprivate let ttl: TimeInterval = 1800 // 30 minutes
 
     /// Cache key includes the publishable key so entries from one environment
     /// (sandbox vs live) are never served after an environment switch.
@@ -129,3 +134,10 @@ internal actor CheckoutResponseCache {
         inFlight.removeAll()
     }
 }
+
+#if DEBUG
+extension CheckoutResponseCache {
+    /// Test-only accessor for the TTL value. Do NOT use from production code.
+    var testTTL: TimeInterval { ttl }
+}
+#endif
