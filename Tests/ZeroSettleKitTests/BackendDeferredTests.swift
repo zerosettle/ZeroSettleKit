@@ -131,4 +131,143 @@ final class BackendDeferredTests: XCTestCase {
         XCTAssertNotNil(error.errorDescription)
         XCTAssertFalse(error.errorDescription?.isEmpty ?? true)
     }
+
+    // MARK: - CheckoutResponse dual-mode discriminator (Task 14)
+
+    /// The deferred-mode response shape: backend returns `deferred_mode: true`
+    /// and omits `client_secret`. The SDK must decode this without errors and
+    /// expose `clientSecret == nil`, `deferredMode == true`. Caller will then
+    /// invoke `Backend.finalizePaymentIntent(transactionId:)` to materialize
+    /// the Stripe intent.
+    ///
+    /// Spec: docs/superpowers/specs/2026-04-29-deferred-mode-architecture-design.md §3.1
+    func testCheckoutResponseDecodesDeferredShape() throws {
+        let json = """
+        {
+          "transaction_id": "txn_abc123",
+          "amount": 199,
+          "currency": "usd",
+          "product_name": "Coins",
+          "callback_url": "https://api.zerosettle.io/checkout/callback?app_id=1&transaction_id=txn_abc123&product_id=com.app.coins",
+          "publishable_key": "pk_test_x",
+          "checkout_url": "https://api.zerosettle.io/checkout/native/?#transaction_id=txn_abc123",
+          "stripe_account": null,
+          "merchant_country": "US",
+          "is_subscription": false,
+          "subscription_interval": null,
+          "trial_end": null,
+          "pending_amount": null,
+          "original_amount": 199,
+          "deferred_mode": true
+        }
+        """.data(using: .utf8)!
+
+        let resp = try decoder.decode(CheckoutResponse.self, from: json)
+        XCTAssertNil(resp.clientSecret)
+        XCTAssertEqual(resp.transactionId, "txn_abc123")
+        XCTAssertEqual(resp.amount, 199)
+        XCTAssertEqual(resp.deferredMode, true)
+        // The deferred-mode checkout URL fragment carries the txn id, not a
+        // legacy client_secret value.
+        XCTAssertTrue(resp.checkoutUrl.hasSuffix("#transaction_id=txn_abc123"))
+    }
+
+    /// The legacy fall-through response shape (tenant flag off OR old SDK):
+    /// backend returns `deferred_mode: false` AND `client_secret`. The SDK
+    /// must decode both fields and confirm the PI immediately, identical to
+    /// the pre-Task-14 contract.
+    ///
+    /// Spec: docs/superpowers/specs/2026-04-29-deferred-mode-architecture-design.md §3.1 §4.6
+    func testCheckoutResponseDecodesLegacyFallThrough() throws {
+        let json = """
+        {
+          "client_secret": "pi_test_secret_xyz",
+          "transaction_id": "txn_abc123",
+          "amount": 199,
+          "currency": "usd",
+          "product_name": "Coins",
+          "callback_url": "https://api.zerosettle.io/checkout/callback?app_id=1&transaction_id=txn_abc123&product_id=com.app.coins",
+          "publishable_key": "pk_test_x",
+          "checkout_url": "https://api.zerosettle.io/checkout/native/?#pi_test_secret_xyz",
+          "stripe_account": null,
+          "merchant_country": "US",
+          "is_subscription": false,
+          "subscription_interval": null,
+          "trial_end": null,
+          "pending_amount": null,
+          "original_amount": 199,
+          "deferred_mode": false
+        }
+        """.data(using: .utf8)!
+
+        let resp = try decoder.decode(CheckoutResponse.self, from: json)
+        XCTAssertEqual(resp.clientSecret, "pi_test_secret_xyz")
+        XCTAssertEqual(resp.deferredMode, false)
+        XCTAssertEqual(resp.transactionId, "txn_abc123")
+    }
+
+    /// Pre-Task-14 backend responses don't carry the `deferred_mode` field at
+    /// all. The SDK must keep decoding them — `deferredMode` is optional —
+    /// and the absent-field case is treated as legacy (`clientSecret` present).
+    func testCheckoutResponseDecodesLegacyWithoutDeferredModeField() throws {
+        let json = """
+        {
+          "client_secret": "pi_old_secret",
+          "transaction_id": "txn_old",
+          "amount": 199,
+          "currency": "usd",
+          "product_name": "Coins",
+          "callback_url": "https://api.zerosettle.io/checkout/callback",
+          "publishable_key": "pk_test_x",
+          "checkout_url": "https://api.zerosettle.io/checkout/native/?#pi_old_secret",
+          "stripe_account": null,
+          "merchant_country": "US",
+          "is_subscription": false,
+          "subscription_interval": null,
+          "trial_end": null,
+          "pending_amount": null,
+          "original_amount": 199
+        }
+        """.data(using: .utf8)!
+
+        let resp = try decoder.decode(CheckoutResponse.self, from: json)
+        XCTAssertEqual(resp.clientSecret, "pi_old_secret")
+        XCTAssertNil(resp.deferredMode)
+    }
+
+    /// Batch-result decode: a deferred-mode batch item has `deferred_mode: true`
+    /// and no `client_secret`. `asCheckoutResponse()` should still return a
+    /// non-nil `CheckoutResponse` (Task 14 relaxed the guard so a missing
+    /// client_secret is no longer treated as an error).
+    func testBatchResultDecodesAndConvertsDeferredItem() throws {
+        let json = """
+        {
+          "results": [
+            {
+              "product_id": "com.app.coins",
+              "transaction_id": "txn_batch_a",
+              "amount": 199,
+              "currency": "usd",
+              "product_name": "Coins",
+              "callback_url": "https://api.zerosettle.io/cb",
+              "publishable_key": "pk_test_x",
+              "checkout_url": "https://api.zerosettle.io/checkout/native/?#transaction_id=txn_batch_a",
+              "deferred_mode": true
+            }
+          ]
+        }
+        """.data(using: .utf8)!
+
+        let resp = try decoder.decode(BatchCheckoutResponse.self, from: json)
+        XCTAssertEqual(resp.results.count, 1)
+        let result = resp.results[0]
+        XCTAssertNil(result.error)
+        XCTAssertEqual(result.deferredMode, true)
+        XCTAssertNil(result.clientSecret)
+        let converted = result.asCheckoutResponse()
+        XCTAssertNotNil(converted)
+        XCTAssertNil(converted?.clientSecret)
+        XCTAssertEqual(converted?.deferredMode, true)
+        XCTAssertEqual(converted?.transactionId, "txn_batch_a")
+    }
 }

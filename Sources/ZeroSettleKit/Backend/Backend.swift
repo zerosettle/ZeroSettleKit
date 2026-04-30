@@ -211,9 +211,17 @@ internal final class Backend: @unchecked Sendable {
     // MARK: - Checkout
 
     /// Initiate a checkout for the given product.
-    /// The backend creates the Transaction, PaymentIntent/SetupIntent, and returns a `checkoutUrl`.
+    ///
+    /// Hits `POST /v1/iap/checkout-configs/` (the deferred-mode entry-point).
+    /// The backend decides per-request whether to return a deferred response
+    /// (no `clientSecret`; caller subsequently invokes `finalizePaymentIntent`)
+    /// or fall through to the legacy intent-first flow (response carries
+    /// `clientSecret`). The `deferredMode` discriminator on `CheckoutResponse`
+    /// tells the caller which mode they got.
+    ///
+    /// Spec: docs/superpowers/specs/2026-04-29-deferred-mode-architecture-design.md §3.1 §3.2
     func initiateCheckout(productId: String, userId: String? = nil, stripeCustomerId: String? = nil, storekitSubscriptionEnd: Date? = nil, storekitOriginalTransactionId: String? = nil, checkoutMode: CheckoutMode? = nil, externalPurchaseToken: String? = nil) async throws -> CheckoutResponse {
-        let url = apiURL("iap/payment-intents/")
+        let url = apiURL("iap/checkout-configs/")
         let iso8601End: String? = storekitSubscriptionEnd.map {
             $0.formatted(.iso8601)
         }
@@ -860,8 +868,22 @@ internal struct UpdateStorekitStatusRequest: Encodable {
 
 /// Response from the checkout initiation endpoint.
 /// Contains the checkout URL and metadata for rendering the payment UI.
+///
+/// `clientSecret` and `deferredMode` are the dual-mode discriminators:
+///
+/// - `deferredMode == true` => `clientSecret` is `nil`. The caller must
+///   invoke `Backend.finalizePaymentIntent(transactionId:)` later (typically
+///   when the user taps Pay) to materialize the Stripe intent.
+/// - `deferredMode == false` (or absent, for legacy backend responses) =>
+///   `clientSecret` is non-nil. This is the legacy intent-first contract:
+///   the SDK confirms the PaymentIntent / SetupIntent immediately.
+///
+/// Spec: docs/superpowers/specs/2026-04-29-deferred-mode-architecture-design.md §3.1
 internal struct CheckoutResponse: Decodable {
-    let clientSecret: String
+    /// Non-nil on the legacy fall-through path (`deferredMode == false`).
+    /// `nil` on the deferred-mode path (`deferredMode == true`); caller must
+    /// call `Backend.finalizePaymentIntent(transactionId:)` to materialize.
+    let clientSecret: String?
     let transactionId: String
     let amount: Int
     let currency: String
@@ -882,6 +904,11 @@ internal struct CheckoutResponse: Decodable {
     let trialEnd: Int?
     /// The amount (in cents) the customer will be charged when the trial ends.
     let pendingAmount: Int?
+    /// `true` => deferred-mode response (no `clientSecret`; call `finalizePaymentIntent`
+    /// to materialize). `false` => legacy fall-through (the response carries
+    /// `clientSecret`). Optional because pre-Task-14 backend responses don't
+    /// include the field; treat absent as "legacy fall-through".
+    let deferredMode: Bool?
 }
 
 // MARK: - Batch Checkout
@@ -920,11 +947,20 @@ internal struct BatchCheckoutResponse: Decodable {
         let subscriptionInterval: String?
         let trialEnd: Int?
         let pendingAmount: Int?
+        /// Forwarded from `CheckoutResponse.deferredMode`. The batch endpoint
+        /// is always-deferred today (Phase 1 Task 6); a future task will add
+        /// fall-through for the batch path on a per-item basis.
+        let deferredMode: Bool?
 
         /// Convert a successful result to a full CheckoutResponse.
+        ///
+        /// Note: `clientSecret` becomes optional on `CheckoutResponse` as of
+        /// Task 14. We still require `transactionId` and the display fields,
+        /// but a successful deferred-mode batch item legitimately has
+        /// `clientSecret == nil`; the guard below no longer requires it.
         func asCheckoutResponse() -> CheckoutResponse? {
             guard error == nil,
-                  let clientSecret, let transactionId, let amount,
+                  let transactionId, let amount,
                   let currency, let productName, let callbackUrl,
                   let publishableKey, let checkoutUrl else { return nil }
             return CheckoutResponse(
@@ -942,7 +978,8 @@ internal struct BatchCheckoutResponse: Decodable {
                 isSubscription: isSubscription,
                 subscriptionInterval: subscriptionInterval,
                 trialEnd: trialEnd,
-                pendingAmount: pendingAmount
+                pendingAmount: pendingAmount,
+                deferredMode: deferredMode
             )
         }
     }
