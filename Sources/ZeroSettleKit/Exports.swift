@@ -15,7 +15,7 @@ import SwiftUI
 // From ZeroSettle.swift:
 //   - ZeroSettle (main class)
 //   - ZeroSettleError (unified error type)
-//   - CheckoutFailure (checkout failure reasons)
+//   - CheckoutFailureReason (checkout failure reasons; parameter of ZeroSettleError.checkoutFailed)
 //   - APIErrorDetail (structured API error detail)
 //
 // From ZeroSettleDelegate.swift:

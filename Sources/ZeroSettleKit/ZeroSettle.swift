@@ -44,7 +44,7 @@ public struct APIErrorDetail: Error, LocalizedError, Sendable {
 ///
 /// Use this to distinguish between card declines, server errors, and network issues
 /// when handling ``ZeroSettleError/checkoutFailed(reason:)``.
-public enum CheckoutFailure: Sendable {
+public enum CheckoutFailureReason: Sendable {
     /// The requested product was not found on the server.
     case productNotFound
     /// The merchant has not completed Stripe onboarding.
@@ -89,7 +89,7 @@ public enum ZeroSettleError: Error, LocalizedError {
     case productNotFound(String)
 
     /// The checkout flow failed for a specific reason.
-    case checkoutFailed(reason: CheckoutFailure)
+    case checkoutFailed(reason: CheckoutFailureReason)
 
     /// Transaction verification failed after checkout.
     case transactionVerificationFailed(String)
@@ -1604,7 +1604,7 @@ public final class ZeroSettle: ObservableObject {
             ZSLogger.error("Checkout failed for \(productId): \(error)", category: .checkout)
             delegate?.zeroSettleCheckoutDidFail(productId: productId, error: error)
 
-            let reason: CheckoutFailure
+            let reason: CheckoutFailureReason
             if let httpError = error as? HTTPError {
                 switch httpError {
                 case .httpError(let statusCode, let body):
