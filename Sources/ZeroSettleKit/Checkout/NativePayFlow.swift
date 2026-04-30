@@ -36,6 +36,18 @@ public enum NativePay {
         case missingTransactionId
         case alreadyInProgress
         case unknown
+        /// The deferred-mode checkout config has expired (HTTP 410 from
+        /// `/finalize/`). The user should restart checkout to obtain a fresh
+        /// session. Mapped from `ZeroSettleError.checkoutConfigExpired` so the
+        /// NativePay surface stays uniform.
+        case checkoutConfigExpired
+        /// Deferred-mode finalize returned a `seti_*` (SetupIntent) client
+        /// secret. `STPApplePayContext` only supports PaymentIntent confirmation;
+        /// trial flows via Apple Pay require a different STP API
+        /// (`PKPaymentAuthorizationController` + `STPAPIClient.confirmSetupIntent`)
+        /// and are tracked as a follow-up. The WebView path supports trials
+        /// today.
+        case trialViaApplePayNotSupported
 
         public var errorDescription: String? {
             switch self {
@@ -51,8 +63,59 @@ public enum NativePay {
                 return "A payment is already in progress"
             case .unknown:
                 return "An unknown error occurred"
+            case .checkoutConfigExpired:
+                return "The checkout configuration has expired. Restart checkout to obtain a fresh session."
+            case .trialViaApplePayNotSupported:
+                return "Free trials via Apple Pay are not yet supported. Use the web checkout flow for trial offers."
             }
         }
+    }
+}
+
+// MARK: - Client-secret resolver
+
+extension NativePay {
+
+    /// Resolve the Stripe client_secret to deliver to `STPApplePayContext`'s
+    /// `didCreatePaymentMethod` completion block. Encapsulates the
+    /// legacy-vs-deferred branching so the delegate stays small and the
+    /// decision logic is straightforward to reason about (and to test once the
+    /// `NativePay` trait is wired into a test scheme).
+    ///
+    /// - Parameters:
+    ///   - cached: The `clientSecret` carried on the initial `CheckoutResponse`.
+    ///       Non-nil on the legacy fall-through path; nil in deferred mode.
+    ///   - transactionId: The deferred transaction id, used to call
+    ///       `/finalize/` when `cached` is nil.
+    ///   - finalize: Closure invoked in deferred mode to materialize the
+    ///       Stripe Intent server-side. In production this wraps
+    ///       `Backend.finalizePaymentIntent(transactionId:)`. Tests may stub it.
+    /// - Returns: A PaymentIntent client_secret (`pi_*_secret_*`) suitable for
+    ///     `STPApplePayContext`.
+    /// - Throws:
+    ///   - `PaymentError.trialViaApplePayNotSupported` when finalize returns a
+    ///     `seti_*` (SetupIntent) secret — see the case doc for the rationale.
+    ///   - `PaymentError.checkoutConfigExpired` when finalize throws
+    ///     `ZeroSettleError.checkoutConfigExpired` (HTTP 410).
+    ///   - Any other error thrown by `finalize` propagates unchanged.
+    static func resolveClientSecret(
+        cached: String?,
+        transactionId: String,
+        finalize: (String) async throws -> String
+    ) async throws -> String {
+        if let cached, !cached.isEmpty {
+            return cached
+        }
+        let secret: String
+        do {
+            secret = try await finalize(transactionId)
+        } catch ZeroSettleError.checkoutConfigExpired {
+            throw PaymentError.checkoutConfigExpired
+        }
+        if secret.hasPrefix("seti_") {
+            throw PaymentError.trialViaApplePayNotSupported
+        }
+        return secret
     }
 }
 
@@ -209,12 +272,29 @@ extension NativePay.Flow: ApplePayContextDelegate {
         paymentInformation: PKPayment,
         completion: @escaping STPIntentClientSecretCompletionBlock
     ) {
-        MainActor.assumeIsolated {
-            guard let clientSecret = currentResponse?.clientSecret else {
+        Task { @MainActor in
+            guard let response = self.currentResponse else {
                 completion(nil, NativePay.PaymentError.missingClientSecret)
                 return
             }
-            completion(clientSecret, nil)
+            // Deferred mode: finalize on user-tap to materialize the Stripe
+            // Intent server-side. Legacy fall-through hits the cached branch
+            // inside resolveClientSecret and short-circuits without a network
+            // call. The closure captures `backend` so the resolver itself
+            // stays a pure function of its inputs.
+            let txnId = response.transactionId
+            do {
+                let clientSecret = try await NativePay.resolveClientSecret(
+                    cached: response.clientSecret,
+                    transactionId: txnId,
+                    finalize: { [backend] id in
+                        try await backend.finalizePaymentIntent(transactionId: id)
+                    }
+                )
+                completion(clientSecret, nil)
+            } catch {
+                completion(nil, error)
+            }
         }
     }
 
