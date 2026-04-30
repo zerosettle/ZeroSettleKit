@@ -44,7 +44,10 @@ internal final class Backend: @unchecked Sendable {
     // MARK: - Auth Headers
 
     private var authHeaders: [String: String] {
-        ["X-ZeroSettle-Key": publishableKey]
+        [
+            "X-ZeroSettle-Key": publishableKey,
+            "X-ZS-SDK-Version": Configuration.sdkVersion,
+        ]
     }
 
     // MARK: - Products
@@ -1051,3 +1054,11 @@ internal struct StoreKitSubscriptionStatusResponse: Decodable {
         return status == 1
     }
 }
+
+#if DEBUG
+extension Backend {
+    /// Test-only accessor for verifying authHeaders contents.
+    /// Do NOT use from production code.
+    internal var testAuthHeaders: [String: String] { authHeaders }
+}
+#endif
