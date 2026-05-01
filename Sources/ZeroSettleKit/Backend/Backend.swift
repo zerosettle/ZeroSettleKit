@@ -296,9 +296,15 @@ internal final class Backend: @unchecked Sendable {
     }
 
     /// Initiate checkouts for multiple products in a single request.
-    /// Shares expensive work (Stripe customer, connect account) across all products.
+    /// Shares expensive work (Stripe customer, connect account) across all
+    /// products. Hits the mode-aware ``/v1/iap/checkout-configs/batch/``
+    /// endpoint — the backend decides per-request whether to defer (no Stripe
+    /// calls) or fall through to legacy intent-first based on
+    /// ``Tenant.deferred_mode_enabled``. Per-item ``deferredMode`` flag on
+    /// the response is the single discriminator the SDK branches on.
+    /// (See spec docs/superpowers/specs/2026-04-29-deferred-mode-architecture-design.md §3.4.)
     func initiateCheckoutBatch(products: [BatchCheckoutRequest.ProductEntry], userId: String? = nil, stripeCustomerId: String? = nil) async throws -> BatchCheckoutResponse {
-        let url = apiURL("iap/payment-intents/batch/")
+        let url = apiURL("iap/checkout-configs/batch/")
         let (batchName, batchEmail) = await MainActor.run {
             (ZeroSettle.shared.customerName, ZeroSettle.shared.customerEmail)
         }
