@@ -91,6 +91,7 @@
 //  ═══════════════════════════════════════════════════════════════════
 //
 
+import SafariServices
 import SwiftUI
 import WebKit
 
@@ -798,6 +799,21 @@ extension CheckoutSheet {
                 settleDeadline = Date().addingTimeInterval(0.8)
             }
 
+        case .openInSafari(let url):
+            // Dismiss the WKWebView checkout sheet, then present SFSafariViewController
+            // so popup-dependent methods (Klarna, PayPal, Link, Amazon Pay) work.
+            // The transaction state is encoded in the URL fragment so the customer
+            // continues seamlessly in Safari without any state loss.
+            dismiss()
+            // Wait for the sheet dismiss animation to complete before presenting.
+            // dismiss() returns immediately; the ~0.35s animation must finish first
+            // or SFSafariViewController would try to present from the departing sheet.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                let safari = SFSafariViewController(url: url)
+                safari.applyZSPageSheetPresentation()
+                SafariPresentation.topViewController()?.present(safari, animated: true)
+            }
+
         case .complete(let txnId):
             Task {
                 await verifyAndComplete(transactionId: txnId)
@@ -868,6 +884,8 @@ private enum WebViewAction {
     case complete(transactionId: String)
     case cancelled
     case error(String)
+    /// The "More ways to pay" button was tapped — continue payment in Safari.
+    case openInSafari(URL)
 }
 
 // MARK: - Payment WebView
@@ -908,6 +926,7 @@ private struct PaymentWebView: UIViewRepresentable {
         configuration.allowsInlineMediaPlayback = true
         configuration.userContentController.add(context.coordinator, name: "checkoutComplete")
         configuration.userContentController.add(context.coordinator, name: "consoleLog")
+        configuration.userContentController.add(context.coordinator, name: "openInSafari")
 
         let consoleScript = WKUserScript(source: """
             (function() {
@@ -994,6 +1013,15 @@ private struct PaymentWebView: UIViewRepresentable {
         // MARK: - JS Message Handler
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            // Handle openInSafari before the checkoutComplete guard so it doesn't get dropped.
+            if message.name == "openInSafari",
+               let body = message.body as? [String: Any],
+               let urlString = body["url"] as? String,
+               let url = URL(string: urlString) {
+                onAction(.openInSafari(url))
+                return
+            }
+
             guard message.name == "checkoutComplete",
                   let body = message.body as? [String: Any] else { return }
 
