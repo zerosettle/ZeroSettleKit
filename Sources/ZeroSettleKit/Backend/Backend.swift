@@ -273,7 +273,13 @@ internal final class Backend: @unchecked Sendable {
             iosVersion: iosVersion
         )
         do {
-            return try await httpClient.post(url, body: body, headers: authHeaders, responseType: CheckoutResponse.self)
+            let response = try await httpClient.post(url, body: body, headers: authHeaders, responseType: CheckoutResponse.self)
+            ZSLogger.info(
+                "[Backend] initiateCheckout(\(productId)): mode=\(response.deferredMode == true ? "DEFERRED" : "legacy") "
+                + "txn=\(response.transactionId) clientSecret=\(response.clientSecret == nil ? "nil" : "<set>")",
+                category: .checkout,
+            )
+            return response
         } catch let error as HTTPError {
             // Retry once on 409 with retry_after — server says a concurrent request
             // (e.g. batch) is creating this PI right now.  Wait then retry; the
@@ -286,7 +292,13 @@ internal final class Backend: @unchecked Sendable {
                 ZSLogger.info("[Backend] PI in-flight for \(productId), retrying in \(retryDelay)s", category: .checkout)
                 try await Task.sleep(nanoseconds: UInt64(retryDelay * 1_000_000_000))
                 return try await wrapped {
-                    try await httpClient.post(url, body: body, headers: authHeaders, responseType: CheckoutResponse.self)
+                    let response = try await httpClient.post(url, body: body, headers: authHeaders, responseType: CheckoutResponse.self)
+                    ZSLogger.info(
+                        "[Backend] initiateCheckout(\(productId), retry): mode=\(response.deferredMode == true ? "DEFERRED" : "legacy") "
+                        + "txn=\(response.transactionId)",
+                        category: .checkout,
+                    )
+                    return response
                 }
             }
             throw Self.wrapError(error)
