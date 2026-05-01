@@ -321,9 +321,21 @@ internal final class Backend: @unchecked Sendable {
             (ZeroSettle.shared.customerName, ZeroSettle.shared.customerEmail)
         }
         let body = BatchCheckoutRequest(products: products, userId: userId, stripeCustomerId: stripeCustomerId, customerName: batchName, customerEmail: batchEmail)
-        return try await wrapped {
+        let response: BatchCheckoutResponse = try await wrapped {
             try await httpClient.post(url, body: body, headers: authHeaders, responseType: BatchCheckoutResponse.self)
         }
+        // Per-item mode rollup so the dev can confirm at a glance whether
+        // the warmup ran in deferred or legacy. All-deferred = success state
+        // for a 1.3.0 SDK on a flag-on tenant; mixed = backend or tenant
+        // mid-rollout.
+        let deferredCount = response.results.filter { $0.deferredMode == true }.count
+        let legacyCount = response.results.count - deferredCount
+        ZSLogger.info(
+            "[Backend] initiateCheckoutBatch: \(response.results.count) item(s) — "
+            + "deferred=\(deferredCount) legacy=\(legacyCount)",
+            category: .checkout,
+        )
+        return response
     }
 
     // MARK: - Transactions
