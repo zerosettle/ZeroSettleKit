@@ -800,37 +800,29 @@ extension CheckoutSheet {
             }
 
         case .openInSafari(let url):
-            // Dismiss the WKWebView checkout sheet, then present SFSafariViewController
-            // so popup-dependent methods (Klarna, PayPal, Link, Amazon Pay) work.
-            // The transaction state is encoded in the URL fragment so the customer
-            // continues seamlessly in Safari without any state loss.
+            // Present SFSafariViewController layered *over* the WKWebView
+            // checkout sheet — don't dismiss the sheet first. Popup-dependent
+            // methods (Klarna, PayPal, Link, Amazon Pay) only work in real
+            // Safari; the URL fragment carries the transaction state so the
+            // customer continues seamlessly there.
             //
-            // Capture the underlying presenter *before* calling dismiss().
-            // After dismiss, the sheet is mid-transition and
-            // SafariPresentation.topViewController() can transiently return
-            // nil (the scene dips out of .foregroundActive during the
-            // animation, or the sheet's hosting controller is still the
-            // topmost while it slides away). Either way, presenting on a
-            // stale or nil VC silently no-ops — the symptom is "tapping
-            // dismisses the button but Safari never opens." Capturing the
-            // presenter here pins us to the right anchor before the
-            // hierarchy is in flux.
-            let presenter = SafariPresentation.topViewController()?.presentingViewController
-            dismiss()
-            // Wait for the sheet dismiss animation to complete before presenting.
-            // dismiss() returns immediately; the ~0.35s animation must finish first
-            // or SFSafariViewController would try to present from the departing sheet.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                let safari = SFSafariViewController(url: url)
-                safari.applyZSPageSheetPresentation()
-                // Prefer the captured presenter; fall back to a fresh
-                // topViewController walk in case the captured ref was nil
-                // (rare — would mean the sheet wasn't actually presented
-                // when we captured, which shouldn't happen here but the
-                // fallback costs nothing).
-                let target = presenter ?? SafariPresentation.topViewController()
-                target?.present(safari, animated: true)
-            }
+            // Why layered, not dismiss-then-present: dismissing the SwiftUI
+            // sheet flips the developer's `isPresented` binding, which
+            // typically triggers a re-render of the parent screen. Anything
+            // attached to that re-render (state resets, navigation pops,
+            // sheet rebuilds) can cascade through the underlying VC, and a
+            // Safari presented from that underlying VC during the cascade
+            // gets torn down with it — symptom: Safari appears for a frame
+            // then dismisses. Layering keeps the sheet alive as a stable
+            // anchor; Safari sits on top of it. When the transaction
+            // completes (universal-link return → developer's onComplete →
+            // sheet dismisses normally) Safari dismisses with the chain.
+            // If the buyer cancels Safari instead, they're back at the
+            // checkout sheet with all state intact and can pick another
+            // method or close out.
+            let safari = SFSafariViewController(url: url)
+            safari.applyZSPageSheetPresentation()
+            SafariPresentation.topViewController()?.present(safari, animated: true)
 
         case .complete(let txnId):
             Task {
