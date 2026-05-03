@@ -14,7 +14,9 @@ import StoreKit
 import CryptoKit
 
 #if canImport(ZeroSettleCore)
+#if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
+#endif
 #endif
 
 /// Manages the migration offer lifecycle for a single user.

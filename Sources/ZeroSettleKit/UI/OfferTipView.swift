@@ -3,7 +3,9 @@ import StoreKit
 import WebKit
 
 #if canImport(ZeroSettleCore)
+#if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
+#endif
 #endif
 
 #if os(iOS)

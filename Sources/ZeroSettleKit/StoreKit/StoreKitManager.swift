@@ -12,7 +12,9 @@ import UIKit
 #endif
 
 #if canImport(ZeroSettleCore)
+#if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
+#endif
 #endif
 
 /// Typealias to disambiguate StoreKit.Transaction from our Transaction model.

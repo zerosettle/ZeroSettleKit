@@ -10,7 +10,9 @@ import SafariServices
 import UIKit
 
 #if canImport(ZeroSettleCore)
+#if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
+#endif
 #endif
 
 // MARK: - Web Checkout Flow

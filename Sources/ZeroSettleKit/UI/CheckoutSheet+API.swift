@@ -11,7 +11,9 @@ import SwiftUI
 import WebKit
 
 #if canImport(ZeroSettleCore)
+#if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
+#endif
 #endif
 
 // MARK: - Static Preload / WarmUp API

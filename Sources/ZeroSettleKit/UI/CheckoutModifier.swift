@@ -10,7 +10,9 @@ import SwiftUI
 import WebKit
 
 #if canImport(ZeroSettleCore)
+#if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
+#endif
 #endif
 
 // MARK: - Active Window Scene Helper

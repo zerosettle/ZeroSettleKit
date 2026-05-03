@@ -12,7 +12,9 @@ import UIKit
 #endif
 
 #if canImport(ZeroSettleCore)
+#if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
+#endif
 #endif
 
 // MARK: - Backend

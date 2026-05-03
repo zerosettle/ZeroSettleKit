@@ -8,7 +8,9 @@
 import SwiftUI
 
 #if canImport(ZeroSettleCore)
+#if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
+#endif
 #endif
 
 // MARK: - View Modifier

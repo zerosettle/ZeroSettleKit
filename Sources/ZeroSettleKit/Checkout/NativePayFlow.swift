@@ -13,7 +13,9 @@ import UIKit
 import StripeApplePay
 
 #if canImport(ZeroSettleCore)
+#if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
+#endif
 #endif
 
 // MARK: - NativePay Namespace

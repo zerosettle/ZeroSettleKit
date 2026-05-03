@@ -1,7 +1,9 @@
 import Foundation
 import StoreKit
 import CryptoKit
+#if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
+#endif
 
 /// Unified offer manager for both migration and upgrade flows.
 ///

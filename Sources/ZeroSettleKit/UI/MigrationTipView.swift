@@ -4,7 +4,9 @@ import StoreKit
 import WebKit
 
 #if canImport(ZeroSettleCore)
+#if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
+#endif
 #endif
 
 // MARK: - Expandable Web Billing Tip View
