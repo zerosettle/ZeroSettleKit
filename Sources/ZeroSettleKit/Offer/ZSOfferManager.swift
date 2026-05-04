@@ -514,7 +514,53 @@ public final class ZSOfferManager: ObservableObject {
             checkoutError = error
             isLoading = false
             ZSLogger.error("[OfferManager] Checkout failed: \(error)", category: .migration)
+            handleCheckoutFailure(error: error)
             return nil
+        }
+    }
+
+    /// Move the state machine out of `.presented` after a failed checkout
+    /// initiation. Without this transition the OfferTipView's CTA tap loops:
+    /// `present()` short-circuits on `state == .presented`, the URL fetch
+    /// fails again, ctaTapped resets, the user taps, and we re-fail. The
+    /// buyer sees a "spin → reset → spin" UI with no progress.
+    ///
+    /// * `migration_unavailable` (503) → `.ineligible` and refresh products.
+    ///   The backend has authoritative truth on whether this user qualifies
+    ///   for the offer (server-side entitlement check). If the SDK got here
+    ///   with a stale eligible-evaluation, trust the backend and demote.
+    ///   The refresh re-syncs products + remoteConfig from the server so
+    ///   the next eligibility evaluation matches the server's view.
+    /// * Any other error → `.eligible` so the user can retry once whatever
+    ///   transient condition cleared (network blip, server cold start, etc.).
+    private func handleCheckoutFailure(error: Error) {
+        let detail = (error as? ZeroSettleError).flatMap { e -> APIErrorDetail? in
+            if case let .apiError(d) = e { return d }
+            return nil
+        }
+        // Match either the structured `code` field (newer backend) or the
+        // human-readable `error` field (older backend, parsed into
+        // serverMessage). Keeping both keeps the SDK forward-compatible
+        // through the rollout window.
+        let isMigrationUnavailable = detail?.serverCode == "migration_unavailable"
+            || detail?.serverMessage == "migration_unavailable"
+
+        if isMigrationUnavailable {
+            ZSLogger.info(
+                "[OfferManager] migration_unavailable — demoting state .presented→.ineligible and refreshing products",
+                category: .migration
+            )
+            state = .ineligible
+            Task { [weak self] in
+                guard let self else { return }
+                _ = try? await ZeroSettle.shared.fetchProducts(userId: self.userId)
+            }
+        } else if state == .presented {
+            ZSLogger.info(
+                "[OfferManager] checkout failed (transient) — reverting state .presented→.eligible for retry",
+                category: .migration
+            )
+            state = .eligible
         }
     }
 
