@@ -11,9 +11,7 @@ import SwiftUI
 import WebKit
 
 #if canImport(ZeroSettleCore)
-#if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
-#endif
 #endif
 
 // MARK: - Message Router
@@ -168,6 +166,7 @@ internal final class CheckoutPreloader: ObservableObject {
         config.processPool = WebKitWarmup.processPool
         config.allowsInlineMediaPlayback = true
         config.userContentController.add(messageRouter, name: "checkoutComplete")
+        config.userContentController.add(messageRouter, name: "openInSafari")
 
         let heightScript = WKUserScript(
             source: setupMeasureJS + "\n" + heightObserverJS + "\n" + buttonReadyJS,

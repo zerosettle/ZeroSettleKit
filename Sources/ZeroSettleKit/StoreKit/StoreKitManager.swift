@@ -12,9 +12,7 @@ import UIKit
 #endif
 
 #if canImport(ZeroSettleCore)
-#if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
-#endif
 #endif
 
 /// Typealias to disambiguate StoreKit.Transaction from our Transaction model.
@@ -110,6 +108,13 @@ internal final class StoreKitManager {
                     userId: userId
                 )
             }
+        }
+
+        // Spec 3: bulk reconcile of subscription states on launch.
+        // Catches lifecycle transitions (EXPIRED, REVOKED, RENEWED, etc.)
+        // that happened while the app was killed.
+        Task(priority: .utility) { [weak self] in
+            await self?.runSubscriptionStateReconcile()
         }
 
     }
@@ -297,6 +302,25 @@ internal final class StoreKitManager {
                 if response.owned == false {
                     ZSLogger.info("[syncCurrentTransactions] Server returned owned=false for txn id=\(transaction.id) product=\(transaction.productID) ownership=\(transaction.ownershipType) — not tracked", category: .entitlements)
                 }
+                // Cross-user OTID conflict — surface as a PendingClaim so the
+                // consuming app can prompt the user. SDK never auto-claims.
+                if response.conflict == true,
+                   response.claimAvailable == true,
+                   let otid = response.originalTransactionId,
+                   let hint = response.existingOwnerHint {
+                    let claim = PendingClaim(
+                        productId: transaction.productID,
+                        originalTransactionId: otid,
+                        existingOwnerHint: hint
+                    )
+                    await MainActor.run {
+                        ZeroSettle.shared.addPendingClaim(claim)
+                    }
+                    ZSLogger.info(
+                        "[pending_claim] productId=\(transaction.productID) otid=\(otid) hint=\(hint)",
+                        category: .entitlements
+                    )
+                }
                 ZSLogger.info("[syncCurrentTransactions] txn id=\(transaction.id) origID=\(transaction.originalID) product=\(transaction.productID) ownership=\(transaction.ownershipType) → backend owned=\(response.owned ?? true) origTxnId=\(response.originalTransactionId ?? "nil")", category: .entitlements)
             } catch {
                 // Do NOT optimistically mark this transaction as owned on
@@ -413,16 +437,44 @@ internal final class StoreKitManager {
     // MARK: - Private
 
     private func listenForUpdates() async {
-        for await result in SKTransaction.updates {
+        for await result in StoreKit.Transaction.updates {
             guard !Task.isCancelled else { break }
 
             switch result {
             case .verified(let transaction):
                 let jws = result.jwsRepresentation
                 await handleVerifiedTransaction(transaction, jwsRepresentation: jws)
+                // Spec 3: after each Transaction.updates event, reconcile so
+                // lifecycle changes (renewals, expirations, revocations)
+                // propagate to the backend within seconds.
+                await runSubscriptionStateReconcile()
             case .unverified(_, let error):
                 ZSLogger.error("Unverified transaction: \(error.localizedDescription)", category: .entitlements)
             }
+        }
+    }
+
+    /// Spec 3: gather all known StoreKit subscription states and POST to the
+    /// bulk reconcile endpoint. No-op if userId isn't set yet.
+    private func runSubscriptionStateReconcile() async {
+        guard let userId = userId else { return }
+        let entries = await SubscriptionStateReconciler.gather()
+        if entries.isEmpty {
+            return
+        }
+        do {
+            let response = try await backend.reconcileSubscriptionStates(
+                entries: entries, userId: userId
+            )
+            ZSLogger.info(
+                "[storekit_recon] processed=\(response.processed) emitted=\(response.eventsEmitted)",
+                category: .entitlements
+            )
+        } catch {
+            ZSLogger.error(
+                "[storekit_recon] reconcile call failed: \(error)",
+                category: .entitlements
+            )
         }
     }
 
@@ -498,6 +550,25 @@ internal final class StoreKitManager {
             )
             if response.owned == false {
                 ZSLogger.error("Server returned owned=false for a new purchase — unexpected. product=\(transaction.productID)", category: .entitlements)
+            }
+            // Cross-user OTID conflict — surface as a PendingClaim so the
+            // consuming app can prompt the user. SDK never auto-claims.
+            if response.conflict == true,
+               response.claimAvailable == true,
+               let otid = response.originalTransactionId,
+               let hint = response.existingOwnerHint {
+                let claim = PendingClaim(
+                    productId: transaction.productID,
+                    originalTransactionId: otid,
+                    existingOwnerHint: hint
+                )
+                await MainActor.run {
+                    ZeroSettle.shared.addPendingClaim(claim)
+                }
+                ZSLogger.info(
+                    "[pending_claim] productId=\(transaction.productID) otid=\(otid) hint=\(hint)",
+                    category: .entitlements
+                )
             }
 
             // Sync succeeded — dequeue any previous retry entry, then finish

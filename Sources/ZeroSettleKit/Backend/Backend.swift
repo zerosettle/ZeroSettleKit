@@ -12,9 +12,7 @@ import UIKit
 #endif
 
 #if canImport(ZeroSettleCore)
-#if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
-#endif
 #endif
 
 // MARK: - Backend
@@ -46,7 +44,10 @@ internal final class Backend: @unchecked Sendable {
     // MARK: - Auth Headers
 
     private var authHeaders: [String: String] {
-        ["X-ZeroSettle-Key": publishableKey]
+        [
+            "X-ZeroSettle-Key": publishableKey,
+            "X-ZS-SDK-Version": Configuration.sdkVersion,
+        ]
     }
 
     // MARK: - Products
@@ -210,9 +211,17 @@ internal final class Backend: @unchecked Sendable {
     // MARK: - Checkout
 
     /// Initiate a checkout for the given product.
-    /// The backend creates the Transaction, PaymentIntent/SetupIntent, and returns a `checkoutUrl`.
+    ///
+    /// Hits `POST /v1/iap/checkout-configs/` (the deferred-mode entry-point).
+    /// The backend decides per-request whether to return a deferred response
+    /// (no `clientSecret`; caller subsequently invokes `finalizePaymentIntent`)
+    /// or fall through to the legacy intent-first flow (response carries
+    /// `clientSecret`). The `deferredMode` discriminator on `CheckoutResponse`
+    /// tells the caller which mode they got.
+    ///
+    /// Spec: docs/superpowers/specs/2026-04-29-deferred-mode-architecture-design.md §3.1 §3.2
     func initiateCheckout(productId: String, userId: String? = nil, stripeCustomerId: String? = nil, storekitSubscriptionEnd: Date? = nil, storekitOriginalTransactionId: String? = nil, checkoutMode: CheckoutMode? = nil, externalPurchaseToken: String? = nil) async throws -> CheckoutResponse {
-        let url = apiURL("iap/payment-intents/")
+        let url = apiURL("iap/checkout-configs/")
         let iso8601End: String? = storekitSubscriptionEnd.map {
             $0.formatted(.iso8601)
         }
@@ -264,7 +273,13 @@ internal final class Backend: @unchecked Sendable {
             iosVersion: iosVersion
         )
         do {
-            return try await httpClient.post(url, body: body, headers: authHeaders, responseType: CheckoutResponse.self)
+            let response = try await httpClient.post(url, body: body, headers: authHeaders, responseType: CheckoutResponse.self)
+            ZSLogger.info(
+                "[Backend] initiateCheckout(\(productId)): mode=\(response.deferredMode == true ? "DEFERRED" : "legacy") "
+                + "txn=\(response.transactionId) clientSecret=\(response.clientSecret == nil ? "nil" : "<set>")",
+                category: .checkout,
+            )
+            return response
         } catch let error as HTTPError {
             // Retry once on 409 with retry_after — server says a concurrent request
             // (e.g. batch) is creating this PI right now.  Wait then retry; the
@@ -277,7 +292,13 @@ internal final class Backend: @unchecked Sendable {
                 ZSLogger.info("[Backend] PI in-flight for \(productId), retrying in \(retryDelay)s", category: .checkout)
                 try await Task.sleep(nanoseconds: UInt64(retryDelay * 1_000_000_000))
                 return try await wrapped {
-                    try await httpClient.post(url, body: body, headers: authHeaders, responseType: CheckoutResponse.self)
+                    let response = try await httpClient.post(url, body: body, headers: authHeaders, responseType: CheckoutResponse.self)
+                    ZSLogger.info(
+                        "[Backend] initiateCheckout(\(productId), retry): mode=\(response.deferredMode == true ? "DEFERRED" : "legacy") "
+                        + "txn=\(response.transactionId)",
+                        category: .checkout,
+                    )
+                    return response
                 }
             }
             throw Self.wrapError(error)
@@ -287,16 +308,34 @@ internal final class Backend: @unchecked Sendable {
     }
 
     /// Initiate checkouts for multiple products in a single request.
-    /// Shares expensive work (Stripe customer, connect account) across all products.
+    /// Shares expensive work (Stripe customer, connect account) across all
+    /// products. Hits the mode-aware ``/v1/iap/checkout-configs/batch/``
+    /// endpoint — the backend decides per-request whether to defer (no Stripe
+    /// calls) or fall through to legacy intent-first based on
+    /// ``Tenant.deferred_mode_enabled``. Per-item ``deferredMode`` flag on
+    /// the response is the single discriminator the SDK branches on.
+    /// (See spec docs/superpowers/specs/2026-04-29-deferred-mode-architecture-design.md §3.4.)
     func initiateCheckoutBatch(products: [BatchCheckoutRequest.ProductEntry], userId: String? = nil, stripeCustomerId: String? = nil) async throws -> BatchCheckoutResponse {
-        let url = apiURL("iap/payment-intents/batch/")
+        let url = apiURL("iap/checkout-configs/batch/")
         let (batchName, batchEmail) = await MainActor.run {
             (ZeroSettle.shared.customerName, ZeroSettle.shared.customerEmail)
         }
         let body = BatchCheckoutRequest(products: products, userId: userId, stripeCustomerId: stripeCustomerId, customerName: batchName, customerEmail: batchEmail)
-        return try await wrapped {
+        let response: BatchCheckoutResponse = try await wrapped {
             try await httpClient.post(url, body: body, headers: authHeaders, responseType: BatchCheckoutResponse.self)
         }
+        // Per-item mode rollup so the dev can confirm at a glance whether
+        // the warmup ran in deferred or legacy. All-deferred = success state
+        // for a 1.3.0 SDK on a flag-on tenant; mixed = backend or tenant
+        // mid-rollout.
+        let deferredCount = response.results.filter { $0.deferredMode == true }.count
+        let legacyCount = response.results.count - deferredCount
+        ZSLogger.info(
+            "[Backend] initiateCheckoutBatch: \(response.results.count) item(s) — "
+            + "deferred=\(deferredCount) legacy=\(legacyCount)",
+            category: .checkout,
+        )
+        return response
     }
 
     // MARK: - Transactions
@@ -314,6 +353,59 @@ internal final class Backend: @unchecked Sendable {
         let url = apiURL("iap/transactions/\(transactionId)/storekit-status/")
         let body = UpdateStorekitStatusRequest(storekitStatus: storekitStatus, storekitSubscriptionEnd: storekitSubscriptionEnd)
         try await wrapped { try await httpClient.patchVoid(url, body: body, headers: authHeaders) }
+    }
+
+    // MARK: - Deferred-mode (X-ZS-SDK-Version >= 1.3.0)
+
+    /// Fetch the display data for a deferred-mode checkout config.
+    ///
+    /// The response carries everything the WebView (or NativePayFlow) needs to
+    /// initialize `stripe.elements({mode, amount, currency, paymentMethodConfiguration})`
+    /// — but NO `client_secret`. The client_secret is materialized later by
+    /// ``finalizePaymentIntent(transactionId:)`` when the user actually
+    /// submits, which is the anti-spoof primitive.
+    ///
+    /// Spec: docs/superpowers/specs/2026-04-29-deferred-mode-architecture-design.md §4.1
+    func getCheckoutConfig(transactionId: String) async throws -> CheckoutConfigResponse {
+        let url = apiURL("iap/checkout-config/\(transactionId)/")
+        return try await wrapped {
+            try await httpClient.get(url, headers: authHeaders, responseType: CheckoutConfigResponse.self)
+        }
+    }
+
+    /// Materialize the Stripe Intent for a deferred-mode checkout config.
+    ///
+    /// The body is intentionally empty — all parameters come from the
+    /// server-resolved Transaction row keyed by `transactionId`. This is the
+    /// anti-spoof primitive: the client cannot influence what amount Stripe
+    /// sees.
+    ///
+    /// Idempotent: a second call returns the same `client_secret` without
+    /// creating a duplicate Stripe intent.
+    ///
+    /// Throws ``ZeroSettleError/checkoutConfigExpired`` if the server returns
+    /// HTTP 410 (the underlying `checkout_config_expires_at` has passed); the
+    /// caller should restart checkout via ``initiateCheckout(productId:userId:stripeCustomerId:storekitSubscriptionEnd:storekitOriginalTransactionId:checkoutMode:externalPurchaseToken:)``
+    /// rather than retrying.
+    ///
+    /// Spec: docs/superpowers/specs/2026-04-29-deferred-mode-architecture-design.md §4.1
+    func finalizePaymentIntent(transactionId: String) async throws -> String {
+        let url = apiURL("iap/payment-intents/\(transactionId)/finalize/")
+        do {
+            let response: FinalizePaymentIntentResponse = try await httpClient.post(
+                url,
+                headers: authHeaders,
+                responseType: FinalizePaymentIntentResponse.self
+            )
+            return response.clientSecret
+        } catch let error as HTTPError {
+            if case .httpError(statusCode: 410, _) = error {
+                throw ZeroSettleError.checkoutConfigExpired
+            }
+            throw Self.wrapError(error)
+        } catch {
+            throw Self.wrapError(error)
+        }
     }
 
     // MARK: - Transaction Verification
@@ -436,6 +528,39 @@ internal final class Backend: @unchecked Sendable {
         )
         return try await wrapped {
             try await httpClient.post(url, body: body, headers: authHeaders, responseType: SyncStoreKitTransactionResponse.self)
+        }
+    }
+
+    /// Bulk reconcile of StoreKit subscription states (Spec 3 append-log mode).
+    ///
+    /// POSTs to the same endpoint as syncStoreKitTransaction. Backend
+    /// dispatches based on the `transactions` array key — when present,
+    /// it routes to the bulk reconcile handler. Legacy single-tx callers
+    /// (syncStoreKitTransaction above) are unaffected.
+    ///
+    /// - Parameters:
+    ///   - entries: Built by `SubscriptionStateReconciler.gather()`.
+    ///   - userId: The developer's user identifier.
+    ///   - clientRequestId: SDK-generated UUID per call; logged for support.
+    ///   - clientSdkVersion: For future migration / deprecation tracking.
+    func reconcileSubscriptionStates(
+        entries: [SubscriptionStateEntry],
+        userId: String,
+        clientRequestId: String = UUID().uuidString,
+        clientSdkVersion: String = "unknown"
+    ) async throws -> ReconcileSubscriptionStatesResponse {
+        let url = apiURL("iap/storekit-transactions/")
+        let body = ReconcileSubscriptionStatesRequest(
+            transactions: entries,
+            userId: userId,
+            clientRequestId: clientRequestId,
+            clientSdkVersion: clientSdkVersion
+        )
+        return try await wrapped {
+            try await httpClient.post(
+                url, body: body, headers: authHeaders,
+                responseType: ReconcileSubscriptionStatesResponse.self
+            )
         }
     }
 
@@ -688,12 +813,16 @@ private struct ProductsResponse: Decodable {
 }
 
 private struct ConfigResponse: Decodable {
-    let checkout: CheckoutConfigResponse
+    let checkout: CheckoutFlowConfigResponse
     let migration: MigrationPromptResponse?
     let offer: Offer.OfferData?
 }
 
-private struct CheckoutConfigResponse: Decodable {
+/// Renamed from `CheckoutConfigResponse` to free up that name for the
+/// module-scope deferred-mode model in `Models/CheckoutConfigResponse.swift`.
+/// This struct is the legacy "remote config block" inside `/iap/products/`'s
+/// response — distinct from the new `GET /iap/checkout-config/<id>/` payload.
+private struct CheckoutFlowConfigResponse: Decodable {
     let sheetType: String
     let isEnabled: Bool
     let jurisdictions: [String: JurisdictionConfigResponse]?
@@ -769,8 +898,22 @@ internal struct UpdateStorekitStatusRequest: Encodable {
 
 /// Response from the checkout initiation endpoint.
 /// Contains the checkout URL and metadata for rendering the payment UI.
+///
+/// `clientSecret` and `deferredMode` are the dual-mode discriminators:
+///
+/// - `deferredMode == true` => `clientSecret` is `nil`. The caller must
+///   invoke `Backend.finalizePaymentIntent(transactionId:)` later (typically
+///   when the user taps Pay) to materialize the Stripe intent.
+/// - `deferredMode == false` (or absent, for legacy backend responses) =>
+///   `clientSecret` is non-nil. This is the legacy intent-first contract:
+///   the SDK confirms the PaymentIntent / SetupIntent immediately.
+///
+/// Spec: docs/superpowers/specs/2026-04-29-deferred-mode-architecture-design.md §3.1
 internal struct CheckoutResponse: Decodable {
-    let clientSecret: String
+    /// Non-nil on the legacy fall-through path (`deferredMode == false`).
+    /// `nil` on the deferred-mode path (`deferredMode == true`); caller must
+    /// call `Backend.finalizePaymentIntent(transactionId:)` to materialize.
+    let clientSecret: String?
     let transactionId: String
     let amount: Int
     let currency: String
@@ -791,6 +934,11 @@ internal struct CheckoutResponse: Decodable {
     let trialEnd: Int?
     /// The amount (in cents) the customer will be charged when the trial ends.
     let pendingAmount: Int?
+    /// `true` => deferred-mode response (no `clientSecret`; call `finalizePaymentIntent`
+    /// to materialize). `false` => legacy fall-through (the response carries
+    /// `clientSecret`). Optional because pre-Task-14 backend responses don't
+    /// include the field; treat absent as "legacy fall-through".
+    let deferredMode: Bool?
 }
 
 // MARK: - Batch Checkout
@@ -829,11 +977,20 @@ internal struct BatchCheckoutResponse: Decodable {
         let subscriptionInterval: String?
         let trialEnd: Int?
         let pendingAmount: Int?
+        /// Forwarded from `CheckoutResponse.deferredMode`. The batch endpoint
+        /// is always-deferred today (Phase 1 Task 6); a future task will add
+        /// fall-through for the batch path on a per-item basis.
+        let deferredMode: Bool?
 
         /// Convert a successful result to a full CheckoutResponse.
+        ///
+        /// Note: `clientSecret` becomes optional on `CheckoutResponse` as of
+        /// Task 14. We still require `transactionId` and the display fields,
+        /// but a successful deferred-mode batch item legitimately has
+        /// `clientSecret == nil`; the guard below no longer requires it.
         func asCheckoutResponse() -> CheckoutResponse? {
             guard error == nil,
-                  let clientSecret, let transactionId, let amount,
+                  let transactionId, let amount,
                   let currency, let productName, let callbackUrl,
                   let publishableKey, let checkoutUrl else { return nil }
             return CheckoutResponse(
@@ -851,11 +1008,21 @@ internal struct BatchCheckoutResponse: Decodable {
                 isSubscription: isSubscription,
                 subscriptionInterval: subscriptionInterval,
                 trialEnd: trialEnd,
-                pendingAmount: pendingAmount
+                pendingAmount: pendingAmount,
+                deferredMode: deferredMode
             )
         }
     }
     let results: [Result]
+}
+
+/// Response shape for `POST /v1/iap/payment-intents/<id>/finalize/`. The
+/// endpoint returns just the freshly-materialized Stripe `client_secret`;
+/// callers don't need the response struct itself, only the secret string.
+/// No explicit `CodingKeys` — the shared decoder's `.convertFromSnakeCase`
+/// handles `client_secret` → `clientSecret`.
+private struct FinalizePaymentIntentResponse: Decodable {
+    let clientSecret: String
 }
 
 private struct SyncStoreKitTransactionRequest: Encodable {
@@ -878,11 +1045,55 @@ internal struct SyncStoreKitTransactionResponse: Decodable {
     let status: String
     let owned: Bool?
     let originalTransactionId: String?
+    // Cross-user OTID conflict signals (backend Task 5 of Spec 1).
+    // Optional for backward compat: older backends omit these.
+    let conflict: Bool?
+    let claimAvailable: Bool?
+    let existingOwnerHint: String?
 
     enum CodingKeys: String, CodingKey {
         case status
         case owned
         case originalTransactionId = "original_transaction_id"
+        case conflict
+        case claimAvailable = "claim_available"
+        case existingOwnerHint = "existing_owner_hint"
+    }
+}
+
+internal struct ReconcileSubscriptionStatesRequest: Encodable {
+    let transactions: [SubscriptionStateEntry]
+    let userId: String
+    let clientRequestId: String
+    let clientSdkVersion: String
+
+    enum CodingKeys: String, CodingKey {
+        case transactions
+        case userId = "user_id"
+        case clientRequestId = "client_request_id"
+        case clientSdkVersion = "client_sdk_version"
+    }
+}
+
+internal struct ReconcileSubscriptionStatesResponse: Decodable {
+    let status: String
+    let processed: Int
+    let eventsEmitted: Int
+    let skipped: [SkipEntry]?
+
+    struct SkipEntry: Decodable {
+        let reason: String
+        let transactionId: String?
+
+        enum CodingKeys: String, CodingKey {
+            case reason
+            case transactionId = "transaction_id"
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case status, processed, skipped
+        case eventsEmitted = "events_emitted"
     }
 }
 
@@ -976,3 +1187,11 @@ internal struct StoreKitSubscriptionStatusResponse: Decodable {
         return status == 1
     }
 }
+
+#if DEBUG
+extension Backend {
+    /// Test-only accessor for verifying authHeaders contents.
+    /// Do NOT use from production code.
+    internal var testAuthHeaders: [String: String] { authHeaders }
+}
+#endif

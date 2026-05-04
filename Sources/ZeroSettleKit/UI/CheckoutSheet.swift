@@ -91,13 +91,12 @@
 //  ═══════════════════════════════════════════════════════════════════
 //
 
+import SafariServices
 import SwiftUI
 import WebKit
 
 #if canImport(ZeroSettleCore)
-#if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
-#endif
 #endif
 
 // MARK: - Shared JS & Helpers
@@ -800,6 +799,31 @@ extension CheckoutSheet {
                 settleDeadline = Date().addingTimeInterval(0.8)
             }
 
+        case .openInSafari(let url):
+            // Present SFSafariViewController layered *over* the WKWebView
+            // checkout sheet — don't dismiss the sheet first. Popup-dependent
+            // methods (Klarna, PayPal, Link, Amazon Pay) only work in real
+            // Safari; the URL fragment carries the transaction state so the
+            // customer continues seamlessly there.
+            //
+            // Why layered, not dismiss-then-present: dismissing the SwiftUI
+            // sheet flips the developer's `isPresented` binding, which
+            // typically triggers a re-render of the parent screen. Anything
+            // attached to that re-render (state resets, navigation pops,
+            // sheet rebuilds) can cascade through the underlying VC, and a
+            // Safari presented from that underlying VC during the cascade
+            // gets torn down with it — symptom: Safari appears for a frame
+            // then dismisses. Layering keeps the sheet alive as a stable
+            // anchor; Safari sits on top of it. When the transaction
+            // completes (universal-link return → developer's onComplete →
+            // sheet dismisses normally) Safari dismisses with the chain.
+            // If the buyer cancels Safari instead, they're back at the
+            // checkout sheet with all state intact and can pick another
+            // method or close out.
+            let safari = SFSafariViewController(url: url)
+            safari.applyZSPageSheetPresentation()
+            SafariPresentation.topViewController()?.present(safari, animated: true)
+
         case .complete(let txnId):
             Task {
                 await verifyAndComplete(transactionId: txnId)
@@ -870,6 +894,8 @@ private enum WebViewAction {
     case complete(transactionId: String)
     case cancelled
     case error(String)
+    /// The "More ways to pay" button was tapped — continue payment in Safari.
+    case openInSafari(URL)
 }
 
 // MARK: - Payment WebView
@@ -910,6 +936,7 @@ private struct PaymentWebView: UIViewRepresentable {
         configuration.allowsInlineMediaPlayback = true
         configuration.userContentController.add(context.coordinator, name: "checkoutComplete")
         configuration.userContentController.add(context.coordinator, name: "consoleLog")
+        configuration.userContentController.add(context.coordinator, name: "openInSafari")
 
         let consoleScript = WKUserScript(source: """
             (function() {
@@ -996,6 +1023,15 @@ private struct PaymentWebView: UIViewRepresentable {
         // MARK: - JS Message Handler
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            // Handle openInSafari before the checkoutComplete guard so it doesn't get dropped.
+            if message.name == "openInSafari",
+               let body = message.body as? [String: Any],
+               let urlString = body["url"] as? String,
+               let url = URL(string: urlString) {
+                onAction(.openInSafari(url))
+                return
+            }
+
             guard message.name == "checkoutComplete",
                   let body = message.body as? [String: Any] else { return }
 

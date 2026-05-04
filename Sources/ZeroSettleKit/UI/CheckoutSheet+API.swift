@@ -11,9 +11,7 @@ import SwiftUI
 import WebKit
 
 #if canImport(ZeroSettleCore)
-#if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
-#endif
 #endif
 
 // MARK: - Static Preload / WarmUp API
@@ -149,6 +147,26 @@ extension CheckoutSheet where Header == EmptyView {
         }
 
         let pk = config.publishableKey
+
+        // Throttle: coalesce back-to-back warmups (same productIds, same userId)
+        // within 5s. Common cause of duplicate warmups is host apps calling
+        // bootstrap() twice during initial load — e.g., a SwiftUI .task(id:)
+        // modifier whose ID flips on transient state change. We can't fix the
+        // host app, but the SDK can refuse to spam the backend.
+        //
+        // Cache is the source of truth for "is this freshly warmed?" — but
+        // CheckoutResponseCache TTL is 30 min and we don't want to lock out
+        // intentional re-warmups across a full session. 5s is the
+        // back-to-back-call window only.
+        let throttleKey = WarmupThrottle.key(productIds: productIds, userId: userId)
+        if await WarmupThrottle.shared.shouldSkip(key: throttleKey) {
+            ZSLogger.info(
+                "[Backend] warmUp throttled — last call within 5s for the same productIds+userId",
+                category: .checkout,
+            )
+            return
+        }
+        await WarmupThrottle.shared.markFired(key: throttleKey)
 
         // Build batch entries on MainActor to access shared state
         let entries: [BatchCheckoutRequest.ProductEntry] = await MainActor.run {
@@ -556,5 +574,38 @@ extension View {
             header: header,
             onComplete: onComplete
         )
+    }
+}
+
+
+// MARK: - Warmup throttle
+
+/// Coalesces back-to-back ``warmUp(productIds:userId:)`` calls within a
+/// short window. The dedup key is ``(sortedProductIds, userId)`` so
+/// calls for different products don't mask each other; the window is
+/// short (5s) so deliberate refreshes still go through. Cache-based
+/// dedup (CheckoutResponseCache, 30 min TTL) covers the broader case.
+///
+/// Common trigger for redundant warmups: SwiftUI ``.task(id: ...)`` host
+/// modifiers whose ID flips on transient state during initial load,
+/// re-firing the bootstrap closure that ultimately calls warmUp.
+private actor WarmupThrottle {
+    static let shared = WarmupThrottle()
+
+    private var lastFiredAt: [String: Date] = [:]
+    private let window: TimeInterval = 5.0
+
+    static func key(productIds: [String], userId: String?) -> String {
+        let sorted = productIds.sorted().joined(separator: ",")
+        return "\(userId ?? "")|\(sorted)"
+    }
+
+    func shouldSkip(key: String) -> Bool {
+        guard let last = lastFiredAt[key] else { return false }
+        return Date().timeIntervalSince(last) < window
+    }
+
+    func markFired(key: String) {
+        lastFiredAt[key] = Date()
     }
 }

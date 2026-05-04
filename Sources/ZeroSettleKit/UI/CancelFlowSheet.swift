@@ -10,9 +10,7 @@ import SwiftUI
 import UIKit
 
 #if canImport(ZeroSettleCore)
-#if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
-#endif
 #endif
 
 // MARK: - Cancel Flow Presenter

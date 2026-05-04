@@ -22,9 +22,7 @@ import UIKit
 #endif
 
 #if canImport(ZeroSettleCore)
-#if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
-#endif
 #endif
 
 /// Observes `StoreKit.Transaction.updates` and `Product.SubscriptionInfo.Status`

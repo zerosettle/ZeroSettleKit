@@ -11,9 +11,7 @@ import StoreKit
 import SwiftUI
 
 #if canImport(ZeroSettleCore)
-#if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
-#endif
 #endif
 
 // MARK: - Supporting Error Types
@@ -46,7 +44,7 @@ public struct APIErrorDetail: Error, LocalizedError, Sendable {
 ///
 /// Use this to distinguish between card declines, server errors, and network issues
 /// when handling ``ZeroSettleError/checkoutFailed(reason:)``.
-public enum CheckoutFailure: Sendable {
+public enum CheckoutFailureReason: Sendable {
     /// The requested product was not found on the server.
     case productNotFound
     /// The merchant has not completed Stripe onboarding.
@@ -91,13 +89,22 @@ public enum ZeroSettleError: Error, LocalizedError {
     case productNotFound(String)
 
     /// The checkout flow failed for a specific reason.
-    case checkoutFailed(reason: CheckoutFailure)
+    case checkoutFailed(reason: CheckoutFailureReason)
 
     /// Transaction verification failed after checkout.
     case transactionVerificationFailed(String)
 
     /// An API or network error occurred.
     case apiError(APIErrorDetail)
+
+    /// The deferred-mode checkout config has expired (the server-side
+    /// PENDING transaction's `checkout_config_expires_at` has passed). The SDK
+    /// should re-initiate checkout via ``Backend/initiateCheckout(productId:userId:stripeCustomerId:storekitSubscriptionEnd:storekitOriginalTransactionId:checkoutMode:externalPurchaseToken:)``
+    /// to get a fresh config rather than retrying
+    /// ``Backend/finalizePaymentIntent(transactionId:)``.
+    ///
+    /// Maps to HTTP 410 from `POST /v1/iap/payment-intents/<id>/finalize/`.
+    case checkoutConfigExpired
 
     /// The checkout callback URL could not be parsed.
     case invalidCallbackURL
@@ -123,8 +130,8 @@ public enum ZeroSettleError: Error, LocalizedError {
     /// The userId provided was empty or whitespace-only.
     case invalidUserId
 
-    /// A user-scoped method was called before ``ZeroSettle/identify(userId:name:email:)``.
-    /// Call `identify(userId:)` at app launch (after configure) before
+    /// A user-scoped method was called before ``ZeroSettle/identify(_:)``.
+    /// Call `identify(.user(id:))` at app launch (after configure) before
     /// invoking user-scoped APIs like ``ZeroSettle/restoreEntitlements()``.
     case userNotIdentified
 
@@ -174,6 +181,8 @@ public enum ZeroSettleError: Error, LocalizedError {
             return "Transaction verification failed: \(message)"
         case .apiError(let detail):
             return detail.errorDescription
+        case .checkoutConfigExpired:
+            return "The checkout configuration has expired. Restart checkout to obtain a fresh session."
         case .invalidCallbackURL:
             return "Invalid checkout callback URL."
         case .webCheckoutDisabledForJurisdiction(let jurisdiction):
@@ -191,7 +200,7 @@ public enum ZeroSettleError: Error, LocalizedError {
         case .invalidUserId:
             return "Invalid userId: must be a non-empty string."
         case .userNotIdentified:
-            return "ZeroSettle has not identified a user. Call ZeroSettle.shared.identify(userId:) before invoking user-scoped APIs."
+            return "ZeroSettle has not identified a user. Call ZeroSettle.shared.identify(.user(id:)) (or .anonymous) before invoking user-scoped APIs."
         case .checkoutNotStarted:
             return "Checkout never started. The PaymentIntent was not created — the customer was NOT charged. Likely a backend or configuration issue at PI-creation time; check Render logs for the `/v1/iap/payment-intents/` request that initiated this checkout."
         }
@@ -292,7 +301,7 @@ public final class ZeroSettle: ObservableObject {
         /// config (managed mode default).
         public let appleMerchantId: String?
 
-        /// Whether to automatically preload checkout sessions for all products after ``ZeroSettle/bootstrap(userId:)``
+        /// Whether to automatically preload checkout sessions for all products after ``ZeroSettle/identify(_:)``
         /// completes.
         ///
         /// This will preload PaymentIntent and SetupIntent primitives via Stripe, but will not initiate any type of
@@ -377,7 +386,7 @@ public final class ZeroSettle: ObservableObject {
         forcedJurisdiction ?? detectedJurisdiction ?? .row
     }
 
-    /// Whether ``bootstrap(userId:)`` has completed.
+    /// Whether ``identify(_:)`` has completed.
     public private(set) var isBootstrapped: Bool = false
 
     /// Original transaction IDs confirmed as owned by the current user during bootstrap.
@@ -402,7 +411,7 @@ public final class ZeroSettle: ObservableObject {
     }
 
     /// Cached cancel flow configuration from the backend.
-    /// Populated during ``bootstrap(userId:)`` so it's immediately available
+    /// Populated during ``identify(_:)`` so it's immediately available
     /// for building custom cancel flow UI without an extra network call.
     public private(set) var cancelFlowConfig: CancelFlow.Config?
 
@@ -417,15 +426,25 @@ public final class ZeroSettle: ObservableObject {
     /// Starts in `.loading` and transitions after bootstrap completes.
     public private(set) var offerManager: ZSOfferManager?
 
+    /// StoreKit purchases that another ZeroSettle account currently holds.
+    ///
+    /// Populated when sync detects cross-user OTID conflicts (backend returns
+    /// `conflict: true, claim_available: true`). Consuming app observes via
+    /// `@ObservedObject` / `@StateObject` and can render
+    /// "transfer this purchase?" UX. Claim is opt-in via the existing
+    /// `transferStoreKitOwnershipToCurrentUser(productId:)` API — SDK never
+    /// auto-claims.
+    public private(set) var pendingClaims: [PendingClaim] = []
+
     // MARK: - Customer Info
 
     /// Customer name included in all subsequent checkout requests.
-    /// Set via ``bootstrap(userId:name:email:)`` or ``setCustomer(name:email:)``.
+    /// Set via ``identify(_:)`` or ``setCustomer(name:email:)``.
     /// Cleared by ``logout()``.
     public private(set) var customerName: String?
 
     /// Customer email included in all subsequent checkout requests.
-    /// Set via ``bootstrap(userId:name:email:)`` or ``setCustomer(name:email:)``.
+    /// Set via ``identify(_:)`` or ``setCustomer(name:email:)``.
     /// Cleared by ``logout()``.
     public private(set) var customerEmail: String?
 
@@ -575,11 +594,11 @@ public final class ZeroSettle: ObservableObject {
     /// Only applicable to subscriptions and non-consumables. Consumables
     /// cannot be transferred (they're single-use).
     ///
-    /// Requires ``identify(userId:name:email:)`` to have been called.
+    /// Requires ``identify(_:)`` to have been called.
     ///
     /// ```swift
     /// // After auth state changes:
-    /// try await ZeroSettle.shared.identify(userId: newUser.id)
+    /// try await ZeroSettle.shared.identify(.user(id: newUser.id))
     /// try await ZeroSettle.shared.transferStoreKitOwnershipToCurrentUser(
     ///     productId: "com.myapp.premium.monthly"
     /// )
@@ -609,8 +628,8 @@ public final class ZeroSettle: ObservableObject {
         try await _claimEntitlementImpl(productId: productId, userId: userId)
     }
 
-    /// Deprecated. Use ``transferStoreKitOwnershipToCurrentUser(productId:)`` after ``identify(userId:name:email:)``.
-    @available(*, deprecated, renamed: "transferStoreKitOwnershipToCurrentUser(productId:)", message: "Call identify(userId:) once, then transferStoreKitOwnershipToCurrentUser(productId:). Will be removed in ZeroSettleKit 2.0.")
+    /// Deprecated. Use ``transferStoreKitOwnershipToCurrentUser(productId:)`` after ``identify(_:)``.
+    @available(*, deprecated, renamed: "transferStoreKitOwnershipToCurrentUser(productId:)", message: "Call identify(.user(id:)) once, then transferStoreKitOwnershipToCurrentUser(productId:). Will be removed in ZeroSettleKit 2.0.")
     public func claimEntitlement(productId: String, userId: String) async throws {
         setActiveUserId(userId)
         try await _claimEntitlementImpl(productId: productId, userId: userId)
@@ -649,6 +668,12 @@ public final class ZeroSettle: ObservableObject {
 
         // Refresh entitlements to pick up the new claim
         _ = try await _restoreEntitlementsImpl(userId: userId)
+
+        // Clear the pending claim so any view bound to pendingClaims stops
+        // showing the "transfer this purchase?" prompt after the user accepts.
+        if response.claimed == true {
+            removePendingClaim(productId: productId)
+        }
     }
 
     /// Resolve the Apple Pay merchant ID: local override > backend default > nil.
@@ -667,7 +692,7 @@ public final class ZeroSettle: ObservableObject {
     /// Update customer name and/or email for subsequent checkout requests.
     ///
     /// Use this for mid-session updates (e.g., user edits their profile).
-    /// For initial setup, prefer passing `name`/`email` to ``bootstrap(userId:name:email:)``.
+    /// For initial setup, prefer passing `name`/`email` to ``identify(_:)``.
     /// Both values are cleared by ``logout()``.
     ///
     /// - Parameters:
@@ -680,10 +705,10 @@ public final class ZeroSettle: ObservableObject {
 
     // MARK: - Logout
 
-    /// Clears all user-scoped state, resetting the SDK to pre-bootstrap condition.
+    /// Clears all user-scoped state, resetting the SDK to pre-identify condition.
     ///
     /// Call this when the current user logs out of your app. After `logout()`,
-    /// the SDK is still configured — call ``bootstrap(userId:name:email:)`` for
+    /// the SDK is still configured — call ``identify(_:)`` for
     /// the next user.
     ///
     /// **What is cleared** (user-scoped):
@@ -712,6 +737,11 @@ public final class ZeroSettle: ObservableObject {
         migrationManager = nil
         offerManager = nil
         ownedStoreKitTransactionIds = nil
+
+        // Pending claims — clear so the prior user's "transfer this purchase?"
+        // hint is not visible to the next user (privacy + UX).
+        objectWillChange.send()
+        pendingClaims = []
 
         // Cached checkout sessions (PaymentIntents for previous user)
         Task { await CheckoutResponseCache.shared.clearAll() }
@@ -837,7 +867,7 @@ public final class ZeroSettle: ObservableObject {
     }
 
     /// Returns the currently identified userId, throwing
-    /// ``ZeroSettleError/userNotIdentified`` if ``identify(userId:name:email:)``
+    /// ``ZeroSettleError/userNotIdentified`` if ``identify(_:)``
     /// has not been called. Used by the userId-less public methods added in
     /// 1.2.4 as the canonical replacement for the deprecated explicit-userId
     /// overloads slated for removal in 2.0.
@@ -846,7 +876,7 @@ public final class ZeroSettle: ObservableObject {
               !userId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             ZSLogger.error(
                 "ZeroSettleKit: a user-scoped method was called without an identified user. " +
-                "Call ZeroSettle.shared.identify(userId:) before invoking user-scoped APIs.",
+                "Call ZeroSettle.shared.identify(.user(id:)) (or .anonymous) before invoking user-scoped APIs.",
                 category: .general
             )
             throw ZeroSettleError.userNotIdentified
@@ -882,6 +912,23 @@ public final class ZeroSettle: ObservableObject {
         entitlements = newEntitlements
         entitlementContinuation?.yield(newEntitlements)
         delegate?.zeroSettleEntitlementsDidUpdate(newEntitlements)
+    }
+
+    /// Add a pending claim if not already present (matched by productId + OTID).
+    /// Internal — populated by StoreKitManager when sync detects a cross-user conflict.
+    internal func addPendingClaim(_ claim: PendingClaim) {
+        if pendingClaims.contains(claim) { return }
+        objectWillChange.send()
+        pendingClaims.append(claim)
+    }
+
+    /// Remove pending claims for a productId. Internal — called when claim
+    /// completes successfully or when the consuming app dismisses the prompt.
+    internal func removePendingClaim(productId: String) {
+        let filtered = pendingClaims.filter { $0.productId != productId }
+        if filtered.count == pendingClaims.count { return }
+        objectWillChange.send()
+        pendingClaims = filtered
     }
 
     // MARK: - Private State
@@ -943,20 +990,24 @@ public final class ZeroSettle: ObservableObject {
     /// Configure the SDK. Must be called before any other methods.
     ///
     /// This method only initializes internal components (backend, checkout flow,
-    /// StoreKit listener). It does **not** fetch products, warm up payment sheets,
-    /// or restore entitlements — call those methods explicitly after configuration,
-    /// or use ``bootstrap(userId:)`` as a convenience that does all three:
+    /// StoreKit listener). It does **not** identify the user, fetch products, or
+    /// restore entitlements — call ``identify(_:)`` next to do all three:
     ///
     /// ```swift
-    /// // 1. Configure
+    /// // 1. Configure (typically in App.init or AppDelegate)
     /// ZeroSettle.shared.configure(.init(publishableKey: "zs_pk_live_..."))
     ///
-    /// // 2. Fetch products (with optional userId for migration eligibility)
-    /// let catalog = try await ZeroSettle.shared.fetchProducts(userId: "user_42")
-    ///
-    /// // 3. (Optional) Restore entitlements
-    /// let entitlements = try await ZeroSettle.shared.restoreEntitlements(userId: "user_42")
+    /// // 2. Identify — fetches catalog, restores entitlements, syncs StoreKit
+    /// let catalog = try await ZeroSettle.shared.identify(.user(
+    ///     id: currentUser.id,
+    ///     name: currentUser.name,
+    ///     email: currentUser.email
+    /// ))
     /// ```
+    ///
+    /// For apps without authenticated users, pass ``Identity/anonymous`` to
+    /// generate a stable per-install UUID. Use ``Identity/deferred`` if auth
+    /// resolves on a later screen.
     ///
     /// - Parameter config: The IAP configuration with your publishable key
     public func configure(_ config: Configuration) {
@@ -1047,7 +1098,14 @@ public final class ZeroSettle: ObservableObject {
 
     // MARK: - Identify (canonical user setup)
 
-    /// Identify the current user. **Canonical entry point as of SDK 1.2.4.**
+    /// Identify the current user **and** perform full SDK bootstrap.
+    ///
+    /// **Canonical entry point as of SDK 1.2.4.** Despite the name, this
+    /// does more than just record an identity — for ``Identity/user(id:name:email:)``
+    /// and ``Identity/anonymous`` it also fetches the product catalog,
+    /// restores entitlements, and starts the StoreKit transaction listener.
+    /// You do **not** need to call ``fetchProducts(userId:)`` or
+    /// ``restoreEntitlements()`` separately on launch.
     ///
     /// `Identity` is an enum so the SDK can distinguish between three
     /// states an app can be in at init: an authenticated user
@@ -1162,7 +1220,7 @@ public final class ZeroSettle: ObservableObject {
         // and the winner (this call) holds the canonical state.
         if let inFlight = inFlightBootstrap {
             ZSLogger.info(
-                "identify(userId: \(userId)) cancelled in-flight identify(userId: \(inFlight.userId)) — newer wins",
+                "identify(.user(id: \(userId))) cancelled in-flight identify(.user(id: \(inFlight.userId))) — newer wins",
                 category: .general
             )
             inFlight.task.cancel()
@@ -1248,7 +1306,7 @@ public final class ZeroSettle: ObservableObject {
 
     /// Returns the shared migration manager, creating one if it doesn't exist yet.
     ///
-    /// Both ``MigrationTipView`` and ``bootstrap(userId:)`` call this to guarantee
+    /// Both ``MigrationTipView`` and ``identify(_:)`` call this to guarantee
     /// a single shared instance. The manager starts in `.loading` and transitions
     /// to `.eligible` or `.ineligible` once bootstrap completes (via Combine).
     ///
@@ -1259,15 +1317,15 @@ public final class ZeroSettle: ObservableObject {
     /// - Returns: The shared ``ZSMigrationManager``
     /// Returns the shared ``ZSMigrationManager`` for the currently identified
     /// user, creating one if it doesn't exist yet. Requires
-    /// ``identify(userId:name:email:)`` to have been called.
+    /// ``identify(_:)`` to have been called.
     @discardableResult
     public func migrationManager(stripeCustomerId: String? = nil) throws -> ZSMigrationManager {
         let userId = try requireIdentifiedUserId()
         return _getOrCreateMigrationManager(userId: userId, stripeCustomerId: stripeCustomerId)
     }
 
-    /// Deprecated. Use ``migrationManager(stripeCustomerId:)`` after ``identify(userId:name:email:)``.
-    @available(*, deprecated, renamed: "migrationManager(stripeCustomerId:)", message: "Call identify(userId:) once, then migrationManager(stripeCustomerId:) without userId. Will be removed in ZeroSettleKit 2.0.")
+    /// Deprecated. Use ``migrationManager(stripeCustomerId:)`` after ``identify(_:)``.
+    @available(*, deprecated, renamed: "migrationManager(stripeCustomerId:)", message: "Call identify(.user(id:)) once, then migrationManager(stripeCustomerId:) without userId. Will be removed in ZeroSettleKit 2.0.")
     @discardableResult
     public func migrationManager(for userId: String, stripeCustomerId: String? = nil) -> ZSMigrationManager {
         setActiveUserId(userId)
@@ -1285,7 +1343,7 @@ public final class ZeroSettle: ObservableObject {
 
     /// Returns the shared offer manager, creating one if it doesn't exist yet.
     ///
-    /// Both ``OfferTipView`` and ``bootstrap(userId:)`` call this to guarantee
+    /// Both ``OfferTipView`` and ``identify(_:)`` call this to guarantee
     /// a single shared instance. The manager starts in `.loading` and transitions
     /// to `.eligible` or `.ineligible` once bootstrap completes (via notification).
     ///
@@ -1296,15 +1354,15 @@ public final class ZeroSettle: ObservableObject {
     /// - Returns: The shared ``ZSOfferManager``
     /// Returns the shared ``ZSOfferManager`` for the currently identified user,
     /// creating one if it doesn't exist yet. Requires
-    /// ``identify(userId:name:email:)`` to have been called.
+    /// ``identify(_:)`` to have been called.
     @discardableResult
     public func offerManager(stripeCustomerId: String? = nil) throws -> ZSOfferManager {
         let userId = try requireIdentifiedUserId()
         return _getOrCreateOfferManager(userId: userId, stripeCustomerId: stripeCustomerId)
     }
 
-    /// Deprecated. Use ``offerManager(stripeCustomerId:)`` after ``identify(userId:name:email:)``.
-    @available(*, deprecated, renamed: "offerManager(stripeCustomerId:)", message: "Call identify(userId:) once, then offerManager(stripeCustomerId:) without userId. Will be removed in ZeroSettleKit 2.0.")
+    /// Deprecated. Use ``offerManager(stripeCustomerId:)`` after ``identify(_:)``.
+    @available(*, deprecated, renamed: "offerManager(stripeCustomerId:)", message: "Call identify(.user(id:)) once, then offerManager(stripeCustomerId:) without userId. Will be removed in ZeroSettleKit 2.0.")
     @discardableResult
     public func offerManager(for userId: String, stripeCustomerId: String? = nil) -> ZSOfferManager {
         setActiveUserId(userId)
@@ -1568,7 +1626,7 @@ public final class ZeroSettle: ObservableObject {
             ZSLogger.error("Checkout failed for \(productId): \(error)", category: .checkout)
             delegate?.zeroSettleCheckoutDidFail(productId: productId, error: error)
 
-            let reason: CheckoutFailure
+            let reason: CheckoutFailureReason
             if let httpError = error as? HTTPError {
                 switch httpError {
                 case .httpError(let statusCode, let body):
@@ -1659,14 +1717,14 @@ public final class ZeroSettle: ObservableObject {
     ///
     /// - Parameter userId: Your app's user identifier
     /// Track a successful migration conversion for the currently identified
-    /// user. Requires ``identify(userId:name:email:)`` to have been called.
+    /// user. Requires ``identify(_:)`` to have been called.
     public func trackMigrationConversion() async throws {
         let userId = try requireIdentifiedUserId()
         try await _trackMigrationConversionImpl(userId: userId)
     }
 
-    /// Deprecated. Use ``trackMigrationConversion()`` after ``identify(userId:name:email:)``.
-    @available(*, deprecated, renamed: "trackMigrationConversion()", message: "Call identify(userId:) once, then trackMigrationConversion() without userId. Will be removed in ZeroSettleKit 2.0.")
+    /// Deprecated. Use ``trackMigrationConversion()`` after ``identify(_:)``.
+    @available(*, deprecated, renamed: "trackMigrationConversion()", message: "Call identify(.user(id:)) once, then trackMigrationConversion() without userId. Will be removed in ZeroSettleKit 2.0.")
     public func trackMigrationConversion(userId: String) async throws {
         setActiveUserId(userId)
         try await _trackMigrationConversionImpl(userId: userId)
@@ -1763,7 +1821,7 @@ public final class ZeroSettle: ObservableObject {
     // MARK: - Entitlements
 
     /// Restore entitlements from both ZeroSettle backend and StoreKit for the
-    /// currently identified user. Requires ``identify(userId:name:email:)``.
+    /// currently identified user. Requires ``identify(_:)``.
     ///
     /// Call this on app launch to recover from missed deeplinks or to sync state.
     /// Merges entitlements from both StoreKit (local) and web checkout (backend).
@@ -1778,8 +1836,8 @@ public final class ZeroSettle: ObservableObject {
         return try await _restoreEntitlementsImpl(userId: userId)
     }
 
-    /// Deprecated. Use ``restoreEntitlements()`` after ``identify(userId:name:email:)``.
-    @available(*, deprecated, renamed: "restoreEntitlements()", message: "Call identify(userId:) once, then restoreEntitlements() without userId. Will be removed in ZeroSettleKit 2.0.")
+    /// Deprecated. Use ``restoreEntitlements()`` after ``identify(_:)``.
+    @available(*, deprecated, renamed: "restoreEntitlements()", message: "Call identify(.user(id:)) once, then restoreEntitlements() without userId. Will be removed in ZeroSettleKit 2.0.")
     @discardableResult
     public func restoreEntitlements(userId: String) async throws -> [Entitlement] {
         guard !userId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -1846,14 +1904,14 @@ public final class ZeroSettle: ObservableObject {
     /// - Parameter userId: Your app's user identifier
     /// - Returns: An array of ``CheckoutTransaction`` ordered by most recent first
     /// Fetch the full transaction history for the currently identified user.
-    /// Requires ``identify(userId:name:email:)`` to have been called.
+    /// Requires ``identify(_:)`` to have been called.
     public func fetchTransactionHistory() async throws -> [CheckoutTransaction] {
         let userId = try requireIdentifiedUserId()
         return try await _fetchTransactionHistoryImpl(userId: userId)
     }
 
-    /// Deprecated. Use ``fetchTransactionHistory()`` after ``identify(userId:name:email:)``.
-    @available(*, deprecated, renamed: "fetchTransactionHistory()", message: "Call identify(userId:) once, then fetchTransactionHistory() without userId. Will be removed in ZeroSettleKit 2.0.")
+    /// Deprecated. Use ``fetchTransactionHistory()`` after ``identify(_:)``.
+    @available(*, deprecated, renamed: "fetchTransactionHistory()", message: "Call identify(.user(id:)) once, then fetchTransactionHistory() without userId. Will be removed in ZeroSettleKit 2.0.")
     public func fetchTransactionHistory(userId: String) async throws -> [CheckoutTransaction] {
         setActiveUserId(userId)
         return try await _fetchTransactionHistoryImpl(userId: userId)
@@ -1888,7 +1946,7 @@ public final class ZeroSettle: ObservableObject {
     ///   - userId: Your app's user identifier
     /// - Returns: The cancel flow outcome (`.cancelled`, `.retained`, `.paused`, or `.dismissed`)
     /// Present the cancel flow for the currently identified user. Requires
-    /// ``identify(userId:name:email:)`` to have been called.
+    /// ``identify(_:)`` to have been called.
     public func presentCancelFlow(productId: String) async -> CancelFlow.Result {
         guard let userId = currentUserId, !userId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             ZSLogger.error("presentCancelFlow called without identify() — returning .cancelled", category: .cancelFlow)
@@ -1897,8 +1955,8 @@ public final class ZeroSettle: ObservableObject {
         return await _presentCancelFlowImpl(productId: productId, userId: userId)
     }
 
-    /// Deprecated. Use ``presentCancelFlow(productId:)`` after ``identify(userId:name:email:)``.
-    @available(*, deprecated, renamed: "presentCancelFlow(productId:)", message: "Call identify(userId:) once, then presentCancelFlow(productId:) without userId. Will be removed in ZeroSettleKit 2.0.")
+    /// Deprecated. Use ``presentCancelFlow(productId:)`` after ``identify(_:)``.
+    @available(*, deprecated, renamed: "presentCancelFlow(productId:)", message: "Call identify(.user(id:)) once, then presentCancelFlow(productId:) without userId. Will be removed in ZeroSettleKit 2.0.")
     public func presentCancelFlow(productId: String, userId: String) async -> CancelFlow.Result {
         setActiveUserId(userId)
         return await _presentCancelFlowImpl(productId: productId, userId: userId)
@@ -2005,7 +2063,7 @@ public final class ZeroSettle: ObservableObject {
     /// Use this for building custom cancel/pause UI while still using ZeroSettle's
     /// backend configuration. Returns the full config including questions, offer, and pause options.
     ///
-    /// After ``bootstrap(userId:)``, the config is also available synchronously via
+    /// After ``identify(_:)``, the config is also available synchronously via
     /// the ``cancelFlowConfig`` published property.
     ///
     /// - Parameter userId: Optional user ID for A/B experiment targeting
@@ -2037,14 +2095,14 @@ public final class ZeroSettle: ObservableObject {
     ///   - userId: Your app's user identifier
     /// - Returns: A ``CancelFlow/SaveOfferResult`` with details of the applied discount
     /// Accept a save offer for the currently identified user. Requires
-    /// ``identify(userId:name:email:)`` to have been called.
+    /// ``identify(_:)`` to have been called.
     public func acceptSaveOffer(productId: String) async throws -> CancelFlow.SaveOfferResult {
         let userId = try requireIdentifiedUserId()
         return try await _acceptSaveOfferImpl(productId: productId, userId: userId)
     }
 
-    /// Deprecated. Use ``acceptSaveOffer(productId:)`` after ``identify(userId:name:email:)``.
-    @available(*, deprecated, renamed: "acceptSaveOffer(productId:)", message: "Call identify(userId:) once, then acceptSaveOffer(productId:) without userId. Will be removed in ZeroSettleKit 2.0.")
+    /// Deprecated. Use ``acceptSaveOffer(productId:)`` after ``identify(_:)``.
+    @available(*, deprecated, renamed: "acceptSaveOffer(productId:)", message: "Call identify(.user(id:)) once, then acceptSaveOffer(productId:) without userId. Will be removed in ZeroSettleKit 2.0.")
     public func acceptSaveOffer(productId: String, userId: String) async throws -> CancelFlow.SaveOfferResult {
         setActiveUserId(userId)
         return try await _acceptSaveOfferImpl(productId: productId, userId: userId)
@@ -2124,14 +2182,14 @@ public final class ZeroSettle: ObservableObject {
     ///   - pauseOptionId: The ID of the selected ``CancelFlow/PauseOption``
     /// - Returns: The date when the subscription will automatically resume, or `nil` if unspecified
     /// Pause a subscription for the currently identified user. Requires
-    /// ``identify(userId:name:email:)`` to have been called.
+    /// ``identify(_:)`` to have been called.
     public func pauseSubscription(productId: String, pauseDurationDays: Int?) async throws -> Date? {
         let userId = try requireIdentifiedUserId()
         return try await _pauseSubscriptionImpl(productId: productId, userId: userId, pauseDurationDays: pauseDurationDays)
     }
 
-    /// Deprecated. Use ``pauseSubscription(productId:pauseDurationDays:)`` after ``identify(userId:name:email:)``.
-    @available(*, deprecated, renamed: "pauseSubscription(productId:pauseDurationDays:)", message: "Call identify(userId:) once, then pauseSubscription(productId:pauseDurationDays:) without userId. Will be removed in ZeroSettleKit 2.0.")
+    /// Deprecated. Use ``pauseSubscription(productId:pauseDurationDays:)`` after ``identify(_:)``.
+    @available(*, deprecated, renamed: "pauseSubscription(productId:pauseDurationDays:)", message: "Call identify(.user(id:)) once, then pauseSubscription(productId:pauseDurationDays:) without userId. Will be removed in ZeroSettleKit 2.0.")
     public func pauseSubscription(productId: String, userId: String, pauseDurationDays: Int?) async throws -> Date? {
         setActiveUserId(userId)
         return try await _pauseSubscriptionImpl(productId: productId, userId: userId, pauseDurationDays: pauseDurationDays)
@@ -2166,14 +2224,14 @@ public final class ZeroSettle: ObservableObject {
     ///   - productId: The product identifier to resume
     ///   - userId: Your app's user identifier
     /// Resume a paused subscription for the currently identified user.
-    /// Requires ``identify(userId:name:email:)`` to have been called.
+    /// Requires ``identify(_:)`` to have been called.
     public func resumeSubscription(productId: String) async throws {
         let userId = try requireIdentifiedUserId()
         try await _resumeSubscriptionImpl(productId: productId, userId: userId)
     }
 
-    /// Deprecated. Use ``resumeSubscription(productId:)`` after ``identify(userId:name:email:)``.
-    @available(*, deprecated, renamed: "resumeSubscription(productId:)", message: "Call identify(userId:) once, then resumeSubscription(productId:) without userId. Will be removed in ZeroSettleKit 2.0.")
+    /// Deprecated. Use ``resumeSubscription(productId:)`` after ``identify(_:)``.
+    @available(*, deprecated, renamed: "resumeSubscription(productId:)", message: "Call identify(.user(id:)) once, then resumeSubscription(productId:) without userId. Will be removed in ZeroSettleKit 2.0.")
     public func resumeSubscription(productId: String, userId: String) async throws {
         setActiveUserId(userId)
         try await _resumeSubscriptionImpl(productId: productId, userId: userId)
@@ -2204,14 +2262,14 @@ public final class ZeroSettle: ObservableObject {
     ///   - userId: Your app's user identifier
     ///   - immediate: If `true`, cancel immediately. If `false` (default), cancel at the end of the current billing period.
     /// Cancel a subscription for the currently identified user. Requires
-    /// ``identify(userId:name:email:)`` to have been called.
+    /// ``identify(_:)`` to have been called.
     public func cancelSubscription(productId: String, immediate: Bool = false) async throws {
         let userId = try requireIdentifiedUserId()
         try await _cancelSubscriptionImpl(productId: productId, userId: userId, immediate: immediate)
     }
 
-    /// Deprecated. Use ``cancelSubscription(productId:immediate:)`` after ``identify(userId:name:email:)``.
-    @available(*, deprecated, renamed: "cancelSubscription(productId:immediate:)", message: "Call identify(userId:) once, then cancelSubscription(productId:immediate:) without userId. Will be removed in ZeroSettleKit 2.0.")
+    /// Deprecated. Use ``cancelSubscription(productId:immediate:)`` after ``identify(_:)``.
+    @available(*, deprecated, renamed: "cancelSubscription(productId:immediate:)", message: "Call identify(.user(id:)) once, then cancelSubscription(productId:immediate:) without userId. Will be removed in ZeroSettleKit 2.0.")
     public func cancelSubscription(productId: String, userId: String, immediate: Bool = false) async throws {
         setActiveUserId(userId)
         try await _cancelSubscriptionImpl(productId: productId, userId: userId, immediate: immediate)
@@ -2248,7 +2306,7 @@ public final class ZeroSettle: ObservableObject {
     ///   - userId: Your app's user identifier
     /// - Returns: The upgrade offer outcome (`.upgraded`, `.declined`, or `.dismissed`)
     /// Present the upgrade offer for the currently identified user. Requires
-    /// ``identify(userId:name:email:)`` to have been called.
+    /// ``identify(_:)`` to have been called.
     public func presentUpgradeOffer(productId: String? = nil) async -> UpgradeOffer.Result {
         guard let userId = currentUserId, !userId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             ZSLogger.error("presentUpgradeOffer called without identify() — returning .dismissed", category: .checkout)
@@ -2257,8 +2315,8 @@ public final class ZeroSettle: ObservableObject {
         return await _presentUpgradeOfferImpl(productId: productId, userId: userId)
     }
 
-    /// Deprecated. Use ``presentUpgradeOffer(productId:)`` after ``identify(userId:name:email:)``.
-    @available(*, deprecated, renamed: "presentUpgradeOffer(productId:)", message: "Call identify(userId:) once, then presentUpgradeOffer(productId:) without userId. Will be removed in ZeroSettleKit 2.0.")
+    /// Deprecated. Use ``presentUpgradeOffer(productId:)`` after ``identify(_:)``.
+    @available(*, deprecated, renamed: "presentUpgradeOffer(productId:)", message: "Call identify(.user(id:)) once, then presentUpgradeOffer(productId:) without userId. Will be removed in ZeroSettleKit 2.0.")
     public func presentUpgradeOffer(productId: String? = nil, userId: String) async -> UpgradeOffer.Result {
         setActiveUserId(userId)
         return await _presentUpgradeOfferImpl(productId: productId, userId: userId)
@@ -2321,14 +2379,14 @@ public final class ZeroSettle: ObservableObject {
     ///   - userId: Your app's user identifier
     /// - Returns: The upgrade offer ``UpgradeOffer/Config``
     /// Fetch the upgrade offer config for the currently identified user.
-    /// Requires ``identify(userId:name:email:)`` to have been called.
+    /// Requires ``identify(_:)`` to have been called.
     public func fetchUpgradeOfferConfig(productId: String? = nil) async throws -> UpgradeOffer.Config {
         let userId = try requireIdentifiedUserId()
         return try await _fetchUpgradeOfferConfigImpl(productId: productId, userId: userId)
     }
 
-    /// Deprecated. Use ``fetchUpgradeOfferConfig(productId:)`` after ``identify(userId:name:email:)``.
-    @available(*, deprecated, renamed: "fetchUpgradeOfferConfig(productId:)", message: "Call identify(userId:) once, then fetchUpgradeOfferConfig(productId:) without userId. Will be removed in ZeroSettleKit 2.0.")
+    /// Deprecated. Use ``fetchUpgradeOfferConfig(productId:)`` after ``identify(_:)``.
+    @available(*, deprecated, renamed: "fetchUpgradeOfferConfig(productId:)", message: "Call identify(.user(id:)) once, then fetchUpgradeOfferConfig(productId:) without userId. Will be removed in ZeroSettleKit 2.0.")
     public func fetchUpgradeOfferConfig(productId: String? = nil, userId: String) async throws -> UpgradeOffer.Config {
         setActiveUserId(userId)
         return try await _fetchUpgradeOfferConfigImpl(productId: productId, userId: userId)
@@ -2363,14 +2421,14 @@ public final class ZeroSettle: ObservableObject {
     /// - Parameter userId: Your app's user identifier.
     /// - Returns: The unified ``UserOffer/Response``.
     /// Fetch the unified user-offer response for the currently identified
-    /// user. Requires ``identify(userId:name:email:)`` to have been called.
+    /// user. Requires ``identify(_:)`` to have been called.
     public func fetchUserOffer() async throws -> UserOffer.Response {
         let userId = try requireIdentifiedUserId()
         return try await _fetchUserOfferImpl(userId: userId)
     }
 
-    /// Deprecated. Use ``fetchUserOffer()`` after ``identify(userId:name:email:)``.
-    @available(*, deprecated, renamed: "fetchUserOffer()", message: "Call identify(userId:) once, then fetchUserOffer() without userId. Will be removed in ZeroSettleKit 2.0.")
+    /// Deprecated. Use ``fetchUserOffer()`` after ``identify(_:)``.
+    @available(*, deprecated, renamed: "fetchUserOffer()", message: "Call identify(.user(id:)) once, then fetchUserOffer() without userId. Will be removed in ZeroSettleKit 2.0.")
     public func fetchUserOffer(userId: String) async throws -> UserOffer.Response {
         setActiveUserId(userId)
         return try await _fetchUserOfferImpl(userId: userId)

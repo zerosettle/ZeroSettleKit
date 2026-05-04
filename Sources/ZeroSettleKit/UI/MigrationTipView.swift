@@ -4,9 +4,7 @@ import StoreKit
 import WebKit
 
 #if canImport(ZeroSettleCore)
-#if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
-#endif
 #endif
 
 // MARK: - Expandable Web Billing Tip View
@@ -82,8 +80,8 @@ public struct MigrationTipView: View {
     /// Creates a new migrate tip view.
     ///
     /// Uses the shared ``ZSMigrationManager`` from ``ZeroSettle/shared/migrationManager``
-    /// (created during ``ZeroSettle/bootstrap(userId:)``). Falls back to creating a local
-    /// instance if bootstrap hasn't run yet.
+    /// (created during ``ZeroSettle/identify(_:)``). Falls back to creating a local
+    /// instance if identify hasn't run yet.
     ///
     /// - Parameters:
     ///   - userId: The user identifier passed to the checkout backend.
@@ -390,6 +388,9 @@ public struct MigrationTipView: View {
                                 await manager.markCheckoutSucceeded(transactionId: transactionId)
                             }
                             onEvent?(.checkoutCompleted)
+                        },
+                        onCheckoutFailure: { failure in
+                            handleCheckoutFailure(failure)
                         }
                     )
                     .frame(height: isExpanded ? contentHeight : 0)
@@ -755,6 +756,24 @@ public struct MigrationTipView: View {
         }
     }
 
+    private func handleCheckoutFailure(_ failure: CheckoutFailure) {
+        // Reset UI state so the CTA reappears for retry
+        isExpanded = false
+        ctaTapped = false
+        webViewLoaded = false
+
+        // Log via ZSLogger for debug + crash-reporting visibility
+        #if canImport(ZeroSettleCore)
+        ZSLogger.error(
+            "[checkout_load_failure] \(failure.description)",
+            category: .migration
+        )
+        #endif
+
+        // Forward to consuming app
+        manager.onCheckoutFailure?(failure)
+    }
+
     /// Browser-based checkout. `presentation` lets the per-offer
     /// `Offer.checkoutPresentation` server config beat the global
     /// `ZeroSettle.shared.checkoutType` for `.safari` vs `.safariVC` —
@@ -798,6 +817,7 @@ struct CheckoutWebView: UIViewRepresentable {
     let onPaymentMethodChanged: (String) -> Void
     let onContentHeightChanged: (CGFloat) -> Void
     let onCheckoutSuccess: (String?) -> Void
+    let onCheckoutFailure: (CheckoutFailure) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -805,7 +825,8 @@ struct CheckoutWebView: UIViewRepresentable {
             onLoaded: onLoaded,
             onPaymentMethodChanged: onPaymentMethodChanged,
             onContentHeightChanged: onContentHeightChanged,
-            onCheckoutSuccess: onCheckoutSuccess
+            onCheckoutSuccess: onCheckoutSuccess,
+            onCheckoutFailure: onCheckoutFailure
         )
     }
 
@@ -876,6 +897,7 @@ struct CheckoutWebView: UIViewRepresentable {
         let onPaymentMethodChanged: (String) -> Void
         let onContentHeightChanged: (CGFloat) -> Void
         let onCheckoutSuccess: (String?) -> Void
+        let onCheckoutFailure: (CheckoutFailure) -> Void
         private var hasCompleted = false
 
         init(
@@ -883,13 +905,15 @@ struct CheckoutWebView: UIViewRepresentable {
             onLoaded: @escaping () -> Void,
             onPaymentMethodChanged: @escaping (String) -> Void,
             onContentHeightChanged: @escaping (CGFloat) -> Void,
-            onCheckoutSuccess: @escaping (String?) -> Void
+            onCheckoutSuccess: @escaping (String?) -> Void,
+            onCheckoutFailure: @escaping (CheckoutFailure) -> Void
         ) {
             self.backgroundColor = backgroundColor
             self.onLoaded = onLoaded
             self.onPaymentMethodChanged = onPaymentMethodChanged
             self.onContentHeightChanged = onContentHeightChanged
             self.onCheckoutSuccess = onCheckoutSuccess
+            self.onCheckoutFailure = onCheckoutFailure
         }
 
         // Handle messages from JavaScript
@@ -994,6 +1018,41 @@ struct CheckoutWebView: UIViewRepresentable {
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             // Script is injected via WKUserScript (all frames). We just mark loaded.
             onLoaded()
+        }
+
+        func webView(_ webView: WKWebView,
+                     didFailProvisionalNavigation navigation: WKNavigation!,
+                     withError error: Error) {
+            DispatchQueue.main.async { [self] in
+                self.onCheckoutFailure(.networkUnreachable(error))
+            }
+        }
+
+        func webView(_ webView: WKWebView,
+                     didFail navigation: WKNavigation!,
+                     withError error: Error) {
+            DispatchQueue.main.async { [self] in
+                self.onCheckoutFailure(.loadFailed(error))
+            }
+        }
+
+        // Cancel + signal on 5xx HTTP responses. The existing decidePolicyFor:navigationAction:
+        // method handles URL routing; this NEW decidePolicyFor:navigationResponse: handles
+        // HTTP responses.
+        func webView(_ webView: WKWebView,
+                     decidePolicyFor navigationResponse: WKNavigationResponse,
+                     decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+            if let httpResp = navigationResponse.response as? HTTPURLResponse,
+               httpResp.statusCode >= 500 {
+                decisionHandler(.cancel)
+                let url = httpResp.url ?? URL(string: "about:blank")!
+                let statusCode = httpResp.statusCode
+                DispatchQueue.main.async { [self] in
+                    self.onCheckoutFailure(.serverError(statusCode: statusCode, url: url))
+                }
+                return
+            }
+            decisionHandler(.allow)
         }
     }
 }

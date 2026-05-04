@@ -11,9 +11,7 @@
 import Foundation
 
 #if canImport(ZeroSettleCore)
-#if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
-#endif
 #endif
 
 @MainActor

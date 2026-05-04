@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "ZeroSettleKit",
     platforms: [
-        .iOS(.v17)
+        .iOS(.v17),
     ],
 
     // MARK: - Products

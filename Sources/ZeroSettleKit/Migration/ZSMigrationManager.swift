@@ -14,9 +14,7 @@ import StoreKit
 import CryptoKit
 
 #if canImport(ZeroSettleCore)
-#if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
-#endif
 #endif
 
 /// Manages the migration offer lifecycle for a single user.
@@ -93,6 +91,16 @@ public final class ZSMigrationManager: ObservableObject {
     /// migration checkout to.  When provided the backend will use this customer
     /// instead of creating a new one, ensuring a unified Billing Portal view.
     public let stripeCustomerId: String?
+
+    /// Callback fired when the checkout WebView fails to load.
+    ///
+    /// Set this to receive notifications about checkout failures. The SDK is
+    /// unopinionated about UX — pattern-match on `CheckoutFailure` and decide
+    /// what to do (log to crash reporter, show toast, retry, ignore).
+    ///
+    /// If `nil`, failures are still logged via `ZSLogger` and the tip view's
+    /// state resets — the SDK recovers either way; you just don't get notified.
+    public var onCheckoutFailure: ((CheckoutFailure) -> Void)?
 
     // MARK: - Demo Mode
 
