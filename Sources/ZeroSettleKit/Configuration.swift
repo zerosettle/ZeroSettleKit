@@ -15,6 +15,10 @@ public enum Configuration {
     /// header on every Backend API call so the backend can route requests
     /// based on installed SDK capabilities (deferred-mode pivot).
     ///
+    /// > Note: Consuming apps do not need to read or pass this — the SDK
+    /// > applies it internally on every backend call. Exposed publicly
+    /// > only for diagnostic logging.
+    ///
     /// Bump this in lockstep with `ZeroSettleKit.podspec` `s.version` and
     /// the wrapper podspecs (Flutter, React Native). The backend uses this
     /// to gate the deferred-mode pivot — see

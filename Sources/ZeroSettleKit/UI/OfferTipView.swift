@@ -159,9 +159,9 @@ public struct OfferTipView: View {
 
     /// Creates a new offer tip view.
     ///
-    /// Uses the shared ``ZSOfferManager`` from ``ZeroSettle/offerManager(for:stripeCustomerId:)``
-    /// (created during ``ZeroSettle/bootstrap(userId:)``). Falls back to creating a local
-    /// instance if bootstrap hasn't run yet.
+    /// Uses the shared ``ZSOfferManager`` from ``ZeroSettle/offerManager(stripeCustomerId:)``
+    /// (created during ``ZeroSettle/identify(_:)``). Falls back to creating a local
+    /// instance if identify hasn't run yet.
     ///
     /// - Parameters:
     ///   - userId: The user identifier passed to the checkout backend.

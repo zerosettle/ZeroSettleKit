@@ -68,11 +68,11 @@ Call `configure` early in your app lifecycle — typically in your `App` init or
 import ZeroSettleKit
 
 ZeroSettle.shared.configure(.init(
-    publishableKey: "pk_live_your_key",
-    environment: .production,
-    syncStoreKitTransactions: true
+    publishableKey: "zs_pk_live_your_key"
 ))
 ```
+
+The publishable key prefix (`zs_pk_test_` vs `zs_pk_live_`) determines sandbox vs live mode — there is no separate `environment` parameter.
 
 ### 2. Attach the handler
 
@@ -90,27 +90,33 @@ struct MyApp: App {
 }
 ```
 
-### 3. Fetch products
+### 3. Identify the user
 
-Products are defined in the [ZeroSettle Dashboard](https://zerosettle.io) and include both web pricing and App Store pricing:
+After `configure`, call `identify(_:)` once you know who the user is. This is the canonical entry point: it fetches the product catalog, restores entitlements, and starts the StoreKit transaction listener — all in one call. You do **not** need to call `fetchProducts` or `restoreEntitlements` separately on launch.
 
 ```swift
-let products = try await ZeroSettle.shared.fetchProducts(userId: user.id)
+// Authenticated user — the common case
+let catalog = try await ZeroSettle.shared.identify(.user(
+    id: currentUser.id,
+    name: currentUser.name,
+    email: currentUser.email
+))
 
-for product in products {
-    print("\(product.displayName): \(product.webPrice.formatted)")
-}
+// Or, no auth system — generates a stable per-install UUID
+try await ZeroSettle.shared.identify(.anonymous)
+
+// Or, auth resolves on a later screen — suppresses the no-user warning
+try await ZeroSettle.shared.identify(.deferred)
 ```
 
 ### 4. Present checkout
 
-Use the built-in payment sheet for an embedded checkout experience with Apple Pay:
+Use the built-in checkout sheet for an embedded experience with Apple Pay:
 
 ```swift
-.zsPaymentSheet(
+.checkoutSheet(
     isPresented: $showCheckout,
-    product: product,
-    userId: user.id
+    product: product
 ) { result in
     switch result {
     case .success(let transaction):
@@ -125,23 +131,28 @@ Use the built-in payment sheet for an embedded checkout experience with Apple Pa
 Or trigger a Safari-based checkout directly:
 
 ```swift
-try await ZeroSettle.shared.purchase(
-    productId: "pro_monthly",
-    userId: user.id
-)
+try await ZeroSettle.shared.purchase(productId: "pro_monthly")
 ```
 
 ### 5. Check entitlements
 
-Entitlements unify purchases from both web checkout and StoreKit into a single state:
+Entitlements unify purchases from both web checkout and StoreKit into a single state. After `identify(_:)` they're already populated:
 
 ```swift
-let entitlements = try await ZeroSettle.shared.restoreEntitlements(userId: user.id)
-
-let isPro = entitlements.contains { $0.productId == "pro_monthly" && $0.isActive }
+let isPro = ZeroSettle.shared.entitlements.contains {
+    $0.productId == "pro_monthly" && $0.isActive
+}
 ```
 
-Call `restoreEntitlements` on every app launch to ensure cross-device sync.
+For real-time updates, observe `entitlementUpdates`:
+
+```swift
+for await entitlements in ZeroSettle.shared.entitlementUpdates {
+    refreshUI(entitlements.filter(\.isActive))
+}
+```
+
+To force-refresh from the server (e.g., on foreground), call `restoreEntitlements()` — no `userId` parameter once `identify` has run.
 
 ## Checkout Modes
 
@@ -157,15 +168,15 @@ The SDK reads this configuration automatically — no client-side changes needed
 
 ## User Identity
 
-ZeroSettleKit works with any authentication system:
+`identify(_:)` takes an `Identity` enum so the SDK can distinguish three states an app can be in at launch:
 
-| Approach | When to use | userId value |
-|----------|-------------|--------------|
-| **Custom Auth** | You have your own auth system | Your stable user ID |
-| **RevenueCat** | Migrating from RevenueCat | `Purchases.shared.appUserID` |
-| **Anonymous** | No auth system | Empty string (email collected at checkout) |
+| Identity case | When to use |
+|---------------|-------------|
+| `.user(id:name:email:)` | You have an authenticated user. `id` is your stable app user ID (RevenueCat users: pass `Purchases.shared.appUserID`). |
+| `.anonymous` | No auth system. SDK generates and persists a stable per-install UUID. |
+| `.deferred` | Auth resolves on a later screen. Suppresses the no-user warning until you re-identify. |
 
-Use a stable, non-email identifier. See [User Identity](https://docs.zerosettle.io/iap/user-identity) for details.
+Use a stable, non-email identifier for `.user(id:)`. See [User Identity](https://docs.zerosettle.io/iap/user-identity) for details.
 
 ## Delegate
 
@@ -173,7 +184,11 @@ Implement `ZeroSettleDelegate` to observe checkout and entitlement events:
 
 ```swift
 extension AppState: ZeroSettleDelegate {
-    func zeroSettleCheckoutDidComplete(transaction: ZSTransaction) {
+    func zeroSettleCheckoutDidBegin(productId: String) {
+        // Checkout sheet/Safari is opening
+    }
+
+    func zeroSettleCheckoutDidComplete(transaction: CheckoutTransaction) {
         // Purchase succeeded — entitlements are already updated
     }
 
@@ -186,27 +201,23 @@ extension AppState: ZeroSettleDelegate {
     }
 
     func zeroSettleEntitlementsDidUpdate(_ entitlements: [Entitlement]) {
-        // Entitlement state changed
+        // Entitlement state changed (filter on \.isActive for app logic)
     }
 }
 ```
 
+For SwiftUI apps, prefer `entitlementUpdates` (`AsyncStream<[Entitlement]>`) over the delegate — `ZeroSettle.shared` is `@Observable`, so views can also read state directly.
+
 ## StoreKit Integration
 
-Offer both web checkout (lower fees) and native StoreKit on the same paywall:
+Offer both web checkout (lower fees) and native StoreKit on the same paywall. After `identify(_:)`, neither call needs a `userId`:
 
 ```swift
 // Web checkout — 5% + 50¢
-try await ZeroSettle.shared.purchase(
-    productId: "pro_monthly",
-    userId: user.id
-)
+try await ZeroSettle.shared.purchase(productId: "pro_monthly")
 
 // StoreKit fallback — standard App Store pricing
-let transaction = try await ZeroSettle.shared.purchaseViaStoreKit(
-    productId: "pro_monthly",
-    userId: user.id
-)
+let transaction = try await ZeroSettle.shared.purchaseViaStoreKit(productId: "pro_monthly")
 ```
 
 Both paths feed into the same entitlement system. See [StoreKit Integration](https://docs.zerosettle.io/iap/storekit-integration) for hybrid paywall patterns.
@@ -221,11 +232,12 @@ Web checkout callbacks require universal links. Add an Apple App Site Associatio
 
 | Type | Description |
 |------|-------------|
-| `ZeroSettle` | Main SDK singleton — configure, fetch, purchase, restore |
+| `ZeroSettle` | Main SDK singleton — configure, identify, purchase, restore |
+| `Identity` | Enum passed to `identify(_:)` — `.user`, `.anonymous`, or `.deferred` |
 | `ZSProduct` | A purchasable item with web and App Store pricing |
 | `Entitlement` | An active access right with source tracking (`.webCheckout` or `.storeKit`) |
-| `ZSTransaction` | Result of a completed purchase |
-| `ZSPaymentSheet` | SwiftUI payment sheet component |
+| `CheckoutTransaction` | Result of a completed purchase (formerly `ZSTransaction`) |
+| `CheckoutSheet` | SwiftUI checkout sheet component (formerly `ZSPaymentSheet`) |
 | `RemoteConfig` | Server-controlled checkout mode and migration campaigns |
 | `Promotion` | Active promotional pricing on a product |
 
@@ -238,12 +250,16 @@ Web checkout callbacks require universal links. Add an Apple App Site Associatio
 
 ## Best Practices
 
-- **Call `restoreEntitlements` on every app launch** for cross-device sync
+- **Call `identify(_:)` on every app launch** — it bootstraps the SDK and refreshes entitlements in one call
 - **Validate entitlements server-side** for sensitive features
-- **Provide a visible "Restore Purchases" button** (App Store requirement)
-- **Use sandbox keys during development** — switch to live keys for production
-- **Preload products on paywall screens** for instant checkout
+- **Provide a visible "Restore Purchases" button** (App Store requirement) — wire it to `restoreEntitlements()`
+- **Use sandbox keys during development** — `zs_pk_test_…` for sandbox, `zs_pk_live_…` for production
+- **Preload products on paywall screens** for instant checkout (`preloadCheckout: true` in `Configuration`)
 - **Never trust client-side entitlements alone** for critical access control
+
+## Migrating from earlier SDK versions
+
+See [`MIGRATING.md`](MIGRATING.md) for the rename matrix and a guide to upgrading from 1.0–1.2 to 1.3.
 
 See [Best Practices](https://docs.zerosettle.io/iap/best-practices) for the full guide.
 
