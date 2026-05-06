@@ -54,6 +54,10 @@ public struct MigrationTipView: View {
     @State private var confettiTrigger = 0
     @State private var checkoutURL: URL?
     @State private var hasApplePay = false
+
+    /// Mirrored from `ZeroSettle.shared.applePayAvailability.state`.
+    /// Driven by `.onReceive` of the publisher.
+    @State private var applePayState: ApplePayAvailability.State = .ready
     @StateObject private var preloader = MigrationCheckoutPreloader()
     @State private var preloadTriggered = false
 
@@ -152,6 +156,14 @@ public struct MigrationTipView: View {
         manager.offerData?.prompt.discountPercent ?? 0
     }
 
+    /// Apple-Pay-only mode: when true, native PassKit availability supersedes the
+    /// JS-bridge `hasApplePay` signal for CTA / banner-visibility decisions.
+    /// Computed (not `@State`) so it always reflects the current `remoteConfig`,
+    /// even if bootstrap completes after the view first appears.
+    private var applePayOnlyMode: Bool {
+        ZeroSettle.shared.remoteConfig?.checkout.isApplePayOnly == true
+    }
+
     // MARK: - Body
 
     public var body: some View {
@@ -172,7 +184,13 @@ public struct MigrationTipView: View {
 
             case .eligible, .presented:
                 let _ = ZSLogger.debug("[MigrateTipView] Rendering .\(manager.state) — showing offerCardView", category: .migration)
-                offerCardView
+                if applePayOnlyMode && applePayState == .unavailable {
+                    // Apple-Pay-only merchant + device cannot do Apple Pay → no checkout path.
+                    // Hide the banner; warning logged once on transition by ApplePayAvailability.
+                    Color.clear.frame(height: 0)
+                } else {
+                    offerCardView
+                }
 
             case .accepted:
                 if checkingCancellation {
@@ -203,6 +221,12 @@ public struct MigrationTipView: View {
                 preloader.reset()
                 preloadTriggered = false
             }
+        }
+        .onAppear {
+            applePayState = ZeroSettle.shared.applePayAvailability.state
+        }
+        .onReceive(ZeroSettle.shared.applePayAvailability.statePublisher) { newState in
+            applePayState = newState
         }
         .onChange(of: preloader.buttonsReady) { _, ready in
             if ready && !isExpanded && checkoutURL != nil {
@@ -304,27 +328,42 @@ public struct MigrationTipView: View {
                         .padding(.bottom, 16)
                         .accessibilityLabel("Loading checkout")
                 } else {
-                    Button(action: { ctaTapped = true; startCheckout() }) {
-                        HStack(spacing: 8) {
-                            if manager.isLoading {
-                                ProgressView()
-                                    .progressViewStyle(CircularProgressViewStyle(tint: backgroundColor))
-                                    .scaleEffect(0.8)
-                                    .accessibilityHidden(true)
-                            }
-                            Text(manager.isLoading ? "" : (serverDisplay?.offerCtaOrDefault(manager.offerData?.prompt.ctaText ?? (discountPercent > 0 ? "Save \(discountPercent)% Forever" : "Switch Now")) ?? manager.offerData?.prompt.ctaText ?? (discountPercent > 0 ? "Save \(discountPercent)% Forever" : "Switch Now")))
+                    if applePayOnlyMode && applePayState == .setupRequired {
+                        Button(action: { ZeroSettle.shared.presentApplePaySetup() }) {
+                            Text(ApplePayCopy.setupCTA)
                                 .font(ctaFont ?? .body.weight(.bold))
                                 .foregroundColor(backgroundColor)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .background(Color.white)
+                                .clipShape(Capsule())
                         }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .background(Color.white)
-                        .clipShape(Capsule())
+                        .accessibilityHint("Opens the system Wallet to add a card for Apple Pay")
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 16)
+                    } else {
+                        Button(action: { ctaTapped = true; startCheckout() }) {
+                            HStack(spacing: 8) {
+                                if manager.isLoading {
+                                    ProgressView()
+                                        .progressViewStyle(CircularProgressViewStyle(tint: backgroundColor))
+                                        .scaleEffect(0.8)
+                                        .accessibilityHidden(true)
+                                }
+                                Text(manager.isLoading ? "" : (serverDisplay?.offerCtaOrDefault(manager.offerData?.prompt.ctaText ?? (discountPercent > 0 ? "Save \(discountPercent)% Forever" : "Switch Now")) ?? manager.offerData?.prompt.ctaText ?? (discountPercent > 0 ? "Save \(discountPercent)% Forever" : "Switch Now")))
+                                    .font(ctaFont ?? .body.weight(.bold))
+                                    .foregroundColor(backgroundColor)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(Color.white)
+                            .clipShape(Capsule())
+                        }
+                        .accessibilityHint("Opens the web checkout to switch to direct billing")
+                        .disabled(manager.isLoading)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 16)
                     }
-                    .accessibilityHint("Opens the web checkout to switch to direct billing")
-                    .disabled(manager.isLoading)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 16)
                 }
             }
 
