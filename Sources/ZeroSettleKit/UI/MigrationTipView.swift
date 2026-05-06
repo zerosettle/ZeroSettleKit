@@ -960,7 +960,14 @@ struct CheckoutWebView: UIViewRepresentable {
         // Handle messages from JavaScript
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             if message.name == "debugLog" {
-                // Intentionally ignore verbose WebView logging.
+                // Stripe's PaymentElement chatter is high-volume and not
+                // useful in normal operation. Forward only zs-prefixed
+                // diagnostic logs so the SDK's own JS instrumentation
+                // (e.g. `[zs-checkout] sub-pe paymentMethodTypes=...`)
+                // surfaces in Xcode while leaving Stripe noise muted.
+                if let body = message.body as? String, body.hasPrefix("[zs-") {
+                    ZSLogger.info("[CheckoutWebView][JS] \(body)", category: .migration)
+                }
             } else if message.name == "contentHeight", let height = message.body as? Double, height > 0 {
                 DispatchQueue.main.async {
                     self.onContentHeightChanged(CGFloat(height))
@@ -1518,6 +1525,14 @@ internal final class MigrationCheckoutPreloader: ObservableObject {
                 } else if body == "buttons_ready" {
                     self.buttonsReady = true
                 }
+            } else if message.name == "debugLog",
+                      let body = message.body as? String,
+                      body.hasPrefix("[zs-") {
+                // SDK-prefixed JS diagnostics fire at PE-create time during
+                // preload (before the live CheckoutWebView coordinator takes
+                // over), so forward them to Xcode directly. Stripe's own
+                // verbose chatter is left muted.
+                ZSLogger.info("[MigrationPreloader][JS] \(body)", category: .migration)
             }
         }
 
