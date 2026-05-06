@@ -119,6 +119,13 @@ public struct OfferTipView: View {
     @State private var contentHeight: CGFloat = 180
     @State private var checkoutURL: URL?
     @State private var hasApplePay = false
+    /// Apple-Pay-only mode: when true, native PassKit availability
+    /// supersedes the JS-bridge `hasApplePay` signal for CTA / banner-visibility decisions.
+    @State private var applePayOnlyMode: Bool = false
+
+    /// Mirrored from `ZeroSettle.shared.applePayAvailability.state`.
+    /// Driven by `.onReceive` of the publisher.
+    @State private var applePayState: ApplePayAvailability.State = .ready
     @StateObject private var preloader = MigrationCheckoutPreloader()
     @State private var preloadTriggered = false
     /// True when performing a web-to-web upgrade (no WebView, just a spinner).
@@ -213,7 +220,13 @@ public struct OfferTipView: View {
                 EmptyView()
 
             case .eligible, .presented:
-                offerCardView
+                if applePayOnlyMode && applePayState == .unavailable {
+                    // Apple-Pay-only merchant + device cannot do Apple Pay → no checkout path.
+                    // Hide the banner; warning logged once on transition by ApplePayAvailability.
+                    Color.clear.frame(height: 0)
+                } else {
+                    offerCardView
+                }
 
             case .accepted:
                 if checkingCancellation {
@@ -256,6 +269,13 @@ public struct OfferTipView: View {
             if newState == .eligible {
                 ctaTapped = false
             }
+        }
+        .onAppear {
+            applePayOnlyMode = ZeroSettle.shared.remoteConfig?.checkout.isApplePayOnly == true
+            applePayState = ZeroSettle.shared.applePayAvailability.state
+        }
+        .onReceive(ZeroSettle.shared.applePayAvailability.statePublisher) { newState in
+            applePayState = newState
         }
         .onChange(of: preloader.buttonsReady) { _, ready in
             if ready && !isExpanded && checkoutURL != nil {
@@ -343,11 +363,19 @@ public struct OfferTipView: View {
                             webToWebInProgress ? "Processing upgrade" : "Loading checkout"
                         )
                 } else {
-                    ctaButton(
-                        label: display?.offerCtaOrDefault(defaultOfferCta) ?? defaultOfferCta,
-                        accessibilityHint: "Opens the checkout to switch to direct billing",
-                        action: handleCtaTapped
-                    )
+                    if applePayOnlyMode && applePayState == .setupRequired {
+                        ctaButton(
+                            label: ApplePayCopy.setupCTA,
+                            accessibilityHint: "Opens the system Wallet to add a card for Apple Pay",
+                            action: { ZeroSettle.shared.presentApplePaySetup() }
+                        )
+                    } else {
+                        ctaButton(
+                            label: display?.offerCtaOrDefault(defaultOfferCta) ?? defaultOfferCta,
+                            accessibilityHint: "Opens the checkout to switch to direct billing",
+                            action: handleCtaTapped
+                        )
+                    }
                 }
             }
 
