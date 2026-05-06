@@ -348,7 +348,7 @@ extension CheckoutSheet {
             isApplePayOnly: isApplePayOnly,
             state: availabilityState
         ) {
-            ZSLogger.info("CheckoutSheet.present blocked: \(blockingError)", category: .checkout)
+            ZSLogger.info("[Checkout] present blocked: \(blockingError)", category: .checkout)
             onComplete(.failure(blockingError))
             return
         }

@@ -93,13 +93,19 @@ final class CheckoutSheetApplePayGateTests: XCTestCase {
     // helper takes the same signal inputs and returns the error to
     // surface (or nil to proceed).
 
-    func testGateNoConfigProceeds() {
-        XCTAssertNil(
-            CheckoutSheetApplePayGate.errorIfBlocked(
-                isApplePayOnly: false,
-                state: .unavailable
+    func testGateNotApplePayOnlyProceedsRegardlessOfState() {
+        // When isApplePayOnly is false, the gate must return nil for
+        // every availability state — the merchant hasn't restricted
+        // payment methods, so PassKit state shouldn't gate checkout.
+        for state: ApplePayAvailability.State in [.ready, .setupRequired, .unavailable] {
+            XCTAssertNil(
+                CheckoutSheetApplePayGate.errorIfBlocked(
+                    isApplePayOnly: false,
+                    state: state
+                ),
+                "isApplePayOnly=false with state=\(state) should proceed"
             )
-        )
+        }
     }
 
     func testGateApplePayOnlyUnavailableReturnsUnavailableError() {
