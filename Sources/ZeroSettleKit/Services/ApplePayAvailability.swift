@@ -110,7 +110,7 @@ public final class ApplePayAvailability: ObservableObject, ApplePayAvailabilityP
                 object: nil,
                 queue: queue
             ) { [weak self] _ in
-                MainActor.assumeIsolated {
+                Task { @MainActor [weak self] in
                     self?.refresh()
                 }
             }
@@ -119,7 +119,7 @@ public final class ApplePayAvailability: ObservableObject, ApplePayAvailabilityP
         #if canImport(UIKit)
         observers.append(
             center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: queue) { [weak self] _ in
-                MainActor.assumeIsolated {
+                Task { @MainActor [weak self] in
                     self?.refresh()
                 }
             }
@@ -171,6 +171,7 @@ public final class MockApplePayAvailability: ObservableObject, ApplePayAvailabil
     }
 
     public func simulate(_ newState: ApplePayAvailability.State) {
+        guard newState != state else { return }
         state = newState
     }
 }

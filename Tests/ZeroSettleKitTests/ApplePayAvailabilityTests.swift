@@ -29,10 +29,30 @@ final class ApplePayAvailabilityTests: XCTestCase {
     func testProductionInitDoesNotCrash() {
         // Smoke test: production init touches PKPaymentAuthorizationController
         // and NotificationCenter — must not throw or crash on simulator.
+        // Initial state must be one of the three known cases. (The exact
+        // value varies across simulator iOS versions — older simulators
+        // report .unavailable, iOS 26+ simulators may report .ready.)
         let svc = ApplePayAvailability()
-        // Simulator: canMakePayments() returns false → .unavailable.
-        // Real device behavior cannot be unit-tested; this only guards
-        // against init-time regressions.
-        XCTAssertNotNil(svc.state)
+        XCTAssertTrue([.ready, .setupRequired, .unavailable].contains(svc.state))
+    }
+
+    func testProductionRefreshIsIdempotentForUnchangedState() {
+        // Simulator state is stable across calls — refresh() must not
+        // emit duplicate published values when nothing has changed.
+        let svc = ApplePayAvailability()
+        let initial = svc.state
+        var emissions: [ApplePayAvailability.State] = []
+        let cancellable = svc.$state.sink { emissions.append($0) }
+        defer { cancellable.cancel() }
+
+        svc.refresh()
+        svc.refresh()
+        svc.refresh()
+
+        // One emission for the initial subscribe; the three refresh()
+        // calls must not produce additional emissions when state is
+        // unchanged. Captured `initial` to stay agnostic to simulator
+        // iOS-version differences in Apple Pay availability.
+        XCTAssertEqual(emissions, [initial])
     }
 }
