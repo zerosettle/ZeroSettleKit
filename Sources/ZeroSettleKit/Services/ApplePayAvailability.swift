@@ -89,17 +89,41 @@ public final class ApplePayAvailability: ObservableObject, ApplePayAvailabilityP
     }
 
     #if DEBUG
+    private static let debugStateOverrideKey = "ZSDebug.applePayStateOverride"
+
     /// DEBUG-only override that forces `state` to a chosen value, bypassing
     /// PassKit. Use to test UI for states that are hard to reproduce on a
     /// real device (e.g., `.setupRequired` requires emptying Wallet). Set
     /// to `nil` to restore live PassKit computation. The override survives
-    /// `PKPassLibraryDidChange` and foreground notifications.
+    /// `PKPassLibraryDidChange`, foreground notifications, and app
+    /// kill/relaunch (persisted via `UserDefaults`).
     ///
     /// Example: `ZeroSettle.shared.applePayAvailability.debugStateOverride = .setupRequired`
-    public var debugStateOverride: State? = nil {
+    public var debugStateOverride: State? = ApplePayAvailability.loadPersistedStateOverride() {
         didSet {
             guard oldValue != debugStateOverride else { return }
+            Self.persistStateOverride(debugStateOverride)
             refresh()
+        }
+    }
+
+    private static func loadPersistedStateOverride() -> State? {
+        guard let raw = UserDefaults.standard.string(forKey: debugStateOverrideKey) else { return nil }
+        switch raw {
+        case "ready":         return .ready
+        case "setupRequired": return .setupRequired
+        case "unavailable":   return .unavailable
+        default:              return nil
+        }
+    }
+
+    private static func persistStateOverride(_ value: State?) {
+        let defaults = UserDefaults.standard
+        switch value {
+        case .ready:         defaults.set("ready", forKey: debugStateOverrideKey)
+        case .setupRequired: defaults.set("setupRequired", forKey: debugStateOverrideKey)
+        case .unavailable:   defaults.set("unavailable", forKey: debugStateOverrideKey)
+        case .none:          defaults.removeObject(forKey: debugStateOverrideKey)
         }
     }
     #endif

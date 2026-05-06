@@ -838,15 +838,27 @@ public final class ZeroSettle: ObservableObject {
     }
 
     #if DEBUG
+    private static let debugApplePayOnlyOverrideKey = "ZSDebug.applePayOnlyOverride"
+
     /// DEBUG-only override that forces ``isApplePayOnly`` to a chosen value,
     /// bypassing the live backend `remoteConfig`. Use to test the
     /// Apple-Pay-only banner / gate code paths against a tenant that
     /// isn't actually configured for Apple-Pay-only on the backend.
-    /// Set to `nil` to use the live backend value.
+    /// Set to `nil` to use the live backend value. The override survives
+    /// app kill/relaunch (persisted via `UserDefaults`).
     ///
     /// Pair with ``ApplePayAvailability/debugStateOverride`` to drive
     /// the full UI matrix without needing real device or backend state.
-    public var debugApplePayOnlyOverride: Bool?
+    public var debugApplePayOnlyOverride: Bool? = UserDefaults.standard.object(forKey: ZeroSettle.debugApplePayOnlyOverrideKey) as? Bool {
+        didSet {
+            let defaults = UserDefaults.standard
+            if let value = debugApplePayOnlyOverride {
+                defaults.set(value, forKey: Self.debugApplePayOnlyOverrideKey)
+            } else {
+                defaults.removeObject(forKey: Self.debugApplePayOnlyOverrideKey)
+            }
+        }
+    }
     #endif
 
     // MARK: - Internal State
