@@ -823,6 +823,32 @@ public final class ZeroSettle: ObservableObject {
         PKPassLibrary().openPaymentSetup()
     }
 
+    /// Whether the SDK is currently treating this merchant as Apple-Pay-only.
+    /// Drives banner CTA swap and the imperative-checkout pre-flight gate.
+    ///
+    /// Reads the live backend `remoteConfig.checkout.paymentMethods`. In
+    /// DEBUG builds, ``debugApplePayOnlyOverride`` (when non-nil) takes
+    /// precedence so the banner / gate can be exercised against tenants
+    /// that aren't actually Apple-Pay-only on the backend.
+    public var isApplePayOnly: Bool {
+        #if DEBUG
+        if let override = debugApplePayOnlyOverride { return override }
+        #endif
+        return remoteConfig?.checkout.isApplePayOnly == true
+    }
+
+    #if DEBUG
+    /// DEBUG-only override that forces ``isApplePayOnly`` to a chosen value,
+    /// bypassing the live backend `remoteConfig`. Use to test the
+    /// Apple-Pay-only banner / gate code paths against a tenant that
+    /// isn't actually configured for Apple-Pay-only on the backend.
+    /// Set to `nil` to use the live backend value.
+    ///
+    /// Pair with ``ApplePayAvailability/debugStateOverride`` to drive
+    /// the full UI matrix without needing real device or backend state.
+    public var debugApplePayOnlyOverride: Bool?
+    #endif
+
     // MARK: - Internal State
 
     /// Internal accessor for the current configuration.

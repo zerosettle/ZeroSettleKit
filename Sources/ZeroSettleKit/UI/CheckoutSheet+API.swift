@@ -342,7 +342,7 @@ extension CheckoutSheet {
         // present checkout if the device cannot complete it. Reports
         // via onComplete so callers handle it through the same Result
         // path as any other checkout failure.
-        let isApplePayOnly = ZeroSettle.shared.remoteConfig?.checkout.isApplePayOnly == true
+        let isApplePayOnly = ZeroSettle.shared.isApplePayOnly
         let availabilityState = ZeroSettle.shared.applePayAvailability.state
         if let blockingError = CheckoutSheetApplePayGate.errorIfBlocked(
             isApplePayOnly: isApplePayOnly,

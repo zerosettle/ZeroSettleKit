@@ -161,10 +161,10 @@ public struct OfferTipView: View {
 
     /// Apple-Pay-only mode: when true, native PassKit availability supersedes the
     /// JS-bridge `hasApplePay` signal for CTA / banner-visibility decisions.
-    /// Computed (not `@State`) so it always reflects the current `remoteConfig`,
-    /// even if bootstrap completes after the view first appears.
+    /// Reads through `ZeroSettle.shared.isApplePayOnly`, which honours the
+    /// `debugApplePayOnlyOverride` in DEBUG builds.
     private var applePayOnlyMode: Bool {
-        ZeroSettle.shared.remoteConfig?.checkout.isApplePayOnly == true
+        ZeroSettle.shared.isApplePayOnly
     }
 
     // MARK: - Init
