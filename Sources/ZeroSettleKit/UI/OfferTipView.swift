@@ -119,9 +119,6 @@ public struct OfferTipView: View {
     @State private var contentHeight: CGFloat = 180
     @State private var checkoutURL: URL?
     @State private var hasApplePay = false
-    /// Apple-Pay-only mode: when true, native PassKit availability
-    /// supersedes the JS-bridge `hasApplePay` signal for CTA / banner-visibility decisions.
-    @State private var applePayOnlyMode: Bool = false
 
     /// Mirrored from `ZeroSettle.shared.applePayAvailability.state`.
     /// Driven by `.onReceive` of the publisher.
@@ -160,6 +157,14 @@ public struct OfferTipView: View {
     /// Whether the current offer uses a WebView-based checkout (migration or storekit_to_web upgrade).
     private var usesWebViewCheckout: Bool {
         manager.offerData?.upgradeType != .webToWeb
+    }
+
+    /// Apple-Pay-only mode: when true, native PassKit availability supersedes the
+    /// JS-bridge `hasApplePay` signal for CTA / banner-visibility decisions.
+    /// Computed (not `@State`) so it always reflects the current `remoteConfig`,
+    /// even if bootstrap completes after the view first appears.
+    private var applePayOnlyMode: Bool {
+        ZeroSettle.shared.remoteConfig?.checkout.isApplePayOnly == true
     }
 
     // MARK: - Init
@@ -271,7 +276,6 @@ public struct OfferTipView: View {
             }
         }
         .onAppear {
-            applePayOnlyMode = ZeroSettle.shared.remoteConfig?.checkout.isApplePayOnly == true
             applePayState = ZeroSettle.shared.applePayAvailability.state
         }
         .onReceive(ZeroSettle.shared.applePayAvailability.statePublisher) { newState in
