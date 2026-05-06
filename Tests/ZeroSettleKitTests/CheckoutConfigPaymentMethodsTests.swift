@@ -9,16 +9,16 @@ final class CheckoutConfigPaymentMethodsTests: XCTestCase {
 
     // MARK: - Direct property tests
 
-    func testIsApplePayOnly_whenSingleApplePayEntry_returnsTrue() {
+    func testIsApplePayOnlyTrueForSingleApplePayEntry() {
         let cfg = CheckoutConfig(
             sheetType: .webView,
             isEnabled: true,
-            paymentMethods: ["apple_pay"]
+            paymentMethods: [PaymentMethodID.applePay]
         )
         XCTAssertTrue(cfg.isApplePayOnly)
     }
 
-    func testIsApplePayOnly_whenNil_returnsFalse() {
+    func testIsApplePayOnlyFalseWhenNil() {
         let cfg = CheckoutConfig(
             sheetType: .webView,
             isEnabled: true,
@@ -27,7 +27,7 @@ final class CheckoutConfigPaymentMethodsTests: XCTestCase {
         XCTAssertFalse(cfg.isApplePayOnly)
     }
 
-    func testIsApplePayOnly_whenMultipleMethods_returnsFalse() {
+    func testIsApplePayOnlyFalseForMultipleMethods() {
         let cfg = CheckoutConfig(
             sheetType: .webView,
             isEnabled: true,
@@ -36,7 +36,7 @@ final class CheckoutConfigPaymentMethodsTests: XCTestCase {
         XCTAssertFalse(cfg.isApplePayOnly)
     }
 
-    func testIsApplePayOnly_whenCardOnly_returnsFalse() {
+    func testIsApplePayOnlyFalseForCardOnly() {
         let cfg = CheckoutConfig(
             sheetType: .webView,
             isEnabled: true,
@@ -56,16 +56,16 @@ extension CheckoutConfigPaymentMethodsTests {
         return try decoder.decode(type, from: Data(json.utf8))
     }
 
-    func testWireDecode_paymentMethodsPresent() throws {
+    func testWireDecodePaymentMethodsPresent() throws {
         struct Probe: Decodable {
             let paymentMethods: [String]?
         }
         let json = #"{"payment_methods": ["apple_pay"]}"#
         let probe = try decode(Probe.self, from: json)
-        XCTAssertEqual(probe.paymentMethods, ["apple_pay"])
+        XCTAssertEqual(probe.paymentMethods, [PaymentMethodID.applePay])
     }
 
-    func testWireDecode_paymentMethodsAbsent() throws {
+    func testWireDecodePaymentMethodsAbsent() throws {
         struct Probe: Decodable {
             let paymentMethods: [String]?
         }
