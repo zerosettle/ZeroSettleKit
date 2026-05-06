@@ -83,3 +83,56 @@ final class ApplePayErrorTests: XCTestCase {
         XCTAssertTrue(a === b)
     }
 }
+
+@MainActor
+final class CheckoutSheetApplePayGateTests: XCTestCase {
+
+    // The gate logic is a small pure helper we'll extract — testing
+    // through `present(from:)` would require a UIViewController and a
+    // full host app, which our test bundle isn't set up for. The
+    // helper takes the same signal inputs and returns the error to
+    // surface (or nil to proceed).
+
+    func testGateNoConfigProceeds() {
+        XCTAssertNil(
+            CheckoutSheetApplePayGate.errorIfBlocked(
+                isApplePayOnly: false,
+                state: .unavailable
+            )
+        )
+    }
+
+    func testGateApplePayOnlyUnavailableReturnsUnavailableError() {
+        let result = CheckoutSheetApplePayGate.errorIfBlocked(
+            isApplePayOnly: true,
+            state: .unavailable
+        )
+        // ZeroSettleError has non-Equatable associated values on other
+        // cases, so it doesn't conform to Equatable. Pattern-match
+        // instead — the behavior under test is identical.
+        guard case .applePayUnavailable = result else {
+            XCTFail("Expected .applePayUnavailable, got \(String(describing: result))")
+            return
+        }
+    }
+
+    func testGateApplePayOnlySetupRequiredReturnsSetupRequiredError() {
+        let result = CheckoutSheetApplePayGate.errorIfBlocked(
+            isApplePayOnly: true,
+            state: .setupRequired
+        )
+        guard case .applePaySetupRequired = result else {
+            XCTFail("Expected .applePaySetupRequired, got \(String(describing: result))")
+            return
+        }
+    }
+
+    func testGateApplePayOnlyReadyProceeds() {
+        XCTAssertNil(
+            CheckoutSheetApplePayGate.errorIfBlocked(
+                isApplePayOnly: true,
+                state: .ready
+            )
+        )
+    }
+}
