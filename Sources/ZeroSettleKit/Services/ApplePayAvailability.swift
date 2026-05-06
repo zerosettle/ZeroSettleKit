@@ -81,14 +81,37 @@ public final class ApplePayAvailability: ObservableObject, ApplePayAvailabilityP
     /// `presentApplePaySetup()` if a caller wants to force-recompute
     /// without waiting for the foreground notification).
     public func refresh() {
-        let newState = Self.compute()
+        let newState = currentComputedState()
         guard newState != state else { return }
         let old = state
         state = newState
         log(transition: (from: old, to: newState))
     }
 
+    #if DEBUG
+    /// DEBUG-only override that forces `state` to a chosen value, bypassing
+    /// PassKit. Use to test UI for states that are hard to reproduce on a
+    /// real device (e.g., `.setupRequired` requires emptying Wallet). Set
+    /// to `nil` to restore live PassKit computation. The override survives
+    /// `PKPassLibraryDidChange` and foreground notifications.
+    ///
+    /// Example: `ZeroSettle.shared.applePayAvailability.debugStateOverride = .setupRequired`
+    public var debugStateOverride: State? = nil {
+        didSet {
+            guard oldValue != debugStateOverride else { return }
+            refresh()
+        }
+    }
+    #endif
+
     // MARK: - Internals
+
+    private func currentComputedState() -> State {
+        #if DEBUG
+        if let override = debugStateOverride { return override }
+        #endif
+        return Self.compute()
+    }
 
     private static func compute() -> State {
         guard PKPaymentAuthorizationController.canMakePayments() else {
