@@ -95,16 +95,32 @@ public struct CheckoutConfig: Sendable, Equatable {
     /// The SDK prefers the local `Configuration.appleMerchantId` over this value.
     public let appleMerchantId: String?
 
+    /// Allowed payment methods for this merchant. `nil` (or missing on the
+    /// wire) means no restriction — all methods enabled by the merchant on
+    /// the backend are available. `["apple_pay"]` restricts the SDK to
+    /// Apple-Pay-only behavior (native availability checks, setup CTA,
+    /// hide-when-unavailable). Other values are accepted for forward
+    /// compatibility but trigger no v1.4.0 behavior change.
+    public let paymentMethods: [String]?
+
     public init(
         sheetType: CheckoutType,
         isEnabled: Bool,
         jurisdictions: [Jurisdiction: JurisdictionCheckoutConfig] = [:],
-        appleMerchantId: String? = nil
+        appleMerchantId: String? = nil,
+        paymentMethods: [String]? = nil
     ) {
         self.sheetType = sheetType
         self.isEnabled = isEnabled
         self.jurisdictions = jurisdictions
         self.appleMerchantId = appleMerchantId
+        self.paymentMethods = paymentMethods
+    }
+
+    /// True when the merchant has restricted payment to Apple Pay only.
+    /// Drives native availability checks and banner CTA swap.
+    public var isApplePayOnly: Bool {
+        paymentMethods == ["apple_pay"]
     }
 }
 

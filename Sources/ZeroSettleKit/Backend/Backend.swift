@@ -126,7 +126,8 @@ internal final class Backend: @unchecked Sendable {
                 sheetType: checkoutType,
                 isEnabled: configResponse.checkout.isEnabled,
                 jurisdictions: jurisdictions,
-                appleMerchantId: configResponse.checkout.appleMerchantId
+                appleMerchantId: configResponse.checkout.appleMerchantId,
+                paymentMethods: configResponse.checkout.paymentMethods
             )
 
             let migration: MigrationPrompt?
@@ -827,6 +828,7 @@ private struct CheckoutFlowConfigResponse: Decodable {
     let isEnabled: Bool
     let jurisdictions: [String: JurisdictionConfigResponse]?
     let appleMerchantId: String?
+    let paymentMethods: [String]?
 }
 
 private struct JurisdictionConfigResponse: Decodable {
