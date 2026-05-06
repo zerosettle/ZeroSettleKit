@@ -77,8 +77,7 @@ final class ApplePayErrorTests: XCTestCase {
     }
 
     func testZeroSettleHasApplePayAvailabilityAccessor() {
-        // The accessor should return a non-nil instance and be stable
-        // across calls (single shared instance).
+        // Should be stable across calls (single shared instance).
         let a = ZeroSettle.shared.applePayAvailability
         let b = ZeroSettle.shared.applePayAvailability
         XCTAssertTrue(a === b)

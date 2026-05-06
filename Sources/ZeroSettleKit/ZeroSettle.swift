@@ -804,12 +804,11 @@ public final class ZeroSettle: ObservableObject {
 
     // MARK: - Apple Pay Availability
 
-    /// Single shared `ApplePayAvailability` instance. Created on first
-    /// access to `ZeroSettle.shared` (the singleton's natural lazy
-    /// initialization) — apps that never read this property still pay
-    /// the cost on first `ZeroSettle.shared` touch, but that cost is
-    /// just two `NotificationCenter.addObserver` calls and one
-    /// `PKPaymentAuthorizationController.canMakePayments()`. Negligible.
+    /// Single shared `ApplePayAvailability` instance. Initialized eagerly
+    /// when the `ZeroSettle.shared` singleton is first touched (e.g., by
+    /// `configure()`) — apps that never read this property still pay the
+    /// init cost, which is two `NotificationCenter.addObserver` calls and
+    /// one `PKPaymentAuthorizationController.canMakePayments()`. Negligible.
     public let applePayAvailability = ApplePayAvailability()
 
     /// Launches the system Wallet setup flow so the user can add a card
