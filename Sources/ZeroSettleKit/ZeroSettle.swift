@@ -827,39 +827,16 @@ public final class ZeroSettle: ObservableObject {
     /// Drives banner CTA swap and the imperative-checkout pre-flight gate.
     ///
     /// Reads the live backend `remoteConfig.checkout.paymentMethods`. In
-    /// DEBUG builds, ``debugApplePayOnlyOverride`` (when non-nil) takes
-    /// precedence so the banner / gate can be exercised against tenants
-    /// that aren't actually Apple-Pay-only on the backend.
+    /// DEBUG builds, setting ``ApplePayAvailability/debugStateOverride``
+    /// also forces this to `true` so the banner / gate code paths can be
+    /// exercised against tenants that aren't actually Apple-Pay-only on
+    /// the backend.
     public var isApplePayOnly: Bool {
         #if DEBUG
-        if let override = debugApplePayOnlyOverride { return override }
+        if applePayAvailability.debugStateOverride != nil { return true }
         #endif
         return remoteConfig?.checkout.isApplePayOnly == true
     }
-
-    #if DEBUG
-    private static let debugApplePayOnlyOverrideKey = "ZSDebug.applePayOnlyOverride"
-
-    /// DEBUG-only override that forces ``isApplePayOnly`` to a chosen value,
-    /// bypassing the live backend `remoteConfig`. Use to test the
-    /// Apple-Pay-only banner / gate code paths against a tenant that
-    /// isn't actually configured for Apple-Pay-only on the backend.
-    /// Set to `nil` to use the live backend value. The override survives
-    /// app kill/relaunch (persisted via `UserDefaults`).
-    ///
-    /// Pair with ``ApplePayAvailability/debugStateOverride`` to drive
-    /// the full UI matrix without needing real device or backend state.
-    public var debugApplePayOnlyOverride: Bool? = UserDefaults.standard.object(forKey: ZeroSettle.debugApplePayOnlyOverrideKey) as? Bool {
-        didSet {
-            let defaults = UserDefaults.standard
-            if let value = debugApplePayOnlyOverride {
-                defaults.set(value, forKey: Self.debugApplePayOnlyOverrideKey)
-            } else {
-                defaults.removeObject(forKey: Self.debugApplePayOnlyOverrideKey)
-            }
-        }
-    }
-    #endif
 
     // MARK: - Internal State
 
