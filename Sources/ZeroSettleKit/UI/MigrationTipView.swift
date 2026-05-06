@@ -158,8 +158,10 @@ public struct MigrationTipView: View {
 
     /// Apple-Pay-only mode: when true, native PassKit availability supersedes the
     /// JS-bridge `hasApplePay` signal for CTA / banner-visibility decisions.
-    /// Reads through `ZeroSettle.shared.isApplePayOnly`, which honours the
-    /// `debugApplePayOnlyOverride` in DEBUG builds.
+    /// Reads through `ZeroSettle.shared.isApplePayOnly`, which resolves the
+    /// backend `remoteConfig.checkout.paymentMethods` (and, in DEBUG builds,
+    /// auto-resolves to `true` while ``ApplePayAvailability/debugStateOverride``
+    /// is non-nil so the test flow can exercise the Apple-Pay-only branch).
     private var applePayOnlyMode: Bool {
         ZeroSettle.shared.isApplePayOnly
     }

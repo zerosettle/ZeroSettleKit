@@ -93,10 +93,18 @@ public final class ApplePayAvailability: ObservableObject, ApplePayAvailabilityP
 
     /// DEBUG-only override that forces `state` to a chosen value, bypassing
     /// PassKit. Use to test UI for states that are hard to reproduce on a
-    /// real device (e.g., `.setupRequired` requires emptying Wallet). Set
-    /// to `nil` to restore live PassKit computation. The override survives
-    /// `PKPassLibraryDidChange`, foreground notifications, and app
-    /// kill/relaunch (persisted via `UserDefaults`).
+    /// real device (e.g., `.setupRequired` requires emptying Wallet).
+    ///
+    /// **Side effect:** while this is non-nil, ``ZeroSettle/isApplePayOnly``
+    /// also resolves to `true`, so the banner CTA swap and the imperative
+    /// `CheckoutSheet.present` pre-flight gate fire even on tenants that
+    /// aren't actually configured `payment_methods=["apple_pay"]`. This
+    /// keeps the testing flow as one knob — a tester picking a state has
+    /// already declared they want to exercise the Apple-Pay-only path.
+    ///
+    /// Set to `nil` to restore live PassKit computation. The override
+    /// survives `PKPassLibraryDidChange`, foreground notifications, and
+    /// app kill/relaunch (persisted via `UserDefaults`).
     ///
     /// Example: `ZeroSettle.shared.applePayAvailability.debugStateOverride = .setupRequired`
     public var debugStateOverride: State? = ApplePayAvailability.loadPersistedStateOverride() {
