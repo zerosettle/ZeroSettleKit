@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import PassKit
 import StoreKit
 import SwiftUI
 
@@ -144,6 +145,18 @@ public enum ZeroSettleError: Error, LocalizedError {
     /// configuration error.
     case checkoutNotStarted
 
+    /// Apple-Pay-only merchant configuration is active and the device
+    /// cannot do Apple Pay at all (older hardware, simulator,
+    /// MDM/parental restriction). The customer was NOT charged. The
+    /// hosting app should show its own UX or skip the purchase path.
+    case applePayUnavailable
+
+    /// Apple-Pay-only merchant configuration is active and the device
+    /// supports Apple Pay but Wallet has no supported cards. The
+    /// customer was NOT charged. Call ``ZeroSettle/presentApplePaySetup()``
+    /// to launch the system Wallet setup flow, then retry.
+    case applePaySetupRequired
+
     /// Returns `true` if the error represents a user-initiated cancellation,
     /// regardless of which layer threw it (ZeroSettleKit, StoreKit, or Swift concurrency).
     public static func isCancellation(_ error: Error) -> Bool {
@@ -203,6 +216,10 @@ public enum ZeroSettleError: Error, LocalizedError {
             return "ZeroSettle has not identified a user. Call ZeroSettle.shared.identify(.user(id:)) (or .anonymous) before invoking user-scoped APIs."
         case .checkoutNotStarted:
             return "Checkout never started. The PaymentIntent was not created — the customer was NOT charged. Likely a backend or configuration issue at PI-creation time; check Render logs for the `/v1/iap/payment-intents/` request that initiated this checkout."
+        case .applePayUnavailable:
+            return "Apple Pay is required for this purchase but is not available on this device."
+        case .applePaySetupRequired:
+            return "Apple Pay is required for this purchase but no card is set up in Wallet."
         }
     }
 }
@@ -784,6 +801,28 @@ public final class ZeroSettle: ObservableObject {
     /// Delegate to receive IAP event callbacks.
     @ObservationIgnored
     public weak var delegate: ZeroSettleDelegate?
+
+    // MARK: - Apple Pay Availability
+
+    /// Single shared `ApplePayAvailability` instance. Created on first
+    /// access to `ZeroSettle.shared` (the singleton's natural lazy
+    /// initialization) — apps that never read this property still pay
+    /// the cost on first `ZeroSettle.shared` touch, but that cost is
+    /// just two `NotificationCenter.addObserver` calls and one
+    /// `PKPaymentAuthorizationController.canMakePayments()`. Negligible.
+    public let applePayAvailability = ApplePayAvailability()
+
+    /// Launches the system Wallet setup flow so the user can add a card
+    /// for Apple Pay. The SDK does not wait for completion — the
+    /// `applePayAvailability` service auto-refreshes on
+    /// `PKPassLibraryDidChange` and `UIApplication.didBecomeActive`,
+    /// so observed state will flip to `.ready` once the user finishes.
+    ///
+    /// Call from a `.applePaySetupRequired` error handler, or from a
+    /// banner CTA when ``ApplePayAvailability/State/setupRequired`` is observed.
+    public func presentApplePaySetup() {
+        PKPassLibrary().openPaymentSetup()
+    }
 
     // MARK: - Internal State
 

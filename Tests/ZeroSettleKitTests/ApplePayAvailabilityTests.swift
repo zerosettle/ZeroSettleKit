@@ -56,3 +56,31 @@ final class ApplePayAvailabilityTests: XCTestCase {
         XCTAssertEqual(emissions, [initial])
     }
 }
+
+@MainActor
+final class ApplePayErrorTests: XCTestCase {
+
+    func testApplePayUnavailableHasLocalizedDescription() {
+        let err = ZeroSettleError.applePayUnavailable
+        XCTAssertEqual(
+            err.errorDescription,
+            "Apple Pay is required for this purchase but is not available on this device."
+        )
+    }
+
+    func testApplePaySetupRequiredHasLocalizedDescription() {
+        let err = ZeroSettleError.applePaySetupRequired
+        XCTAssertEqual(
+            err.errorDescription,
+            "Apple Pay is required for this purchase but no card is set up in Wallet."
+        )
+    }
+
+    func testZeroSettleHasApplePayAvailabilityAccessor() {
+        // The accessor should return a non-nil instance and be stable
+        // across calls (single shared instance).
+        let a = ZeroSettle.shared.applePayAvailability
+        let b = ZeroSettle.shared.applePayAvailability
+        XCTAssertTrue(a === b)
+    }
+}
