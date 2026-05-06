@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'ZeroSettleKit'
-  s.version          = '1.3.0'
+  s.version          = '1.4.0'
   s.summary          = 'Merchant of Record SDK for iOS — web checkout, entitlements, and compliance.'
   s.description      = <<-DESC
     ZeroSettleKit lets iOS developers process payments via web checkout
@@ -25,7 +25,7 @@ Pod::Spec.new do |s|
   ]
 
   s.frameworks = 'Foundation', 'UIKit', 'SwiftUI', 'StoreKit',
-                 'WebKit', 'SafariServices', 'Combine'
+                 'WebKit', 'SafariServices', 'Combine', 'PassKit'
 
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',
