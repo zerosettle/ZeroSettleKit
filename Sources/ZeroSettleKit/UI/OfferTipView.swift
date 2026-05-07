@@ -732,8 +732,13 @@ public struct OfferTipView: View {
                 return
             }
 
-            // Slow path: PI creation on-demand
-            ZSLogger.info("[OfferTipView] slow path: creating PI on-demand", category: .migration)
+            // Slow path: preloader missed (e.g., app launched too recently
+            // or preload disabled). Hit the backend now to create the
+            // Transaction row + checkout URL. The actual Stripe Intent
+            // (PI / SI / Subscription) is still deferred until the user
+            // submits payment in the WebView — this call doesn't touch
+            // Stripe.
+            ZSLogger.info("[OfferTipView] slow path: fetching checkout URL on-demand (no Stripe call)", category: .migration)
             let url = await manager.startCheckout(stripeCustomerId: stripeCustomerId)
             ZSLogger.info("[OfferTipView] startCheckout returned url=\(url != nil) state=\(manager.state)", category: .migration)
             if let url {
