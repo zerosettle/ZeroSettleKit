@@ -60,6 +60,25 @@ internal final class WebCheckoutFlow: NSObject {
         userId: String? = nil,
         presentation: CheckoutType? = nil
     ) async throws -> CheckoutSession {
+        // Pre-flight: when the merchant is Apple-Pay-only, refuse to open the
+        // browser if the device cannot complete the purchase. Mirrors the
+        // bottom-sheet imperative gate. Honors .presentBuiltInUI by opening
+        // system Wallet automatically before throwing. WebCheckoutFlow is
+        // @MainActor-isolated at the class level, so ZeroSettle.shared and
+        // applePayAvailability accessors are safe to call directly here.
+        let outcome = ApplePayPreflightGate.evaluate(
+            isApplePayOnly: ZeroSettle.shared.isApplePayOnly,
+            state: ZeroSettle.shared.applePayAvailability.state,
+            behavior: ZeroSettle.shared.currentConfig?.applePaySetupBehavior ?? .presentBuiltInUI
+        )
+        if case .blocked(let error, let openSetupUI) = outcome {
+            ZSLogger.info("[WebCheckoutFlow] beginCheckout blocked — error=\(error) openSetupUI=\(openSetupUI)", category: .checkout)
+            if openSetupUI {
+                ZeroSettle.shared.presentApplePaySetup()
+            }
+            throw error
+        }
+
         ZSLogger.info("Creating checkout session for product: \(productId)", category: .checkout)
 
         // WebCheckoutFlow uses checkoutMode=browser which produces a different
