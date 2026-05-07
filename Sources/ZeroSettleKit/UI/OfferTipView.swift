@@ -176,7 +176,7 @@ public struct OfferTipView: View {
         ApplePayPreflightGate.evaluate(
             isApplePayOnly: applePayOnlyMode,
             state: applePayState,
-            behavior: ZeroSettle.shared.currentConfig?.applePaySetupBehavior ?? .presentBuiltInUI
+            behavior: ZeroSettle.shared.resolvedApplePaySetupBehavior
         )
     }
 

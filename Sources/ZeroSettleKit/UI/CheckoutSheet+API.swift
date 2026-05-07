@@ -347,7 +347,7 @@ extension CheckoutSheet {
         let outcome = ApplePayPreflightGate.evaluate(
             isApplePayOnly: ZeroSettle.shared.isApplePayOnly,
             state: ZeroSettle.shared.applePayAvailability.state,
-            behavior: ZeroSettle.shared.currentConfig?.applePaySetupBehavior ?? .presentBuiltInUI
+            behavior: ZeroSettle.shared.resolvedApplePaySetupBehavior
         )
         if case .blocked(let error, let openSetupUI) = outcome {
             ZSLogger.info("[Checkout] present blocked — error=\(error) openSetupUI=\(openSetupUI)", category: .checkout)

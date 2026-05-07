@@ -871,6 +871,14 @@ public final class ZeroSettle: ObservableObject {
         return remoteConfig?.checkout.isApplePayOnly == true
     }
 
+    /// The dev's chosen ``ApplePaySetupBehavior``, with the public default
+    /// (`.presentBuiltInUI`) substituted when the SDK is unconfigured. Read
+    /// by the ``ApplePayPreflightGate`` call sites and the banner views to
+    /// keep the fallback definition in one place.
+    internal var resolvedApplePaySetupBehavior: ApplePaySetupBehavior {
+        currentConfig?.applePaySetupBehavior ?? .presentBuiltInUI
+    }
+
     // MARK: - Internal State
 
     /// Internal accessor for the current configuration.
