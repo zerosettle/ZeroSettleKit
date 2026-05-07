@@ -288,17 +288,21 @@ public enum Identity: Sendable {
 /// Set on ``ZeroSettle/Configuration/applePaySetupBehavior`` at SDK
 /// configuration time.
 public enum ApplePaySetupBehavior: Sendable {
-    /// SDK presents a built-in "Set up Apple Pay" view inside the
-    /// checkout sheet. Tapping the primary button opens the system
-    /// Wallet setup flow; once the user adds a card, the sheet
-    /// auto-transitions to the real checkout. Recommended for most apps.
+    /// SDK opens the system Wallet setup flow automatically when the merchant
+    /// is Apple-Pay-only and the device's Wallet has no supported card. The
+    /// banner shows a built-in "Set up Apple Pay" CTA inline; imperative entry
+    /// points (``CheckoutSheet/present(from:product:userId:dismissible:checkoutURL:transactionId:onComplete:)``,
+    /// `WebCheckoutFlow.beginCheckout`, `NativePay.Flow.pay`) surface
+    /// ``ZeroSettleError/applePaySetupRequired`` to the caller AND open Wallet
+    /// so the buyer can add a card without an extra tap. Default.
     case presentBuiltInUI
 
-    /// SDK delegates the setup flow to your app: it surfaces
-    /// ``ZeroSettleError/applePaySetupRequired`` via the calling API's
-    /// completion handler so you can present your own UI and then call
-    /// ``ZeroSettle/presentApplePaySetup()`` (or guide the user however
-    /// your design system requires).
+    /// SDK delegates the setup flow to your app. The banner hides itself on
+    /// `setupRequired`; all imperative entry points surface
+    /// ``ZeroSettleError/applePaySetupRequired`` without auto-opening Wallet.
+    /// Observe ``ZeroSettle/applePayAvailability`` to drive your own UI, then
+    /// call ``ZeroSettle/presentApplePaySetup()`` (or any equivalent flow)
+    /// when ready.
     case delegateToApp
 }
 
