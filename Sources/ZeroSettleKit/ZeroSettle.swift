@@ -149,12 +149,20 @@ public enum ZeroSettleError: Error, LocalizedError {
     /// cannot do Apple Pay at all (older hardware, simulator,
     /// MDM/parental restriction). The customer was NOT charged. The
     /// hosting app should show its own UX or skip the purchase path.
+    ///
+    /// This is a hard failure, not a cancellation —
+    /// ``ZeroSettleError/isCancellation(_:)`` returns `false`. Retry-on-cancel
+    /// handlers should treat it as a terminal error.
     case applePayUnavailable
 
     /// Apple-Pay-only merchant configuration is active and the device
     /// supports Apple Pay but Wallet has no supported cards. The
     /// customer was NOT charged. Call ``ZeroSettle/presentApplePaySetup()``
     /// to launch the system Wallet setup flow, then retry.
+    ///
+    /// This is a hard failure, not a cancellation —
+    /// ``ZeroSettleError/isCancellation(_:)`` returns `false`. Retry-on-cancel
+    /// handlers should treat it as a terminal error.
     case applePaySetupRequired
 
     /// Returns `true` if the error represents a user-initiated cancellation,
