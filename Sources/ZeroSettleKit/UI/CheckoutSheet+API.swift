@@ -338,18 +338,23 @@ extension CheckoutSheet {
         @ViewBuilder header: @escaping () -> H,
         onComplete: @escaping (Result<CheckoutTransaction, Error>) -> Void
     ) {
-        // Pre-flight: when the merchant is Apple-Pay-only, refuse to
-        // present checkout if the device cannot complete it. Reports
-        // via onComplete so callers handle it through the same Result
-        // path as any other checkout failure.
-        let isApplePayOnly = ZeroSettle.shared.isApplePayOnly
-        let availabilityState = ZeroSettle.shared.applePayAvailability.state
-        if let blockingError = CheckoutSheetApplePayGate.errorIfBlocked(
-            isApplePayOnly: isApplePayOnly,
-            state: availabilityState
-        ) {
-            ZSLogger.info("[Checkout] present blocked: \(blockingError)", category: .checkout)
-            onComplete(.failure(blockingError))
+        // Pre-flight: when the merchant is Apple-Pay-only, refuse to present
+        // checkout if the device cannot complete it. Reports via onComplete so
+        // callers handle it through the same Result path as any other checkout
+        // failure. When `applePaySetupBehavior == .presentBuiltInUI`, also
+        // open the system Wallet setup so the buyer can add a card without an
+        // extra tap — see ApplePayPreflightGate for the decision matrix.
+        let outcome = ApplePayPreflightGate.evaluate(
+            isApplePayOnly: ZeroSettle.shared.isApplePayOnly,
+            state: ZeroSettle.shared.applePayAvailability.state,
+            behavior: ZeroSettle.shared.currentConfig?.applePaySetupBehavior ?? .presentBuiltInUI
+        )
+        if case .blocked(let error, let openSetupUI) = outcome {
+            ZSLogger.info("[Checkout] present blocked — error=\(error) openSetupUI=\(openSetupUI)", category: .checkout)
+            if openSetupUI {
+                ZeroSettle.shared.presentApplePaySetup()
+            }
+            onComplete(.failure(error))
             return
         }
 
@@ -622,25 +627,5 @@ private actor WarmupThrottle {
 
     func markFired(key: String) {
         lastFiredAt[key] = Date()
-    }
-}
-
-// MARK: - Apple Pay Pre-flight Gate
-
-/// Pure decision helper: given the current Apple-Pay-only signal and
-/// availability state, return the error to surface (or nil to proceed).
-/// Extracted as a free helper so it can be unit-tested without
-/// constructing a `UIViewController`.
-enum CheckoutSheetApplePayGate {
-    static func errorIfBlocked(
-        isApplePayOnly: Bool,
-        state: ApplePayAvailability.State
-    ) -> ZeroSettleError? {
-        guard isApplePayOnly else { return nil }
-        switch state {
-        case .ready: return nil
-        case .setupRequired: return .applePaySetupRequired
-        case .unavailable: return .applePayUnavailable
-        }
     }
 }
