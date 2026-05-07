@@ -166,6 +166,17 @@ public struct MigrationTipView: View {
         ZeroSettle.shared.isApplePayOnly
     }
 
+    /// Pre-flight outcome for the current Apple-Pay-only / availability /
+    /// behavior triple. Drives both the outer banner-hide decision and the
+    /// inner CTA branching via `applePayPreflight.bannerDisplay`.
+    private var applePayPreflight: ApplePayPreflightGate.Outcome {
+        ApplePayPreflightGate.evaluate(
+            isApplePayOnly: applePayOnlyMode,
+            state: applePayState,
+            behavior: ZeroSettle.shared.currentConfig?.applePaySetupBehavior ?? .presentBuiltInUI
+        )
+    }
+
     // MARK: - Body
 
     public var body: some View {
@@ -186,9 +197,11 @@ public struct MigrationTipView: View {
 
             case .eligible, .presented:
                 let _ = ZSLogger.debug("[MigrateTipView] Rendering .\(manager.state) — showing offerCardView", category: .migration)
-                if applePayOnlyMode && applePayState == .unavailable {
-                    // Apple-Pay-only merchant + device cannot do Apple Pay → no checkout path.
-                    // Hide the banner; warning logged once on transition by ApplePayAvailability.
+                if applePayPreflight.bannerDisplay == .hide {
+                    // Apple-Pay-only merchant + (device cannot do Apple Pay) OR
+                    // (setup required AND dev opted into .delegateToApp). Hide
+                    // the banner; warning logged once on transition by
+                    // ApplePayAvailability for the .unavailable case.
                     Color.clear.frame(height: 0)
                 } else {
                     offerCardView
@@ -330,7 +343,7 @@ public struct MigrationTipView: View {
                         .padding(.bottom, 16)
                         .accessibilityLabel("Loading checkout")
                 } else {
-                    if applePayOnlyMode && applePayState == .setupRequired {
+                    if applePayPreflight.bannerDisplay == .showSetupCTA {
                         Button(action: { ZeroSettle.shared.presentApplePaySetup() }) {
                             Text(ApplePayCopy.setupCTA)
                                 .font(ctaFont ?? .body.weight(.bold))

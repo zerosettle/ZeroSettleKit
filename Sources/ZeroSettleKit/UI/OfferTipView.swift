@@ -169,6 +169,17 @@ public struct OfferTipView: View {
         ZeroSettle.shared.isApplePayOnly
     }
 
+    /// Pre-flight outcome for the current Apple-Pay-only / availability /
+    /// behavior triple. Drives both the outer banner-hide decision and the
+    /// inner CTA branching via `applePayPreflight.bannerDisplay`.
+    private var applePayPreflight: ApplePayPreflightGate.Outcome {
+        ApplePayPreflightGate.evaluate(
+            isApplePayOnly: applePayOnlyMode,
+            state: applePayState,
+            behavior: ZeroSettle.shared.currentConfig?.applePaySetupBehavior ?? .presentBuiltInUI
+        )
+    }
+
     // MARK: - Init
 
     /// Creates a new offer tip view.
@@ -227,9 +238,11 @@ public struct OfferTipView: View {
                 EmptyView()
 
             case .eligible, .presented:
-                if applePayOnlyMode && applePayState == .unavailable {
-                    // Apple-Pay-only merchant + device cannot do Apple Pay → no checkout path.
-                    // Hide the banner; warning logged once on transition by ApplePayAvailability.
+                if applePayPreflight.bannerDisplay == .hide {
+                    // Apple-Pay-only merchant + (device cannot do Apple Pay) OR
+                    // (setup required AND dev opted into .delegateToApp). Hide
+                    // the banner; warning logged once on transition by
+                    // ApplePayAvailability for the .unavailable case.
                     Color.clear.frame(height: 0)
                 } else {
                     offerCardView
@@ -369,7 +382,7 @@ public struct OfferTipView: View {
                             webToWebInProgress ? "Processing upgrade" : "Loading checkout"
                         )
                 } else {
-                    if applePayOnlyMode && applePayState == .setupRequired {
+                    if applePayPreflight.bannerDisplay == .showSetupCTA {
                         ctaButton(
                             label: ApplePayCopy.setupCTA,
                             accessibilityHint: "Opens the system Wallet to add a card for Apple Pay",
