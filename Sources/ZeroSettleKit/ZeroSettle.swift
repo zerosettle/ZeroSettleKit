@@ -280,6 +280,28 @@ public enum Identity: Sendable {
     case deferred
 }
 
+// MARK: - Apple Pay Setup Behavior
+
+/// How the SDK reacts when the merchant is Apple-Pay-only and the device's
+/// Wallet has no supported card configured (`ApplePayAvailability.State.setupRequired`).
+///
+/// Set on ``ZeroSettle/Configuration/applePaySetupBehavior`` at SDK
+/// configuration time.
+public enum ApplePaySetupBehavior: Sendable {
+    /// SDK presents a built-in "Set up Apple Pay" view inside the
+    /// checkout sheet. Tapping the primary button opens the system
+    /// Wallet setup flow; once the user adds a card, the sheet
+    /// auto-transitions to the real checkout. Recommended for most apps.
+    case presentBuiltInUI
+
+    /// SDK delegates the setup flow to your app: it surfaces
+    /// ``ZeroSettleError/applePaySetupRequired`` via the calling API's
+    /// completion handler so you can present your own UI and then call
+    /// ``ZeroSettle/presentApplePaySetup()`` (or guide the user however
+    /// your design system requires).
+    case delegateToApp
+}
+
 // MARK: - ZeroSettle IAP
 
 /// Main entry point for the ZeroSettle IAP SDK.
@@ -332,18 +354,25 @@ public final class ZeroSettle: ObservableObject {
         /// `Int` to cap the pool size. Set to `0` to disable WebView pre-rendering entirely (PI caching still works).
         public let maxPreloadedWebViews: Int?
 
+        /// How the SDK reacts when the merchant is Apple-Pay-only and the
+        /// device's Wallet has no supported card. Defaults to
+        /// ``ApplePaySetupBehavior/presentBuiltInUI``.
+        public let applePaySetupBehavior: ApplePaySetupBehavior
+
         public init(
             publishableKey: String,
             syncStoreKitTransactions: Bool = true,
             appleMerchantId: String? = nil,
             preloadCheckout: Bool = false,
-            maxPreloadedWebViews: Int? = nil
+            maxPreloadedWebViews: Int? = nil,
+            applePaySetupBehavior: ApplePaySetupBehavior = .presentBuiltInUI
         ) {
             self.publishableKey = publishableKey
             self.syncStoreKitTransactions = syncStoreKitTransactions
             self.appleMerchantId = appleMerchantId
             self.preloadCheckout = preloadCheckout
             self.maxPreloadedWebViews = maxPreloadedWebViews
+            self.applePaySetupBehavior = applePaySetupBehavior
         }
 
         internal var backendURL: URL {

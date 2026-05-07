@@ -15,7 +15,9 @@ import PassKit
 #if canImport(UIKit)
 import UIKit
 #endif
+#if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
+#endif
 
 // MARK: - Provider Protocol
 
