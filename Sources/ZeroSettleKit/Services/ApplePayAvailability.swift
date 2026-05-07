@@ -22,9 +22,12 @@ internal import ZeroSettleCore
 // MARK: - Provider Protocol
 
 /// Test seam: production code reads `ApplePayAvailability` directly via
-/// `ZeroSettle.shared.applePayAvailability`; tests inject a `MockApplePayAvailability`
-/// to drive arbitrary state without touching PassKit.
-public protocol ApplePayAvailabilityProviding: AnyObject {
+/// `ZeroSettle.shared.applePayAvailability`; tests `@testable import` this
+/// SDK and substitute a `MockApplePayAvailability` to drive arbitrary state
+/// without touching PassKit. Internal — `ZeroSettle.shared.applePayAvailability`
+/// has no setter, so external apps cannot inject a custom provider; keeping
+/// this protocol public would advertise a hook that doesn't actually exist.
+internal protocol ApplePayAvailabilityProviding: AnyObject {
     @MainActor var state: ApplePayAvailability.State { get }
     @MainActor var statePublisher: Published<ApplePayAvailability.State>.Publisher { get }
 }
@@ -214,20 +217,21 @@ enum ApplePayCopy {
 
 /// Test-only impl that drives state arbitrarily without touching PassKit.
 /// Lives in the production target (gated by `#if DEBUG`) so test bundles
-/// can `@testable import ZeroSettleKit` it without polluting production
-/// binary surface in release builds.
+/// can `@testable import ZeroSettleKit` it. Internal — see
+/// `ApplePayAvailabilityProviding` doc for why this isn't part of the
+/// public surface.
 @MainActor
-public final class MockApplePayAvailability: ObservableObject, ApplePayAvailabilityProviding {
+internal final class MockApplePayAvailability: ObservableObject, ApplePayAvailabilityProviding {
 
-    @Published public private(set) var state: ApplePayAvailability.State
+    @Published private(set) var state: ApplePayAvailability.State
 
-    public var statePublisher: Published<ApplePayAvailability.State>.Publisher { $state }
+    var statePublisher: Published<ApplePayAvailability.State>.Publisher { $state }
 
-    public init(initialState: ApplePayAvailability.State) {
+    init(initialState: ApplePayAvailability.State) {
         self.state = initialState
     }
 
-    public func simulate(_ newState: ApplePayAvailability.State) {
+    func simulate(_ newState: ApplePayAvailability.State) {
         guard newState != state else { return }
         state = newState
     }
