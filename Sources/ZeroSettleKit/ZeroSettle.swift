@@ -934,7 +934,19 @@ public final class ZeroSettle: ObservableObject {
     /// Pass `nil` to clear (logout path).
     internal func setActiveUserId(_ userId: String?) {
         currentUserId = userId
-        storeKitManager?.setUserId(userId)
+        // Start the StoreKit `Transaction.updates` listener on the first
+        // non-nil userId after configure(). This eliminates the race where
+        // Apple redelivered an unfinished transaction in the
+        // [configure → identify] window and `handleVerifiedTransaction`
+        // ran with `userId == nil` — the canonical 1.3.x StoreKit-attribution
+        // bug class. Subsequent calls (re-identify, user switch) just update
+        // the userId on the running listener.
+        if let userId, !userId.isEmpty,
+           let manager = storeKitManager, !manager.isListening {
+            manager.startListening(userId: userId)
+        } else {
+            storeKitManager?.setUserId(userId)
+        }
     }
 
     /// `UserDefaults` key under which the anonymous session UUID is
@@ -1156,7 +1168,14 @@ public final class ZeroSettle: ObservableObject {
         if config.syncStoreKitTransactions {
             let storeKitManager = StoreKitManager(backend: backend, subscriptionMonitor: subscriptionMonitor)
             storeKitManager.delegate = self
-            storeKitManager.startListening()
+            // Deliberately NOT calling `startListening()` here. The
+            // `Transaction.updates` listener kicks off in `setActiveUserId(_:)`
+            // on the first non-nil userId, so Apple's redelivered unfinished
+            // transactions can never reach `handleVerifiedTransaction` while
+            // `userId == nil`. Apps that never call `identify(...)` will see
+            // their unfinished transactions queue at the StoreKit layer; the
+            // 10-second post-configure deferred warning + the existing
+            // `handleVerifiedTransaction` error log surface this loudly.
             self.storeKitManager = storeKitManager
         }
 
