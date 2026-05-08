@@ -172,7 +172,20 @@ public final class ZSOfferManager: ObservableObject {
 
     // MARK: - Init
 
+    @available(*, deprecated, message: "Call ZeroSettle.shared.identify(_:) once at app launch, then use ZeroSettle.shared.offerManager(stripeCustomerId:) instead. Direct init bypasses the SDK's identity tracking. Will be removed in ZeroSettleKit 2.0.")
     public init(userId: String, stripeCustomerId: String? = nil) {
+        self.userId = userId
+        self.stripeCustomerId = stripeCustomerId
+        startObserving()
+        startMonitoringSubscriptionChanges()
+    }
+
+    /// Internal designated init used by SDK-internal fallback paths
+    /// (`OfferTipView` constructs a dormant manager when `identify(_:)` hasn't
+    /// run). Routes around the public init's deprecation warning so internal
+    /// build logs stay clean. External callers should use the factory
+    /// ``ZeroSettle/offerManager(stripeCustomerId:)``.
+    internal init(activeUserId userId: String, stripeCustomerId: String? = nil) {
         self.userId = userId
         self.stripeCustomerId = stripeCustomerId
         startObserving()

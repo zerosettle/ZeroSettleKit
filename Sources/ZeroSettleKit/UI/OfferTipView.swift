@@ -96,7 +96,13 @@ public struct OfferTipView: View {
 
     // MARK: - Stored Properties
 
-    private let userId: String
+    /// `nil` when constructed via the no-userId init (the 1.3+ canonical
+    /// pattern: call `ZeroSettle.shared.identify(_:)` first, then construct
+    /// the view without `userId`). Non-nil when constructed via the
+    /// deprecated `init(userId:...)`. The body never reads this directly —
+    /// it flows through to `.checkoutSheet(userId:)`, which accepts `nil`
+    /// and falls back to `ZeroSettle.shared`'s active user automatically.
+    private let userId: String?
     private let stripeCustomerId: String?
     private let backgroundColor: Color
     private let titleFont: Font?
@@ -182,14 +188,15 @@ public struct OfferTipView: View {
 
     // MARK: - Init
 
-    /// Creates a new offer tip view.
+    /// Creates a new offer tip view that reads the active user from the SDK.
     ///
-    /// Uses the shared ``ZSOfferManager`` from ``ZeroSettle/offerManager(stripeCustomerId:)``
-    /// (created during ``ZeroSettle/identify(_:)``). Falls back to creating a local
-    /// instance if identify hasn't run yet.
+    /// Call ``ZeroSettle/identify(_:)`` once at app launch before constructing
+    /// this view. The view sources its ``ZSOfferManager`` from
+    /// ``ZeroSettle/offerManager(stripeCustomerId:)``. If `identify(_:)` hasn't
+    /// run yet, the manager stays in ``ZSOfferManager/State/loading`` and the
+    /// view's body returns an empty placeholder until identification completes.
     ///
     /// - Parameters:
-    ///   - userId: The user identifier passed to the checkout backend.
     ///   - stripeCustomerId: Optional existing Stripe Customer ID (`cus_xxx`) to attach the checkout to.
     ///     When `nil`, the backend creates a new customer.
     ///   - backgroundColor: The background color for the view. Defaults to `.black`.
@@ -199,6 +206,40 @@ public struct OfferTipView: View {
     ///   - borderColor: Optional border color applied as a rounded rectangle stroke on card views.
     ///     When `nil`, no border is drawn.
     ///   - onEvent: Optional closure invoked when a lifecycle ``Event`` occurs.
+    public init(
+        stripeCustomerId: String? = nil,
+        backgroundColor: Color = .black,
+        titleFont: Font? = nil,
+        bodyFont: Font? = nil,
+        ctaFont: Font? = nil,
+        borderColor: Color? = nil,
+        onEvent: ((Event) -> Void)? = nil
+    ) {
+        self.userId = nil
+        self.stripeCustomerId = stripeCustomerId
+        self.backgroundColor = backgroundColor
+        self.titleFont = titleFont
+        self.bodyFont = bodyFont
+        self.ctaFont = ctaFont
+        self.borderColor = borderColor
+        self.onEvent = onEvent
+
+        // Source the manager from the shared singleton — populated by
+        // identify(_:). If identify hasn't run, fall back to a dormant
+        // manager keyed on whatever currentUserId we have (possibly empty);
+        // its state stays `.loading`/`.ineligible` and the body short-circuits
+        // to `Color.clear`.
+        let mgr = (try? ZeroSettle.shared.offerManager(stripeCustomerId: stripeCustomerId))
+            ?? ZSOfferManager(activeUserId: ZeroSettle.shared.currentUserId ?? "", stripeCustomerId: stripeCustomerId)
+        _manager = ObservedObject(wrappedValue: mgr)
+    }
+
+    /// Creates a new offer tip view with an explicit user identifier.
+    ///
+    /// - Important: Deprecated. Call ``ZeroSettle/identify(_:)`` once at app
+    ///   launch, then use the no-userId initializer instead. Direct construction
+    ///   with `userId:` bypasses the SDK's identity tracking.
+    @available(*, deprecated, message: "Call ZeroSettle.shared.identify(_:) once at app launch, then construct OfferTipView() without a userId. Will be removed in ZeroSettleKit 2.0.")
     public init(
         userId: String,
         stripeCustomerId: String? = nil,
@@ -219,10 +260,8 @@ public struct OfferTipView: View {
         self.onEvent = onEvent
 
         ZeroSettle.shared.setActiveUserId(userId)
-        // try? — fall back to a fresh manager if userId is somehow nil; the
-        // view's userId param is non-optional so this should never fail.
         let mgr = (try? ZeroSettle.shared.offerManager(stripeCustomerId: stripeCustomerId))
-            ?? ZSOfferManager(userId: userId, stripeCustomerId: stripeCustomerId)
+            ?? ZSOfferManager(activeUserId: userId, stripeCustomerId: stripeCustomerId)
         _manager = ObservedObject(wrappedValue: mgr)
     }
 
@@ -310,9 +349,11 @@ public struct OfferTipView: View {
             }
         }
         // Sheet checkout path — presents the overlay checkout sheet instead of inline WebView.
+        // `userId:` is omitted: the modifier reads from `ZeroSettle.shared`'s
+        // active user (set by `identify(_:)`). Forwarding our (possibly nil)
+        // stored `userId` would just push redundant context.
         .checkoutSheet(
             item: $sheetCheckoutProduct,
-            userId: userId,
             onPresent: { ctaTapped = false }
         ) { result in
             switch result {
