@@ -11,6 +11,7 @@
 
 import Combine
 import Foundation
+import Observation
 import PassKit
 #if canImport(UIKit)
 import UIKit
@@ -29,7 +30,6 @@ internal import ZeroSettleCore
 /// this protocol public would advertise a hook that doesn't actually exist.
 internal protocol ApplePayAvailabilityProviding: AnyObject {
     @MainActor var state: ApplePayAvailability.State { get }
-    @MainActor var statePublisher: Published<ApplePayAvailability.State>.Publisher { get }
 }
 
 // MARK: - Service
@@ -38,8 +38,12 @@ internal protocol ApplePayAvailabilityProviding: AnyObject {
 /// automatically when the user adds/removes cards in Wallet or when the
 /// app returns to foreground (covers the post-`openPaymentSetup` case
 /// where `PKPassLibraryDidChangeNotification` may not fire reliably).
+///
+/// Uses the Observation framework (`@Observable`); SwiftUI views read
+/// ``state`` directly and re-render automatically.
 @MainActor
-public final class ApplePayAvailability: ObservableObject, ApplePayAvailabilityProviding {
+@Observable
+public final class ApplePayAvailability: ApplePayAvailabilityProviding {
 
     public enum State: Equatable, Sendable {
         /// Device supports Apple Pay AND user has at least one supported card.
@@ -53,11 +57,18 @@ public final class ApplePayAvailability: ObservableObject, ApplePayAvailabilityP
     /// Standard US Stripe network set. Hardcoded for v1; promote to
     /// `CheckoutConfig.applePayNetworks` if international expansion adds
     /// JCB/CUP/Mada/etc.
+    @ObservationIgnored
     static let defaultNetworks: [PKPaymentNetwork] = [.visa, .masterCard, .amex, .discover]
 
-    @Published public private(set) var state: State
-
-    public var statePublisher: Published<State>.Publisher { $state }
+    public private(set) var state: State {
+        didSet {
+            // Mirror to the legacy Combine bridge so the deprecated
+            // `statePublisher` keeps working through the deprecation window.
+            // didSet doesn't fire during init — that path seeds the subject
+            // explicitly in `init()` below.
+            legacyStateSubject.send(state)
+        }
+    }
 
     // `nonisolated(unsafe)` because:
     //  - Writes happen only in `subscribe()` from the `@MainActor`-isolated `init`
@@ -65,10 +76,24 @@ public final class ApplePayAvailability: ObservableObject, ApplePayAvailabilityP
     //    last reference is gone — no concurrent access is possible
     // The compiler can't prove this; the unsafe annotation is the standard
     // escape hatch for the `@MainActor` class + cleanup-in-deinit pattern.
+    @ObservationIgnored
     nonisolated(unsafe) private var observers: [NSObjectProtocol] = []
 
+    /// Backing subject for the deprecated `statePublisher`. Eagerly seeded
+    /// in `init()`; updated in `state`'s `didSet`. Kept as a `let` so the
+    /// stored ref is stable for the whole instance lifetime — Flutter and
+    /// other Combine consumers can subscribe and unsubscribe without
+    /// race-with-init concerns.
+    @ObservationIgnored
+    private let legacyStateSubject: CurrentValueSubject<State, Never>
+
     public init() {
-        self.state = Self.compute()
+        let initial = Self.compute()
+        self.state = initial
+        // Seed the legacy Combine bridge with the same initial value the
+        // `@Observable` `state` was set to, so subscribers see a single
+        // emission rather than a default-then-real pair.
+        self.legacyStateSubject = CurrentValueSubject(initial)
         subscribe()
     }
 
@@ -80,6 +105,19 @@ public final class ApplePayAvailability: ObservableObject, ApplePayAvailabilityP
         for token in observers {
             NotificationCenter.default.removeObserver(token)
         }
+    }
+
+    /// Combine publisher of ``state``.
+    ///
+    /// **Deprecated** as of 1.3.4. New code should read ``state`` directly
+    /// inside SwiftUI bodies (auto-tracked via the Observation framework),
+    /// or use `withObservationTracking { ... } onChange: { ... }` for
+    /// callback-style observation. Retained for one cycle to give
+    /// Combine-based consumers (Flutter/React Native wrappers, custom
+    /// adapters) a deprecation window. Will be removed in ZeroSettleKit 2.0.
+    @available(*, deprecated, message: "Read `state` directly (auto-tracked in SwiftUI via @Observable) or use `withObservationTracking` for callback-style observation. Will be removed in ZeroSettleKit 2.0.")
+    public var statePublisher: AnyPublisher<State, Never> {
+        legacyStateSubject.eraseToAnyPublisher()
     }
 
     /// Public for explicit refresh (e.g., after returning from
@@ -221,11 +259,10 @@ enum ApplePayCopy {
 /// `ApplePayAvailabilityProviding` doc for why this isn't part of the
 /// public surface.
 @MainActor
-internal final class MockApplePayAvailability: ObservableObject, ApplePayAvailabilityProviding {
+@Observable
+internal final class MockApplePayAvailability: ApplePayAvailabilityProviding {
 
-    @Published private(set) var state: ApplePayAvailability.State
-
-    var statePublisher: Published<ApplePayAvailability.State>.Publisher { $state }
+    private(set) var state: ApplePayAvailability.State
 
     init(initialState: ApplePayAvailability.State) {
         self.state = initialState

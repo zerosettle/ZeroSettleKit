@@ -141,8 +141,11 @@ public final class ZSOfferManager: ObservableObject {
 
     // MARK: - Public Properties
 
-    /// The user ID this manager was created for.
-    public let userId: String
+    /// The user ID this manager is currently tracking. Updated in place when
+    /// ``ZeroSettle/identify(_:)`` runs, so a manager constructed pre-identify
+    /// (via ``ZeroSettle/offerManager(stripeCustomerId:)``) becomes live as soon
+    /// as identification completes — without consumers having to re-fetch.
+    public private(set) var userId: String
 
     /// The resolved flow type (nil until eligible).
     public var flowType: Offer.FlowType? { offerData?.flowType }
@@ -194,6 +197,23 @@ public final class ZSOfferManager: ObservableObject {
 
     deinit {
         monitorObservationTask?.cancel()
+    }
+
+    // MARK: - Identity Promotion
+
+    /// Updates the manager's tracked user. Called by ``ZeroSettle/identify(_:)``
+    /// so a manager that was eagerly created pre-identify (e.g., to back an
+    /// `OfferTipView` constructed before login) becomes live without forcing
+    /// consumers to re-fetch the manager. No-op when the userId is unchanged.
+    ///
+    /// Side effects: re-evaluates eligibility (which may transition state out
+    /// of `.loading`/`.ineligible`).
+    internal func setActiveUserId(_ newId: String) {
+        guard newId != userId else { return }
+        userId = newId
+        // Re-run eligibility against the new identity. `evaluateEligibility`
+        // is idempotent and gates on terminal states internally.
+        evaluateEligibility()
     }
 
     // MARK: - Subscription Monitor Integration

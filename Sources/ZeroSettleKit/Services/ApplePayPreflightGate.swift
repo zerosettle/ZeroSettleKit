@@ -38,10 +38,12 @@ enum ApplePayPreflightGate {
 
     /// Outcome of a pre-flight check.
     ///
-    /// `ZeroSettleError` does not conform to `Equatable` (associated values on
-    /// other cases break it), so `Outcome` does not either. Tests pattern-match
-    /// instead — both `applePayUnavailable` and `applePaySetupRequired` are
-    /// no-associated-value cases and match cleanly.
+    /// `ZeroSettleError` does not conform to `Equatable` (associated values
+    /// on multiple cases break it), so `Outcome` does not either. Tests
+    /// pattern-match instead — `applePayUnavailable` is no-payload and
+    /// matches cleanly; `applePaySetupRequired(autoPresentedSetup:)`
+    /// matches with an explicit `(autoPresentedSetup: <Bool>)` binding or
+    /// `(_)` to elide.
     enum Outcome {
         case proceed
         case blocked(error: ZeroSettleError, openSetupUI: Bool)
@@ -59,9 +61,10 @@ enum ApplePayPreflightGate {
         case .unavailable:
             return .blocked(error: .applePayUnavailable, openSetupUI: false)
         case .setupRequired:
+            let autoPresent = behavior == .presentBuiltInUI
             return .blocked(
-                error: .applePaySetupRequired,
-                openSetupUI: behavior == .presentBuiltInUI
+                error: .applePaySetupRequired(autoPresentedSetup: autoPresent),
+                openSetupUI: autoPresent
             )
         }
     }
@@ -74,9 +77,11 @@ extension ApplePayPreflightGate.Outcome {
             return .showOfferCTA
         case .blocked(.applePayUnavailable, _):
             return .hide
-        case .blocked(.applePaySetupRequired, true):
+        case .blocked(.applePaySetupRequired(_), true):
+            // The openSetupUI flag (the `true` here) is what determines
+            // banner display — error payload is incidental.
             return .showSetupCTA
-        case .blocked(.applePaySetupRequired, false):
+        case .blocked(.applePaySetupRequired(_), false):
             return .hide
         case .blocked:
             // Future-proof for additional blocked errors; safest default is hide.

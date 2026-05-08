@@ -87,8 +87,11 @@ final class ApplePayPreflightGateTests: XCTestCase {
         let outcome = ApplePayPreflightGate.evaluate(
             isApplePayOnly: true, state: .setupRequired, behavior: .presentBuiltInUI
         )
-        guard case .blocked(.applePaySetupRequired, true) = outcome else {
-            return XCTFail("Expected .blocked(.applePaySetupRequired, true), got \(outcome)")
+        // The error payload (`autoPresentedSetup: true`) and the Outcome's
+        // openSetupUI flag should both be `true` in this mode; the gate is
+        // the single source of truth that wires them together.
+        guard case .blocked(.applePaySetupRequired(autoPresentedSetup: true), true) = outcome else {
+            return XCTFail("Expected .blocked(.applePaySetupRequired(autoPresentedSetup: true), true), got \(outcome)")
         }
     }
 
@@ -96,8 +99,8 @@ final class ApplePayPreflightGateTests: XCTestCase {
         let outcome = ApplePayPreflightGate.evaluate(
             isApplePayOnly: true, state: .setupRequired, behavior: .delegateToApp
         )
-        guard case .blocked(.applePaySetupRequired, false) = outcome else {
-            return XCTFail("Expected .blocked(.applePaySetupRequired, false), got \(outcome)")
+        guard case .blocked(.applePaySetupRequired(autoPresentedSetup: false), false) = outcome else {
+            return XCTFail("Expected .blocked(.applePaySetupRequired(autoPresentedSetup: false), false), got \(outcome)")
         }
     }
 
@@ -119,14 +122,14 @@ final class ApplePayPreflightGateTests: XCTestCase {
 
     func testBannerDisplaySetupRequiredPresentBuiltInUIShowsSetupCTA() {
         let outcome = ApplePayPreflightGate.Outcome.blocked(
-            error: .applePaySetupRequired, openSetupUI: true
+            error: .applePaySetupRequired(autoPresentedSetup: true), openSetupUI: true
         )
         XCTAssertEqual(outcome.bannerDisplay, .showSetupCTA)
     }
 
     func testBannerDisplaySetupRequiredDelegateToAppHides() {
         let outcome = ApplePayPreflightGate.Outcome.blocked(
-            error: .applePaySetupRequired, openSetupUI: false
+            error: .applePaySetupRequired(autoPresentedSetup: false), openSetupUI: false
         )
         XCTAssertEqual(outcome.bannerDisplay, .hide)
     }

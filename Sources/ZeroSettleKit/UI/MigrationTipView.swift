@@ -55,9 +55,6 @@ public struct MigrationTipView: View {
     @State private var checkoutURL: URL?
     @State private var hasApplePay = false
 
-    /// Mirrored from `ZeroSettle.shared.applePayAvailability.state`.
-    /// Driven by `.onReceive` of the publisher.
-    @State private var applePayState: ApplePayAvailability.State = .ready
     @StateObject private var preloader = MigrationCheckoutPreloader()
     @State private var preloadTriggered = false
 
@@ -170,9 +167,11 @@ public struct MigrationTipView: View {
     /// behavior triple. Drives both the outer banner-hide decision and the
     /// inner CTA branching via `applePayPreflight.bannerDisplay`.
     private var applePayPreflight: ApplePayPreflightGate.Outcome {
+        // Reads `state` directly on the @Observable singleton; SwiftUI tracks
+        // the access during body evaluation and re-renders on transitions.
         ApplePayPreflightGate.evaluate(
             isApplePayOnly: applePayOnlyMode,
-            state: applePayState,
+            state: ZeroSettle.shared.applePayAvailability.state,
             behavior: ZeroSettle.shared.resolvedApplePaySetupBehavior
         )
     }
@@ -236,12 +235,6 @@ public struct MigrationTipView: View {
                 preloader.reset()
                 preloadTriggered = false
             }
-        }
-        .onAppear {
-            applePayState = ZeroSettle.shared.applePayAvailability.state
-        }
-        .onReceive(ZeroSettle.shared.applePayAvailability.statePublisher) { newState in
-            applePayState = newState
         }
         .onChange(of: preloader.buttonsReady) { _, ready in
             if ready && !isExpanded && checkoutURL != nil {

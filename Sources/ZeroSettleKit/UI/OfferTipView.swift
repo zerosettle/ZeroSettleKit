@@ -96,13 +96,6 @@ public struct OfferTipView: View {
 
     // MARK: - Stored Properties
 
-    /// `nil` when constructed via the no-userId init (the 1.3+ canonical
-    /// pattern: call `ZeroSettle.shared.identify(_:)` first, then construct
-    /// the view without `userId`). Non-nil when constructed via the
-    /// deprecated `init(userId:...)`. The body never reads this directly —
-    /// it flows through to `.checkoutSheet(userId:)`, which accepts `nil`
-    /// and falls back to `ZeroSettle.shared`'s active user automatically.
-    private let userId: String?
     private let stripeCustomerId: String?
     private let backgroundColor: Color
     private let titleFont: Font?
@@ -126,9 +119,6 @@ public struct OfferTipView: View {
     @State private var checkoutURL: URL?
     @State private var hasApplePay = false
 
-    /// Mirrored from `ZeroSettle.shared.applePayAvailability.state`.
-    /// Driven by `.onReceive` of the publisher.
-    @State private var applePayState: ApplePayAvailability.State = .ready
     @StateObject private var preloader = MigrationCheckoutPreloader()
     @State private var preloadTriggered = false
     /// True when performing a web-to-web upgrade (no WebView, just a spinner).
@@ -179,9 +169,11 @@ public struct OfferTipView: View {
     /// behavior triple. Drives both the outer banner-hide decision and the
     /// inner CTA branching via `applePayPreflight.bannerDisplay`.
     private var applePayPreflight: ApplePayPreflightGate.Outcome {
+        // Reads `state` directly on the @Observable singleton; SwiftUI tracks
+        // the access during body evaluation and re-renders on transitions.
         ApplePayPreflightGate.evaluate(
             isApplePayOnly: applePayOnlyMode,
-            state: applePayState,
+            state: ZeroSettle.shared.applePayAvailability.state,
             behavior: ZeroSettle.shared.resolvedApplePaySetupBehavior
         )
     }
@@ -215,7 +207,6 @@ public struct OfferTipView: View {
         borderColor: Color? = nil,
         onEvent: ((Event) -> Void)? = nil
     ) {
-        self.userId = nil
         self.stripeCustomerId = stripeCustomerId
         self.backgroundColor = backgroundColor
         self.titleFont = titleFont
@@ -224,14 +215,14 @@ public struct OfferTipView: View {
         self.borderColor = borderColor
         self.onEvent = onEvent
 
-        // Source the manager from the shared singleton — populated by
-        // identify(_:). If identify hasn't run, fall back to a dormant
-        // manager keyed on whatever currentUserId we have (possibly empty);
-        // its state stays `.loading`/`.ineligible` and the body short-circuits
-        // to `Color.clear`.
-        let mgr = (try? ZeroSettle.shared.offerManager(stripeCustomerId: stripeCustomerId))
-            ?? ZSOfferManager(activeUserId: ZeroSettle.shared.currentUserId ?? "", stripeCustomerId: stripeCustomerId)
-        _manager = ObservedObject(wrappedValue: mgr)
+        // `offerManager(stripeCustomerId:)` is non-throwing and eager — returns
+        // a single shared instance regardless of identify state. If identify
+        // hasn't run, the manager starts in `.loading` with empty userId; the
+        // SDK calls its internal `setActiveUserId(_:)` when identify completes,
+        // and `@ObservedObject` re-renders this view automatically.
+        _manager = ObservedObject(
+            wrappedValue: ZeroSettle.shared.offerManager(stripeCustomerId: stripeCustomerId)
+        )
     }
 
     /// Creates a new offer tip view with an explicit user identifier.
@@ -250,19 +241,19 @@ public struct OfferTipView: View {
         borderColor: Color? = nil,
         onEvent: ((Event) -> Void)? = nil
     ) {
-        self.userId = userId
-        self.stripeCustomerId = stripeCustomerId
-        self.backgroundColor = backgroundColor
-        self.titleFont = titleFont
-        self.bodyFont = bodyFont
-        self.ctaFont = ctaFont
-        self.borderColor = borderColor
-        self.onEvent = onEvent
-
+        // Belt-and-braces: pre-populate the SDK's active user from the legacy
+        // param so callers that haven't yet adopted `identify(_:)` continue
+        // working. Then delegate to the canonical init.
         ZeroSettle.shared.setActiveUserId(userId)
-        let mgr = (try? ZeroSettle.shared.offerManager(stripeCustomerId: stripeCustomerId))
-            ?? ZSOfferManager(activeUserId: userId, stripeCustomerId: stripeCustomerId)
-        _manager = ObservedObject(wrappedValue: mgr)
+        self.init(
+            stripeCustomerId: stripeCustomerId,
+            backgroundColor: backgroundColor,
+            titleFont: titleFont,
+            bodyFont: bodyFont,
+            ctaFont: ctaFont,
+            borderColor: borderColor,
+            onEvent: onEvent
+        )
     }
 
     // MARK: - Body
@@ -328,12 +319,6 @@ public struct OfferTipView: View {
             if newState == .eligible {
                 ctaTapped = false
             }
-        }
-        .onAppear {
-            applePayState = ZeroSettle.shared.applePayAvailability.state
-        }
-        .onReceive(ZeroSettle.shared.applePayAvailability.statePublisher) { newState in
-            applePayState = newState
         }
         .onChange(of: preloader.buttonsReady) { _, ready in
             if ready && !isExpanded && checkoutURL != nil {
