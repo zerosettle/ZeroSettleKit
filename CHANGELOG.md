@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.3.3 — 2026-05-08
+
+### `OfferTipView` and `ZSOfferManager` — drop required `userId:`
+
+Two 1.3-alignment misses from the original API sweep are patched here. Both surfaces still required an explicit `userId:` parameter even after `ZeroSettle.shared.identify(_:)` had been called, conflicting with the broader 1.3 pattern where user-scoped APIs read from internal state.
+
+- **`OfferTipView`** gains a new no-userId initializer:
+
+  ```swift
+  // Before (still compiles, now deprecated):
+  OfferTipView(userId: user.id)
+
+  // After:
+  OfferTipView()  // reads the active user from ZeroSettle.shared
+  ```
+
+  The existing `init(userId:...)` is marked deprecated; it routes to the same backing logic. If `identify(_:)` hasn't run when the new init is called, the manager stays in `.loading`/`.ineligible` and the view body returns an empty placeholder.
+
+- **`ZSOfferManager`'s direct init** is deprecated. The factory `ZeroSettle.shared.offerManager(stripeCustomerId:)` (already present since 1.3.0) is the canonical entry point. The direct init still compiles via `@available(*, deprecated)` for source compatibility — devs see a build-time warning pointing at the factory.
+
+`MigrationTipView` has the same pattern but is left alone because its underlying `ZSMigrationManager` is already class-level deprecated in favor of `ZSOfferManager`. Anyone using `MigrationTipView` is already on the migration path to `OfferTipView`.
+
+### Other changes
+
+- `Configuration.sdkVersion` bumped to `"1.3.3"`.
+
 ## 1.3.2 — 2026-05-07
 
 ### Behavior change for Apple-Pay-only merchants
