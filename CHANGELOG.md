@@ -19,6 +19,10 @@ ZeroSettle.shared.configure(.init(
 
 `.delegateToApp` also hides the banner CTA on `setupRequired` so your app can render its own affordance.
 
+### StoreKit listener fix
+
+`Transaction.updates` is no longer subscribed during `configure(_:)` — the listener now starts on the first non-nil `setActiveUserId(_:)` (i.e., the first `identify(_:)`). Closes a `[configure → identify]` race where Apple-redelivered unfinished transactions were processed with `userId == nil` and got mis-attributed. Apple buffers `Transaction.updates` until the async-for loop consumes them, so deferring the listener doesn't drop transactions. The DEBUG-only `assertionFailure` in the no-userId branch of `handleVerifiedTransaction` is also removed — it crashed legitimate dev relaunches with unfinished transactions even though release-build behavior was already correct.
+
 ### Other changes
 
 - The `applePaySetupBehavior` enum's docstrings now describe what 1.3.2 actually does. The 1.3.0 docstring promised an in-sheet "Set up Apple Pay" view + auto-transition to checkout — that polish is deferred to 1.4.0.
