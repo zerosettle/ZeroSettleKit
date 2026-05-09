@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import PassKit
 import StoreKit
 import SwiftUI
 
@@ -144,6 +145,37 @@ public enum ZeroSettleError: Error, LocalizedError {
     /// configuration error.
     case checkoutNotStarted
 
+    /// Apple-Pay-only merchant configuration is active and the device
+    /// cannot do Apple Pay at all (older hardware, simulator,
+    /// MDM/parental restriction). The customer was NOT charged. The
+    /// hosting app should show its own UX or skip the purchase path.
+    ///
+    /// This is a hard failure, not a cancellation —
+    /// ``ZeroSettleError/isCancellation(_:)`` returns `false`. Retry-on-cancel
+    /// handlers should treat it as a terminal error.
+    case applePayUnavailable
+
+    /// Apple-Pay-only merchant configuration is active and the device
+    /// supports Apple Pay but Wallet has no supported cards. The customer
+    /// was NOT charged.
+    ///
+    /// - Parameter autoPresentedSetup: Whether the SDK has already presented
+    ///   the system Wallet setup sheet on the consumer's behalf. Determined
+    ///   by ``Configuration/applePaySetupBehavior``:
+    ///   - `true` when behavior is ``ApplePaySetupBehavior/presentBuiltInUI``
+    ///     (the default). Wallet is opening; **do not surface additional UI
+    ///     for this error and do not call ``ZeroSettle/presentApplePaySetup()``
+    ///     again**. The accompanying `errorDescription` returns `nil` so
+    ///     naive `error.localizedDescription` callers don't double-stack UI.
+    ///   - `false` when behavior is ``ApplePaySetupBehavior/delegateToApp``.
+    ///     The SDK has not opened Wallet; the consumer owns the setup UX
+    ///     and should call ``ZeroSettle/presentApplePaySetup()`` (or its
+    ///     own equivalent) when ready to proceed.
+    ///
+    /// This is a hard failure, not a cancellation —
+    /// ``ZeroSettleError/isCancellation(_:)`` returns `false`.
+    case applePaySetupRequired(autoPresentedSetup: Bool)
+
     /// Returns `true` if the error represents a user-initiated cancellation,
     /// regardless of which layer threw it (ZeroSettleKit, StoreKit, or Swift concurrency).
     public static func isCancellation(_ error: Error) -> Bool {
@@ -203,6 +235,15 @@ public enum ZeroSettleError: Error, LocalizedError {
             return "ZeroSettle has not identified a user. Call ZeroSettle.shared.identify(.user(id:)) (or .anonymous) before invoking user-scoped APIs."
         case .checkoutNotStarted:
             return "Checkout never started. The PaymentIntent was not created — the customer was NOT charged. Likely a backend or configuration issue at PI-creation time; check Render logs for the `/v1/iap/payment-intents/` request that initiated this checkout."
+        case .applePayUnavailable:
+            return "Apple Pay is required for this purchase but is not available on this device."
+        case .applePaySetupRequired(autoPresentedSetup: true):
+            // SDK is presenting the Wallet setup sheet itself. Returning nil
+            // means a naive `error.localizedDescription` call site shows
+            // nothing — preventing competing UI on top of the system sheet.
+            return nil
+        case .applePaySetupRequired(autoPresentedSetup: false):
+            return "Apple Pay is required for this purchase but no card is set up in Wallet."
         }
     }
 }
@@ -263,6 +304,37 @@ public enum Identity: Sendable {
     case deferred
 }
 
+// MARK: - Apple Pay Setup Behavior
+
+/// How the SDK reacts when the merchant is Apple-Pay-only and the device's
+/// Wallet has no supported card configured (`ApplePayAvailability.State.setupRequired`).
+///
+/// Set on ``ZeroSettle/Configuration/applePaySetupBehavior`` at SDK
+/// configuration time.
+public enum ApplePaySetupBehavior: Sendable {
+    /// SDK opens the system Wallet setup flow automatically when the merchant
+    /// is Apple-Pay-only and the device's Wallet has no supported card. The
+    /// banner shows a built-in "Set up Apple Pay" CTA inline. Imperative entry
+    /// points (``CheckoutSheet/present(from:product:userId:dismissible:checkoutURL:transactionId:onComplete:)``,
+    /// `WebCheckoutFlow.beginCheckout`, `NativePay.Flow.pay`) **also** open
+    /// Wallet, then surface
+    /// ``ZeroSettleError/applePaySetupRequired(autoPresentedSetup:)`` with
+    /// `autoPresentedSetup: true` so the caller knows the SDK already
+    /// presented setup UI and shouldn't re-present its own. The error's
+    /// `errorDescription` returns `nil` in this mode, so naive
+    /// `error.localizedDescription` callers won't double-stack UI. Default.
+    case presentBuiltInUI
+
+    /// SDK delegates the setup flow to your app. The banner hides itself on
+    /// `setupRequired`; all imperative entry points surface
+    /// ``ZeroSettleError/applePaySetupRequired(autoPresentedSetup:)`` with
+    /// `autoPresentedSetup: false` and **do not** open Wallet. Observe
+    /// ``ZeroSettle/applePayAvailability`` to drive your own UI, then call
+    /// ``ZeroSettle/presentApplePaySetup()`` (or your equivalent flow) when
+    /// ready.
+    case delegateToApp
+}
+
 // MARK: - ZeroSettle IAP
 
 /// Main entry point for the ZeroSettle IAP SDK.
@@ -315,18 +387,25 @@ public final class ZeroSettle: ObservableObject {
         /// `Int` to cap the pool size. Set to `0` to disable WebView pre-rendering entirely (PI caching still works).
         public let maxPreloadedWebViews: Int?
 
+        /// How the SDK reacts when the merchant is Apple-Pay-only and the
+        /// device's Wallet has no supported card. Defaults to
+        /// ``ApplePaySetupBehavior/presentBuiltInUI``.
+        public let applePaySetupBehavior: ApplePaySetupBehavior
+
         public init(
             publishableKey: String,
             syncStoreKitTransactions: Bool = true,
             appleMerchantId: String? = nil,
             preloadCheckout: Bool = false,
-            maxPreloadedWebViews: Int? = nil
+            maxPreloadedWebViews: Int? = nil,
+            applePaySetupBehavior: ApplePaySetupBehavior = .presentBuiltInUI
         ) {
             self.publishableKey = publishableKey
             self.syncStoreKitTransactions = syncStoreKitTransactions
             self.appleMerchantId = appleMerchantId
             self.preloadCheckout = preloadCheckout
             self.maxPreloadedWebViews = maxPreloadedWebViews
+            self.applePaySetupBehavior = applePaySetupBehavior
         }
 
         internal var backendURL: URL {
@@ -418,7 +497,7 @@ public final class ZeroSettle: ObservableObject {
     /// Migration manager for the StoreKit → web checkout migration flow.
     /// Access via ``migrationManager(for:)`` to guarantee a single shared instance.
     /// Starts in `.loading` and transitions after bootstrap completes.
-    @available(*, deprecated, message: "Use offerManager(for:) instead")
+    @available(*, deprecated, message: "Use offerManager(stripeCustomerId:) instead — call after identify(_:). ZSMigrationManager is itself class-level deprecated in favor of ZSOfferManager.")
     public private(set) var migrationManager: ZSMigrationManager?
 
     /// Unified offer manager for migration, storekit_to_web, and web_to_web flows.
@@ -785,6 +864,50 @@ public final class ZeroSettle: ObservableObject {
     @ObservationIgnored
     public weak var delegate: ZeroSettleDelegate?
 
+    // MARK: - Apple Pay Availability
+
+    /// Single shared `ApplePayAvailability` instance. Initialized eagerly
+    /// when the `ZeroSettle.shared` singleton is first touched (e.g., by
+    /// `configure()`) — apps that never read this property still pay the
+    /// init cost, which is two `NotificationCenter.addObserver` calls and
+    /// one `PKPaymentAuthorizationController.canMakePayments()`. Negligible.
+    public let applePayAvailability = ApplePayAvailability()
+
+    /// Launches the system Wallet setup flow so the user can add a card
+    /// for Apple Pay. The SDK does not wait for completion — the
+    /// `applePayAvailability` service auto-refreshes on
+    /// `PKPassLibraryDidChange` and `UIApplication.didBecomeActive`,
+    /// so observed state will flip to `.ready` once the user finishes.
+    ///
+    /// Call from a `.applePaySetupRequired` error handler, or from a
+    /// banner CTA when ``ApplePayAvailability/State/setupRequired`` is observed.
+    public func presentApplePaySetup() {
+        PKPassLibrary().openPaymentSetup()
+    }
+
+    /// Whether the SDK is currently treating this merchant as Apple-Pay-only.
+    /// Drives banner CTA swap and the imperative-checkout pre-flight gate.
+    ///
+    /// Reads the live backend `remoteConfig.checkout.paymentMethods`. In
+    /// DEBUG builds, setting ``ApplePayAvailability/debugStateOverride``
+    /// also forces this to `true` so the banner / gate code paths can be
+    /// exercised against tenants that aren't actually Apple-Pay-only on
+    /// the backend.
+    public var isApplePayOnly: Bool {
+        #if DEBUG
+        if applePayAvailability.debugStateOverride != nil { return true }
+        #endif
+        return remoteConfig?.checkout.isApplePayOnly == true
+    }
+
+    /// The dev's chosen ``ApplePaySetupBehavior``, with the public default
+    /// (`.presentBuiltInUI`) substituted when the SDK is unconfigured. Read
+    /// by the ``ApplePayPreflightGate`` call sites and the banner views to
+    /// keep the fallback definition in one place.
+    internal var resolvedApplePaySetupBehavior: ApplePaySetupBehavior {
+        currentConfig?.applePaySetupBehavior ?? .presentBuiltInUI
+    }
+
     // MARK: - Internal State
 
     /// Internal accessor for the current configuration.
@@ -832,7 +955,19 @@ public final class ZeroSettle: ObservableObject {
     /// Pass `nil` to clear (logout path).
     internal func setActiveUserId(_ userId: String?) {
         currentUserId = userId
-        storeKitManager?.setUserId(userId)
+        // Start the StoreKit `Transaction.updates` listener on the first
+        // non-nil userId after configure(). This eliminates the race where
+        // Apple redelivered an unfinished transaction in the
+        // [configure → identify] window and `handleVerifiedTransaction`
+        // ran with `userId == nil` — the canonical 1.3.x StoreKit-attribution
+        // bug class. Subsequent calls (re-identify, user switch) just update
+        // the userId on the running listener.
+        if let userId, !userId.isEmpty,
+           let manager = storeKitManager, !manager.isListening {
+            manager.startListening(userId: userId)
+        } else {
+            storeKitManager?.setUserId(userId)
+        }
     }
 
     /// `UserDefaults` key under which the anonymous session UUID is
@@ -1054,7 +1189,14 @@ public final class ZeroSettle: ObservableObject {
         if config.syncStoreKitTransactions {
             let storeKitManager = StoreKitManager(backend: backend, subscriptionMonitor: subscriptionMonitor)
             storeKitManager.delegate = self
-            storeKitManager.startListening()
+            // Deliberately NOT calling `startListening()` here. The
+            // `Transaction.updates` listener kicks off in `setActiveUserId(_:)`
+            // on the first non-nil userId, so Apple's redelivered unfinished
+            // transactions can never reach `handleVerifiedTransaction` while
+            // `userId == nil`. Apps that never call `identify(...)` will see
+            // their unfinished transactions queue at the StoreKit layer; the
+            // 10-second post-configure deferred warning + the existing
+            // `handleVerifiedTransaction` error log surface this loudly.
             self.storeKitManager = storeKitManager
         }
 
@@ -1252,8 +1394,22 @@ public final class ZeroSettle: ObservableObject {
         delegate?.zeroSettleEntitlementsDidUpdate([])
         remoteConfig = nil
         cancelFlowConfig = nil
+        // `migrationManager` is unconditionally torn down. ZSMigrationManager
+        // is class-level deprecated in favor of ZSOfferManager and has no
+        // in-place identity-promotion path; the orphan window for any view
+        // wired to a dormant migration manager is bounded by the deprecation
+        // and not worth additional surface area to fix.
         migrationManager = nil
-        offerManager = nil
+        // For `offerManager`: only tear down on a genuine user switch. If the
+        // cached manager is dormant (empty userId — created via
+        // `offerManager()` pre-identify) or already pinned to this same user
+        // (re-identify), keep it. `_getOrCreateOfferManager` below will then
+        // promote the dormant case in place via `setActiveUserId(_:)`,
+        // keeping any consuming `@ObservedObject` reference live instead of
+        // orphaning it.
+        if let existing = offerManager, !existing.userId.isEmpty, existing.userId != userId {
+            offerManager = nil
+        }
         ownedStoreKitTransactionIds = nil
         Task { await CheckoutResponseCache.shared.clearAll() }
         // Tear down preloaded WebViews — they hold a client_secret from
@@ -1341,23 +1497,23 @@ public final class ZeroSettle: ObservableObject {
 
     // MARK: - Offer Manager
 
-    /// Returns the shared offer manager, creating one if it doesn't exist yet.
+    /// Returns the shared ``ZSOfferManager``, creating one if it doesn't exist yet.
     ///
-    /// Both ``OfferTipView`` and ``identify(_:)`` call this to guarantee
-    /// a single shared instance. The manager starts in `.loading` and transitions
-    /// to `.eligible` or `.ineligible` once bootstrap completes (via notification).
+    /// **Eager and non-throwing** — safe to call before ``identify(_:)``. If
+    /// identify hasn't run, the returned manager starts in
+    /// ``Offer/State/loading`` with an empty userId; the SDK promotes it
+    /// in place by calling its internal `setActiveUserId(_:)` as soon as
+    /// `identify(_:)` completes. Consumers holding the manager via
+    /// `@ObservedObject` see state changes naturally.
     ///
-    /// - Parameters:
-    ///   - userId: Your app's user identifier
-    ///   - stripeCustomerId: Optional existing Stripe Customer ID (`cus_xxx`)
-    ///     to attach the checkout to.
-    /// - Returns: The shared ``ZSOfferManager``
-    /// Returns the shared ``ZSOfferManager`` for the currently identified user,
-    /// creating one if it doesn't exist yet. Requires
-    /// ``identify(_:)`` to have been called.
+    /// - Parameter stripeCustomerId: Optional existing Stripe Customer ID
+    ///   (`cus_xxx`) to attach the checkout to.
+    /// - Returns: The shared ``ZSOfferManager``.
     @discardableResult
-    public func offerManager(stripeCustomerId: String? = nil) throws -> ZSOfferManager {
-        let userId = try requireIdentifiedUserId()
+    public func offerManager(stripeCustomerId: String? = nil) -> ZSOfferManager {
+        // Empty userId is the documented "dormant" placeholder; promoted
+        // by `_runIdentify` via `setActiveUserId(_:)` when identify runs.
+        let userId = currentUserId ?? ""
         return _getOrCreateOfferManager(userId: userId, stripeCustomerId: stripeCustomerId)
     }
 
@@ -1370,8 +1526,17 @@ public final class ZeroSettle: ObservableObject {
     }
 
     internal func _getOrCreateOfferManager(userId: String, stripeCustomerId: String?) -> ZSOfferManager {
-        if let existing = offerManager { return existing }
-        let manager = ZSOfferManager(userId: userId, stripeCustomerId: stripeCustomerId)
+        // Promote any existing manager rather than orphaning it. This is the
+        // path that fires when `offerManager()` was called pre-identify
+        // (creating a dormant manager with an empty userId) and `identify(_:)`
+        // later resolves: `_runIdentify` calls back here with the real userId,
+        // and we mutate the cached manager in place instead of returning a
+        // stale instance or creating a parallel one.
+        if let existing = offerManager {
+            existing.setActiveUserId(userId)
+            return existing
+        }
+        let manager = ZSOfferManager(activeUserId: userId, stripeCustomerId: stripeCustomerId)
         offerManager = manager
         return manager
     }

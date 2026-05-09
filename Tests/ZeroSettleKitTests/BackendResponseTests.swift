@@ -42,6 +42,7 @@ private struct CheckoutConfigResponse: Decodable {
     let isEnabled: Bool
     let jurisdictions: [String: JurisdictionConfigResponse]?
     let appleMerchantId: String?
+    let paymentMethods: [String]?
 }
 
 private struct JurisdictionConfigResponse: Decodable {
@@ -372,6 +373,44 @@ final class BackendResponseTests: XCTestCase {
         XCTAssertEqual(response.products[0].id, "com.app.coins_50")
         XCTAssertEqual(response.products[0].webPrice?.amountCents, 49)
         XCTAssertNil(response.config)
+    }
+
+    func testProductsResponseDecodesPaymentMethodsThroughCheckoutConfig() throws {
+        // Mirrors the production decoder used in Backend.fetchProducts() —
+        // exercises the snake_case `payment_methods` wire field through
+        // the same `ProductsResponse → ConfigResponse → CheckoutConfigResponse`
+        // shape Backend.swift decodes. Catches drift between the JSON wire
+        // format and the in-memory CheckoutConfig model used by callers.
+        // (Removal of the field from Backend.swift's private wire struct is
+        // already caught by the compiler at the construction site.)
+        let json = """
+        {
+            "products": [],
+            "config": {
+                "checkout": {
+                    "sheet_type": "webview",
+                    "is_enabled": true,
+                    "payment_methods": ["apple_pay"]
+                }
+            }
+        }
+        """.data(using: .utf8)!
+
+        let response = try decoder.decode(ProductsResponse.self, from: json)
+
+        XCTAssertNotNil(response.config)
+        let checkout = response.config!.checkout
+        XCTAssertEqual(checkout.paymentMethods, [PaymentMethodID.applePay])
+
+        // Round-trip into the production CheckoutConfig and verify the
+        // derived computed property used by callers.
+        let cfg = CheckoutConfig(
+            sheetType: CheckoutType(rawValue: checkout.sheetType) ?? .webView,
+            isEnabled: checkout.isEnabled,
+            paymentMethods: checkout.paymentMethods
+        )
+        XCTAssertEqual(cfg.paymentMethods, [PaymentMethodID.applePay])
+        XCTAssertTrue(cfg.isApplePayOnly)
     }
 
     func testProductCatalogResponseWithJurisdictionOverrides() throws {

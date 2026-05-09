@@ -147,6 +147,25 @@ extension NativePay {
             userId: String?,
             merchantId: String
         ) async throws -> NativePay.Result {
+            // Pre-flight: when the merchant is Apple-Pay-only, refuse to
+            // present the Apple Pay sheet if the device cannot complete the
+            // purchase. STPApplePayContext silently no-ops on .unavailable
+            // and shows an unhelpful sheet on .setupRequired — surface the
+            // typed error before either happens. Honors .presentBuiltInUI by
+            // opening system Wallet automatically before throwing.
+            let outcome = ApplePayPreflightGate.evaluate(
+                isApplePayOnly: ZeroSettle.shared.isApplePayOnly,
+                state: ZeroSettle.shared.applePayAvailability.state,
+                behavior: ZeroSettle.shared.resolvedApplePaySetupBehavior
+            )
+            if case .blocked(let error, let openSetupUI) = outcome {
+                ZSLogger.info("[NativePay] pay blocked — error=\(error) openSetupUI=\(openSetupUI)", category: .checkout)
+                if openSetupUI {
+                    ZeroSettle.shared.presentApplePaySetup()
+                }
+                throw error
+            }
+
             // 1. Initiate checkout — use cached response if available (from preloading)
             let pk = ZeroSettle.shared.currentConfig?.publishableKey ?? ""
             let response: CheckoutResponse

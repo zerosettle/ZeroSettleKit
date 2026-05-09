@@ -1032,6 +1032,24 @@ private struct PaymentWebView: UIViewRepresentable {
                 return
             }
 
+            // Forward JS console.* output to ZSLogger so it surfaces in the
+            // Xcode console alongside Swift logs. Filter to SDK-prefixed
+            // diagnostics (`[zs-*]`) so Stripe's high-volume PaymentElement
+            // chatter doesn't drown the log; passthrough errors regardless
+            // of prefix so genuine runtime failures aren't silenced.
+            if message.name == "consoleLog" {
+                let body = message.body as? [String: Any] ?? [:]
+                let level = (body["level"] as? String) ?? "log"
+                let text = (body["message"] as? String) ?? String(describing: message.body)
+                let isOurs = text.hasPrefix("[zs-")
+                if level == "error" {
+                    ZSLogger.error("[CheckoutSheet][JS error] \(text)", category: .checkout)
+                } else if isOurs {
+                    ZSLogger.info("[CheckoutSheet][JS \(level)] \(text)", category: .checkout)
+                }
+                return
+            }
+
             guard message.name == "checkoutComplete",
                   let body = message.body as? [String: Any] else { return }
 

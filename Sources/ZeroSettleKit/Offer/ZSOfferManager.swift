@@ -141,8 +141,11 @@ public final class ZSOfferManager: ObservableObject {
 
     // MARK: - Public Properties
 
-    /// The user ID this manager was created for.
-    public let userId: String
+    /// The user ID this manager is currently tracking. Updated in place when
+    /// ``ZeroSettle/identify(_:)`` runs, so a manager constructed pre-identify
+    /// (via ``ZeroSettle/offerManager(stripeCustomerId:)``) becomes live as soon
+    /// as identification completes — without consumers having to re-fetch.
+    public private(set) var userId: String
 
     /// The resolved flow type (nil until eligible).
     public var flowType: Offer.FlowType? { offerData?.flowType }
@@ -172,7 +175,20 @@ public final class ZSOfferManager: ObservableObject {
 
     // MARK: - Init
 
+    @available(*, deprecated, message: "Call ZeroSettle.shared.identify(_:) once at app launch, then use ZeroSettle.shared.offerManager(stripeCustomerId:) instead. Direct init bypasses the SDK's identity tracking. Will be removed in ZeroSettleKit 2.0.")
     public init(userId: String, stripeCustomerId: String? = nil) {
+        self.userId = userId
+        self.stripeCustomerId = stripeCustomerId
+        startObserving()
+        startMonitoringSubscriptionChanges()
+    }
+
+    /// Internal designated init used by SDK-internal fallback paths
+    /// (`OfferTipView` constructs a dormant manager when `identify(_:)` hasn't
+    /// run). Routes around the public init's deprecation warning so internal
+    /// build logs stay clean. External callers should use the factory
+    /// ``ZeroSettle/offerManager(stripeCustomerId:)``.
+    internal init(activeUserId userId: String, stripeCustomerId: String? = nil) {
         self.userId = userId
         self.stripeCustomerId = stripeCustomerId
         startObserving()
@@ -181,6 +197,23 @@ public final class ZSOfferManager: ObservableObject {
 
     deinit {
         monitorObservationTask?.cancel()
+    }
+
+    // MARK: - Identity Promotion
+
+    /// Updates the manager's tracked user. Called by ``ZeroSettle/identify(_:)``
+    /// so a manager that was eagerly created pre-identify (e.g., to back an
+    /// `OfferTipView` constructed before login) becomes live without forcing
+    /// consumers to re-fetch the manager. No-op when the userId is unchanged.
+    ///
+    /// Side effects: re-evaluates eligibility (which may transition state out
+    /// of `.loading`/`.ineligible`).
+    internal func setActiveUserId(_ newId: String) {
+        guard newId != userId else { return }
+        userId = newId
+        // Re-run eligibility against the new identity. `evaluateEligibility`
+        // is idempotent and gates on terminal states internally.
+        evaluateEligibility()
     }
 
     // MARK: - Subscription Monitor Integration

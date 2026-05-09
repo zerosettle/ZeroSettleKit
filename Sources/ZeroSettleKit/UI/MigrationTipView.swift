@@ -54,6 +54,7 @@ public struct MigrationTipView: View {
     @State private var confettiTrigger = 0
     @State private var checkoutURL: URL?
     @State private var hasApplePay = false
+
     @StateObject private var preloader = MigrationCheckoutPreloader()
     @State private var preloadTriggered = false
 
@@ -152,6 +153,29 @@ public struct MigrationTipView: View {
         manager.offerData?.prompt.discountPercent ?? 0
     }
 
+    /// Apple-Pay-only mode: when true, native PassKit availability supersedes the
+    /// JS-bridge `hasApplePay` signal for CTA / banner-visibility decisions.
+    /// Reads through `ZeroSettle.shared.isApplePayOnly`, which resolves the
+    /// backend `remoteConfig.checkout.paymentMethods` (and, in DEBUG builds,
+    /// auto-resolves to `true` while ``ApplePayAvailability/debugStateOverride``
+    /// is non-nil so the test flow can exercise the Apple-Pay-only branch).
+    private var applePayOnlyMode: Bool {
+        ZeroSettle.shared.isApplePayOnly
+    }
+
+    /// Pre-flight outcome for the current Apple-Pay-only / availability /
+    /// behavior triple. Drives both the outer banner-hide decision and the
+    /// inner CTA branching via `applePayPreflight.bannerDisplay`.
+    private var applePayPreflight: ApplePayPreflightGate.Outcome {
+        // Reads `state` directly on the @Observable singleton; SwiftUI tracks
+        // the access during body evaluation and re-renders on transitions.
+        ApplePayPreflightGate.evaluate(
+            isApplePayOnly: applePayOnlyMode,
+            state: ZeroSettle.shared.applePayAvailability.state,
+            behavior: ZeroSettle.shared.resolvedApplePaySetupBehavior
+        )
+    }
+
     // MARK: - Body
 
     public var body: some View {
@@ -172,7 +196,15 @@ public struct MigrationTipView: View {
 
             case .eligible, .presented:
                 let _ = ZSLogger.debug("[MigrateTipView] Rendering .\(manager.state) — showing offerCardView", category: .migration)
-                offerCardView
+                if applePayPreflight.bannerDisplay == .hide {
+                    // Apple-Pay-only merchant + (device cannot do Apple Pay) OR
+                    // (setup required AND dev opted into .delegateToApp). Hide
+                    // the banner; warning logged once on transition by
+                    // ApplePayAvailability for the .unavailable case.
+                    Color.clear.frame(height: 0)
+                } else {
+                    offerCardView
+                }
 
             case .accepted:
                 if checkingCancellation {
@@ -304,27 +336,42 @@ public struct MigrationTipView: View {
                         .padding(.bottom, 16)
                         .accessibilityLabel("Loading checkout")
                 } else {
-                    Button(action: { ctaTapped = true; startCheckout() }) {
-                        HStack(spacing: 8) {
-                            if manager.isLoading {
-                                ProgressView()
-                                    .progressViewStyle(CircularProgressViewStyle(tint: backgroundColor))
-                                    .scaleEffect(0.8)
-                                    .accessibilityHidden(true)
-                            }
-                            Text(manager.isLoading ? "" : (serverDisplay?.offerCtaOrDefault(manager.offerData?.prompt.ctaText ?? (discountPercent > 0 ? "Save \(discountPercent)% Forever" : "Switch Now")) ?? manager.offerData?.prompt.ctaText ?? (discountPercent > 0 ? "Save \(discountPercent)% Forever" : "Switch Now")))
+                    if applePayPreflight.bannerDisplay == .showSetupCTA {
+                        Button(action: { ZeroSettle.shared.presentApplePaySetup() }) {
+                            Text(ApplePayCopy.setupCTA)
                                 .font(ctaFont ?? .body.weight(.bold))
                                 .foregroundColor(backgroundColor)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .background(Color.white)
+                                .clipShape(Capsule())
                         }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .background(Color.white)
-                        .clipShape(Capsule())
+                        .accessibilityHint("Opens the system Wallet to add a card for Apple Pay")
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 16)
+                    } else {
+                        Button(action: { ctaTapped = true; startCheckout() }) {
+                            HStack(spacing: 8) {
+                                if manager.isLoading {
+                                    ProgressView()
+                                        .progressViewStyle(CircularProgressViewStyle(tint: backgroundColor))
+                                        .scaleEffect(0.8)
+                                        .accessibilityHidden(true)
+                                }
+                                Text(manager.isLoading ? "" : (serverDisplay?.offerCtaOrDefault(manager.offerData?.prompt.ctaText ?? (discountPercent > 0 ? "Save \(discountPercent)% Forever" : "Switch Now")) ?? manager.offerData?.prompt.ctaText ?? (discountPercent > 0 ? "Save \(discountPercent)% Forever" : "Switch Now")))
+                                    .font(ctaFont ?? .body.weight(.bold))
+                                    .foregroundColor(backgroundColor)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(Color.white)
+                            .clipShape(Capsule())
+                        }
+                        .accessibilityHint("Opens the web checkout to switch to direct billing")
+                        .disabled(manager.isLoading)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 16)
                     }
-                    .accessibilityHint("Opens the web checkout to switch to direct billing")
-                    .disabled(manager.isLoading)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 16)
                 }
             }
 
@@ -919,7 +966,14 @@ struct CheckoutWebView: UIViewRepresentable {
         // Handle messages from JavaScript
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             if message.name == "debugLog" {
-                // Intentionally ignore verbose WebView logging.
+                // Stripe's PaymentElement chatter is high-volume and not
+                // useful in normal operation. Forward only zs-prefixed
+                // diagnostic logs so the SDK's own JS instrumentation
+                // (e.g. `[zs-checkout] sub-pe paymentMethodTypes=...`)
+                // surfaces in Xcode while leaving Stripe noise muted.
+                if let body = message.body as? String, body.hasPrefix("[zs-") {
+                    ZSLogger.info("[CheckoutWebView][JS] \(body)", category: .migration)
+                }
             } else if message.name == "contentHeight", let height = message.body as? Double, height > 0 {
                 DispatchQueue.main.async {
                     self.onContentHeightChanged(CGFloat(height))
@@ -1477,6 +1531,14 @@ internal final class MigrationCheckoutPreloader: ObservableObject {
                 } else if body == "buttons_ready" {
                     self.buttonsReady = true
                 }
+            } else if message.name == "debugLog",
+                      let body = message.body as? String,
+                      body.hasPrefix("[zs-") {
+                // SDK-prefixed JS diagnostics fire at PE-create time during
+                // preload (before the live CheckoutWebView coordinator takes
+                // over), so forward them to Xcode directly. Stripe's own
+                // verbose chatter is left muted.
+                ZSLogger.info("[MigrationPreloader][JS] \(body)", category: .migration)
             }
         }
 

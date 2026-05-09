@@ -1,6 +1,6 @@
 # Migrating ZeroSettleKit
 
-This guide covers upgrading consumer apps between major API revisions of ZeroSettleKit. The current SDK version is **1.3.0**.
+This guide covers upgrading consumer apps between major API revisions of ZeroSettleKit. The current SDK version is **1.3.2**.
 
 ---
 

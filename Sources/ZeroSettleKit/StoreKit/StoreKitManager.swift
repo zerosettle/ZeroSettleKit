@@ -164,6 +164,14 @@ internal final class StoreKitManager {
         userId
     }
 
+    /// Whether the `Transaction.updates` listener task is currently running.
+    /// Used by `ZeroSettle.setActiveUserId(_:)` to start the listener exactly
+    /// once on the first non-nil userId, eliminating the race where Apple
+    /// redelivers an unfinished transaction in the configure→identify window.
+    var isListening: Bool {
+        updateListenerTask != nil
+    }
+
     // MARK: - Product Fetching
 
     /// Fetch StoreKit products for reconciliation with ZeroSettle catalog.
@@ -486,6 +494,14 @@ internal final class StoreKitManager {
         // giving the developer another chance to identify the user before the
         // sync fires. We do NOT enqueue here — without a userId we can't
         // attribute the retry to anyone.
+        //
+        // Historical note: this branch used to fire `assertionFailure` in
+        // DEBUG to surface the race to developers, but the K2 fix below
+        // (start the Transaction.updates listener inside `setActiveUserId`,
+        // not `configure()`) means a healthy `identify(...)` flow no longer
+        // hits this path. Apps that legitimately never call `identify()`
+        // shouldn't be crashed in DEBUG over a benign retry — the error log
+        // already explains the problem and points at the fix.
         guard let userId = userId else {
             ZSLogger.error(
                 "ZeroSettleKit: StoreKit transaction \(transaction.id) for product '\(transaction.productID)' will NOT sync to the backend because no user is identified. " +
@@ -493,13 +509,6 @@ internal final class StoreKitManager {
                 "The transaction is left unfinished so StoreKit will redeliver it once you identify the user.",
                 category: .entitlements
             )
-#if DEBUG
-            assertionFailure(
-                "ZeroSettleKit: StoreKit transaction received but no userId is set. " +
-                "Call ZeroSettle.shared.identify(userId:) before StoreKit transactions can fire. " +
-                "This assertion only fires in DEBUG; in RELEASE the transaction is left unfinished and will be retried."
-            )
-#endif
             return
         }
 

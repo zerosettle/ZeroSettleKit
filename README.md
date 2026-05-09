@@ -46,7 +46,7 @@ Or in `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/zerosettle/ZeroSettleKit", from: "1.0.0")
+    .package(url: "https://github.com/zerosettle/ZeroSettleKit", from: "1.3.2")
 ],
 targets: [
     .target(
@@ -250,7 +250,7 @@ Web checkout callbacks require universal links. Add an Apple App Site Associatio
 
 ## Best Practices
 
-- **Call `identify(_:)` on every app launch** — it bootstraps the SDK and refreshes entitlements in one call
+- **Call `identify(_:)` on every app launch** — it initializes the SDK and refreshes entitlements in one call
 - **Validate entitlements server-side** for sensitive features
 - **Provide a visible "Restore Purchases" button** (App Store requirement) — wire it to `restoreEntitlements()`
 - **Use sandbox keys during development** — `zs_pk_test_…` for sandbox, `zs_pk_live_…` for production

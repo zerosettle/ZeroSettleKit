@@ -21,7 +21,7 @@ Developers add the package in Xcode via File > Add Package Dependencies, or in t
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/zerosettle/ZeroSettleKit.git", from: "0.6.1")
+    .package(url: "https://github.com/zerosettle/ZeroSettleKit.git", from: "1.3.2")
 ]
 ```
 
@@ -48,7 +48,7 @@ That's it — SPM consumers pick it up immediately.
 Developers add to their Podfile:
 
 ```ruby
-pod 'ZeroSettleKit', '~> 0.6.1'
+pod 'ZeroSettleKit', '~> 1.3.2'
 ```
 
 ### How CocoaPods builds differ from SPM
@@ -116,7 +116,7 @@ The Flutter plugin is a thin Dart wrapper around the native SDK. On iOS, it pull
 ```yaml
 # pubspec.yaml
 dependencies:
-  zerosettle: ^0.0.1
+  zerosettle: ^1.3.0
 ```
 
 ### Developer installation (via git)
@@ -215,8 +215,9 @@ When releasing a new version, update these in order:
 
 1. **ZeroSettleKit source** — make your changes, commit
 2. **`ZeroSettleKit.podspec`** — bump `s.version`
-3. **Git tag** — `git tag X.Y.Z && git push origin X.Y.Z`
-4. **CocoaPods** — `pod trunk push ZeroSettleKit.podspec --allow-warnings`
-5. **Flutter podspec** — update `s.dependency 'ZeroSettleKit', '~> X.Y.Z'`
-6. **Flutter pubspec** — bump `version:` if publishing to pub.dev
-7. **Publish Flutter** — `dart pub publish` (or just push to git)
+3. **`Configuration.sdkVersion`** — bump to match in `Sources/ZeroSettleKit/Configuration.swift`. The backend reads this from the `X-ZS-SDK-Version` header to gate features (e.g., the deferred-mode pivot in `backend/api/services/sdk_version.py:MIN_DEFERRED_VERSION`). Pinned tests in `Tests/ZeroSettleKitTests/ConfigurationTests.swift` and `BackendHeaderTests.swift` assert exact equality and will fail if you forget.
+4. **Git tag** — `git tag X.Y.Z && git push origin X.Y.Z`
+5. **CocoaPods** — `pod trunk push ZeroSettleKit.podspec --allow-warnings`
+6. **Flutter podspec** — update `s.dependency 'ZeroSettleKit', '~> X.Y.Z'`
+7. **Flutter pubspec** — bump `version:` if publishing to pub.dev
+8. **Publish Flutter** — `dart pub publish` (or just push to git)

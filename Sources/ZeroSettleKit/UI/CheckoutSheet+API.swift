@@ -338,6 +338,26 @@ extension CheckoutSheet {
         @ViewBuilder header: @escaping () -> H,
         onComplete: @escaping (Result<CheckoutTransaction, Error>) -> Void
     ) {
+        // Pre-flight: when the merchant is Apple-Pay-only, refuse to present
+        // checkout if the device cannot complete it. Reports via onComplete so
+        // callers handle it through the same Result path as any other checkout
+        // failure. When `applePaySetupBehavior == .presentBuiltInUI`, also
+        // open the system Wallet setup so the buyer can add a card without an
+        // extra tap — see ApplePayPreflightGate for the decision matrix.
+        let outcome = ApplePayPreflightGate.evaluate(
+            isApplePayOnly: ZeroSettle.shared.isApplePayOnly,
+            state: ZeroSettle.shared.applePayAvailability.state,
+            behavior: ZeroSettle.shared.resolvedApplePaySetupBehavior
+        )
+        if case .blocked(let error, let openSetupUI) = outcome {
+            ZSLogger.info("[Checkout] present blocked — error=\(error) openSetupUI=\(openSetupUI)", category: .checkout)
+            if openSetupUI {
+                ZeroSettle.shared.presentApplePaySetup()
+            }
+            onComplete(.failure(error))
+            return
+        }
+
         let bridge = UIKitSheetBridge<H>(
             product: product,
             userId: userId,

@@ -96,7 +96,6 @@ public struct OfferTipView: View {
 
     // MARK: - Stored Properties
 
-    private let userId: String
     private let stripeCustomerId: String?
     private let backgroundColor: Color
     private let titleFont: Font?
@@ -119,6 +118,7 @@ public struct OfferTipView: View {
     @State private var contentHeight: CGFloat = 180
     @State private var checkoutURL: URL?
     @State private var hasApplePay = false
+
     @StateObject private var preloader = MigrationCheckoutPreloader()
     @State private var preloadTriggered = false
     /// True when performing a web-to-web upgrade (no WebView, just a spinner).
@@ -155,16 +155,40 @@ public struct OfferTipView: View {
         manager.offerData?.upgradeType != .webToWeb
     }
 
+    /// Apple-Pay-only mode: when true, native PassKit availability supersedes the
+    /// JS-bridge `hasApplePay` signal for CTA / banner-visibility decisions.
+    /// Reads through `ZeroSettle.shared.isApplePayOnly`, which resolves the
+    /// backend `remoteConfig.checkout.paymentMethods` (and, in DEBUG builds,
+    /// auto-resolves to `true` while ``ApplePayAvailability/debugStateOverride``
+    /// is non-nil so the test flow can exercise the Apple-Pay-only branch).
+    private var applePayOnlyMode: Bool {
+        ZeroSettle.shared.isApplePayOnly
+    }
+
+    /// Pre-flight outcome for the current Apple-Pay-only / availability /
+    /// behavior triple. Drives both the outer banner-hide decision and the
+    /// inner CTA branching via `applePayPreflight.bannerDisplay`.
+    private var applePayPreflight: ApplePayPreflightGate.Outcome {
+        // Reads `state` directly on the @Observable singleton; SwiftUI tracks
+        // the access during body evaluation and re-renders on transitions.
+        ApplePayPreflightGate.evaluate(
+            isApplePayOnly: applePayOnlyMode,
+            state: ZeroSettle.shared.applePayAvailability.state,
+            behavior: ZeroSettle.shared.resolvedApplePaySetupBehavior
+        )
+    }
+
     // MARK: - Init
 
-    /// Creates a new offer tip view.
+    /// Creates a new offer tip view that reads the active user from the SDK.
     ///
-    /// Uses the shared ``ZSOfferManager`` from ``ZeroSettle/offerManager(stripeCustomerId:)``
-    /// (created during ``ZeroSettle/identify(_:)``). Falls back to creating a local
-    /// instance if identify hasn't run yet.
+    /// Call ``ZeroSettle/identify(_:)`` once at app launch before constructing
+    /// this view. The view sources its ``ZSOfferManager`` from
+    /// ``ZeroSettle/offerManager(stripeCustomerId:)``. If `identify(_:)` hasn't
+    /// run yet, the manager stays in ``ZSOfferManager/State/loading`` and the
+    /// view's body returns an empty placeholder until identification completes.
     ///
     /// - Parameters:
-    ///   - userId: The user identifier passed to the checkout backend.
     ///   - stripeCustomerId: Optional existing Stripe Customer ID (`cus_xxx`) to attach the checkout to.
     ///     When `nil`, the backend creates a new customer.
     ///   - backgroundColor: The background color for the view. Defaults to `.black`.
@@ -175,6 +199,39 @@ public struct OfferTipView: View {
     ///     When `nil`, no border is drawn.
     ///   - onEvent: Optional closure invoked when a lifecycle ``Event`` occurs.
     public init(
+        stripeCustomerId: String? = nil,
+        backgroundColor: Color = .black,
+        titleFont: Font? = nil,
+        bodyFont: Font? = nil,
+        ctaFont: Font? = nil,
+        borderColor: Color? = nil,
+        onEvent: ((Event) -> Void)? = nil
+    ) {
+        self.stripeCustomerId = stripeCustomerId
+        self.backgroundColor = backgroundColor
+        self.titleFont = titleFont
+        self.bodyFont = bodyFont
+        self.ctaFont = ctaFont
+        self.borderColor = borderColor
+        self.onEvent = onEvent
+
+        // `offerManager(stripeCustomerId:)` is non-throwing and eager — returns
+        // a single shared instance regardless of identify state. If identify
+        // hasn't run, the manager starts in `.loading` with empty userId; the
+        // SDK calls its internal `setActiveUserId(_:)` when identify completes,
+        // and `@ObservedObject` re-renders this view automatically.
+        _manager = ObservedObject(
+            wrappedValue: ZeroSettle.shared.offerManager(stripeCustomerId: stripeCustomerId)
+        )
+    }
+
+    /// Creates a new offer tip view with an explicit user identifier.
+    ///
+    /// - Important: Deprecated. Call ``ZeroSettle/identify(_:)`` once at app
+    ///   launch, then use the no-userId initializer instead. Direct construction
+    ///   with `userId:` bypasses the SDK's identity tracking.
+    @available(*, deprecated, message: "Call ZeroSettle.shared.identify(_:) once at app launch, then construct OfferTipView() without a userId. Will be removed in ZeroSettleKit 2.0.")
+    public init(
         userId: String,
         stripeCustomerId: String? = nil,
         backgroundColor: Color = .black,
@@ -184,21 +241,19 @@ public struct OfferTipView: View {
         borderColor: Color? = nil,
         onEvent: ((Event) -> Void)? = nil
     ) {
-        self.userId = userId
-        self.stripeCustomerId = stripeCustomerId
-        self.backgroundColor = backgroundColor
-        self.titleFont = titleFont
-        self.bodyFont = bodyFont
-        self.ctaFont = ctaFont
-        self.borderColor = borderColor
-        self.onEvent = onEvent
-
+        // Belt-and-braces: pre-populate the SDK's active user from the legacy
+        // param so callers that haven't yet adopted `identify(_:)` continue
+        // working. Then delegate to the canonical init.
         ZeroSettle.shared.setActiveUserId(userId)
-        // try? — fall back to a fresh manager if userId is somehow nil; the
-        // view's userId param is non-optional so this should never fail.
-        let mgr = (try? ZeroSettle.shared.offerManager(stripeCustomerId: stripeCustomerId))
-            ?? ZSOfferManager(userId: userId, stripeCustomerId: stripeCustomerId)
-        _manager = ObservedObject(wrappedValue: mgr)
+        self.init(
+            stripeCustomerId: stripeCustomerId,
+            backgroundColor: backgroundColor,
+            titleFont: titleFont,
+            bodyFont: bodyFont,
+            ctaFont: ctaFont,
+            borderColor: borderColor,
+            onEvent: onEvent
+        )
     }
 
     // MARK: - Body
@@ -213,7 +268,15 @@ public struct OfferTipView: View {
                 EmptyView()
 
             case .eligible, .presented:
-                offerCardView
+                if applePayPreflight.bannerDisplay == .hide {
+                    // Apple-Pay-only merchant + (device cannot do Apple Pay) OR
+                    // (setup required AND dev opted into .delegateToApp). Hide
+                    // the banner; warning logged once on transition by
+                    // ApplePayAvailability for the .unavailable case.
+                    Color.clear.frame(height: 0)
+                } else {
+                    offerCardView
+                }
 
             case .accepted:
                 if checkingCancellation {
@@ -271,9 +334,11 @@ public struct OfferTipView: View {
             }
         }
         // Sheet checkout path — presents the overlay checkout sheet instead of inline WebView.
+        // `userId:` is omitted: the modifier reads from `ZeroSettle.shared`'s
+        // active user (set by `identify(_:)`). Forwarding our (possibly nil)
+        // stored `userId` would just push redundant context.
         .checkoutSheet(
             item: $sheetCheckoutProduct,
-            userId: userId,
             onPresent: { ctaTapped = false }
         ) { result in
             switch result {
@@ -343,11 +408,19 @@ public struct OfferTipView: View {
                             webToWebInProgress ? "Processing upgrade" : "Loading checkout"
                         )
                 } else {
-                    ctaButton(
-                        label: display?.offerCtaOrDefault(defaultOfferCta) ?? defaultOfferCta,
-                        accessibilityHint: "Opens the checkout to switch to direct billing",
-                        action: handleCtaTapped
-                    )
+                    if applePayPreflight.bannerDisplay == .showSetupCTA {
+                        ctaButton(
+                            label: ApplePayCopy.setupCTA,
+                            accessibilityHint: "Opens the system Wallet to add a card for Apple Pay",
+                            action: { ZeroSettle.shared.presentApplePaySetup() }
+                        )
+                    } else {
+                        ctaButton(
+                            label: display?.offerCtaOrDefault(defaultOfferCta) ?? defaultOfferCta,
+                            accessibilityHint: "Opens the checkout to switch to direct billing",
+                            action: handleCtaTapped
+                        )
+                    }
                 }
             }
 
@@ -698,8 +771,13 @@ public struct OfferTipView: View {
                 return
             }
 
-            // Slow path: PI creation on-demand
-            ZSLogger.info("[OfferTipView] slow path: creating PI on-demand", category: .migration)
+            // Slow path: preloader missed (e.g., app launched too recently
+            // or preload disabled). Hit the backend now to create the
+            // Transaction row + checkout URL. The actual Stripe Intent
+            // (PI / SI / Subscription) is still deferred until the user
+            // submits payment in the WebView — this call doesn't touch
+            // Stripe.
+            ZSLogger.info("[OfferTipView] slow path: fetching checkout URL on-demand (no Stripe call)", category: .migration)
             let url = await manager.startCheckout(stripeCustomerId: stripeCustomerId)
             ZSLogger.info("[OfferTipView] startCheckout returned url=\(url != nil) state=\(manager.state)", category: .migration)
             if let url {

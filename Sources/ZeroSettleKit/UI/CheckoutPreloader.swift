@@ -167,6 +167,35 @@ internal final class CheckoutPreloader: ObservableObject {
         config.allowsInlineMediaPlayback = true
         config.userContentController.add(messageRouter, name: "checkoutComplete")
         config.userContentController.add(messageRouter, name: "openInSafari")
+        config.userContentController.add(messageRouter, name: "consoleLog")
+
+        // Wrap console.log/warn/error so JS diagnostics fired during preload
+        // (e.g. the SDK's `[zs-checkout] sub-pe paymentMethodTypes=...`
+        // breadcrumb at PE-create time) flow through to ZSLogger / Xcode.
+        // Mirrors the same script in CheckoutSheet so the live and preload
+        // paths capture identical signals.
+        let consoleScript = WKUserScript(source: """
+            (function() {
+                function forward(level) {
+                    var orig = console[level];
+                    console[level] = function() {
+                        var args = Array.prototype.slice.call(arguments).map(function(a) {
+                            try { return typeof a === 'object' ? JSON.stringify(a) : String(a); }
+                            catch(e) { return String(a); }
+                        });
+                        try {
+                            window.webkit.messageHandlers.consoleLog.postMessage({
+                                level: level,
+                                message: args.join(' ')
+                            });
+                        } catch (_) {}
+                        orig.apply(console, arguments);
+                    };
+                }
+                forward('log'); forward('warn'); forward('error');
+            })();
+            """, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        config.userContentController.addUserScript(consoleScript)
 
         let heightScript = WKUserScript(
             source: setupMeasureJS + "\n" + heightObserverJS + "\n" + buttonReadyJS,
@@ -203,6 +232,24 @@ internal final class CheckoutPreloader: ObservableObject {
 
                 messageRouter.onMessage = { [weak self] message in
                     guard let self = self, self.loadToken == myToken else { return }
+
+                    // Forward JS console.* output to Xcode (filtered to
+                    // SDK-prefixed diagnostics so Stripe's verbose chatter
+                    // doesn't drown the log). Pairs with the consoleScript
+                    // injected at userContentController setup above.
+                    if message.name == "consoleLog",
+                       let body = message.body as? [String: Any],
+                       let text = body["message"] as? String,
+                       text.hasPrefix("[zs-") {
+                        let level = (body["level"] as? String) ?? "log"
+                        let line = "[Preloader][JS \(level)] \(text)"
+                        if level == "error" {
+                            ZSLogger.error(line, category: .checkout)
+                        } else {
+                            ZSLogger.info(line, category: .checkout)
+                        }
+                        return
+                    }
 
                     guard message.name == "checkoutComplete",
                           let body = message.body as? [String: Any],
