@@ -42,6 +42,17 @@ internal import ZeroSettleCore
 ///
 /// Re-evaluation via `startObserving()` only fires in `.loading`, `.ineligible`,
 /// and `.eligible` states — never during an active checkout flow.
+
+/// Identifies which call site triggered a checkout-bookkeeping transition,
+/// so analytics / logs can distinguish auto-bookkeeping (the new 1.4.0 path)
+/// from the deprecated public methods.
+internal enum CheckoutBookkeepingSource: Sendable {
+    /// Triggered automatically by CheckoutSheet.present / .checkoutSheet / purchase().
+    case auto
+    /// Triggered by deprecated public methods (present(), markCheckoutSucceeded()).
+    case manualLegacy
+}
+
 @MainActor
 public final class ZSOfferManager: ObservableObject {
 
@@ -159,7 +170,11 @@ public final class ZSOfferManager: ObservableObject {
     // MARK: - Private State
 
     private var stripeCustomerId: String?
-    private var checkoutTransactionId: String?
+    /// Last transaction id captured by `_applyCheckoutCompletion` /
+    /// `markCheckoutSucceeded`. `internal` (not `private`) so unit tests can
+    /// observe the bookkeeping side-effect; production callers still go
+    /// through the public state-machine methods.
+    internal var checkoutTransactionId: String?
     private var preloadTask: Task<URL?, Never>?
     private var monitorObservationTask: Task<Void, Never>?
     private var checkoutPollTask: Task<Void, Never>?
@@ -488,6 +503,56 @@ public final class ZSOfferManager: ObservableObject {
             checkoutPresentation: nil
         )
         state = .eligible
+    }
+
+    // MARK: - Bookkeeping Internals
+
+    /// Idempotent transition from `.eligible` → `.presented`. Called by both
+    /// the auto-bookkeeping helper (Task 4) and the deprecated public
+    /// `present()` (Task 3). Any state other than `.eligible` is a no-op so
+    /// combined call paths never double-fire.
+    internal func _armForCheckout(source: CheckoutBookkeepingSource) {
+        guard state == .eligible else { return }
+        state = .presented
+    }
+
+    /// Idempotent transition out of `.presented` after a successful checkout.
+    /// Called by both the auto-bookkeeping helper (Task 4) and the deprecated
+    /// public `markCheckoutSucceeded` (Task 3).
+    ///
+    /// - For offers that require Apple-side cancellation (`needsAppleCancel`):
+    ///   `.presented` → `.accepted`, and `storekitCancelRequired` is set.
+    /// - Otherwise: `.presented` → `.completed`.
+    ///
+    /// Conversion analytics fire fire-and-forget for `.migration` and
+    /// `.upgrade(.storekitToWeb)` flows. Any state other than `.presented`,
+    /// or a missing `offerData`, is a no-op.
+    internal func _applyCheckoutCompletion(
+        transactionId: String?,
+        source: CheckoutBookkeepingSource
+    ) async {
+        guard state == .presented else { return }
+        guard let data = offerData else { return }
+
+        checkoutTransactionId = transactionId
+        if data.needsAppleCancel {
+            storekitCancelRequired = true
+            state = .accepted
+        } else {
+            state = .completed
+        }
+
+        // Conversion analytics — fire-and-forget for migration & storekitToWeb flows.
+        if data.flowType == .migration || data.upgradeType == .storekitToWeb {
+            Task {
+                do {
+                    ZeroSettle.shared.setActiveUserId(userId)
+                    try await ZeroSettle.shared._trackMigrationConversionImpl(userId: userId)
+                } catch {
+                    ZSLogger.error("[OfferManager] Conversion tracking failed: \(error)", category: .migration)
+                }
+            }
+        }
     }
 
     // MARK: - Public Methods
@@ -945,6 +1010,13 @@ public final class ZSOfferManager: ObservableObject {
     /// Test-only: force the manager into a given state. Never call from app code.
     internal func _setStateForTesting(_ newState: Offer.State) {
         state = newState
+    }
+
+    /// Test-only: inject offer data without round-tripping through the
+    /// eligibility check (which requires network + a configured backend).
+    /// Never call from app code.
+    internal func _setOfferDataForTesting(_ data: Offer.OfferData?) {
+        offerData = data
     }
     #endif
 }
