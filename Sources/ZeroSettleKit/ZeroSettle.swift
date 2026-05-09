@@ -1541,6 +1541,15 @@ public final class ZeroSettle: ObservableObject {
         return manager
     }
 
+    /// Non-instantiating peek at the active OfferManager. Returns `nil` if no
+    /// manager has been created this session. Used by `OfferCheckoutBookkeeping`
+    /// to detect active offer context inside the standard purchase entry points
+    /// without inadvertently creating a manager for adopters who don't use
+    /// offers at all.
+    internal var _activeOfferManagerForBookkeeping: ZSOfferManager? {
+        return offerManager
+    }
+
     // MARK: - Products
 
     /// Fetch the product catalog from ZeroSettle with web checkout pricing.
@@ -2835,6 +2844,15 @@ public final class ZeroSettle: ObservableObject {
         updated.append(entitlement)
         updateEntitlements(updated)
     }
+
+    // MARK: - Test hooks
+
+#if DEBUG
+    internal func _resetForTesting() {
+        offerManager = nil
+        // Note: leaves currentConfig/identity intact — tests should configure as needed.
+    }
+#endif
 
 }
 
