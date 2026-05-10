@@ -399,7 +399,7 @@ internal struct CheckoutSheetModifier<Header: View>: ViewModifier {
         guard checkoutType == .webView || checkoutType == .nativePay else {
             await performSafariCheckout(
                 product: product, userId: userId, checkoutType: checkoutType,
-                onComplete: onComplete, onFinally: { isPresented = false }
+                onComplete: wrappedOnComplete(productId: product.id), onFinally: { isPresented = false }
             )
             return
         }
@@ -409,7 +409,7 @@ internal struct CheckoutSheetModifier<Header: View>: ViewModifier {
             productId: product.id, userId: userId
         ) else {
             guard !Task.isCancelled else { return }
-            onComplete(.failure(ZeroSettleError.checkoutFailed(reason: .other("Failed to create payment for \(product.id). Check that the product has a valid web price configured in the ZeroSettle dashboard."))))
+            wrappedOnComplete(productId: product.id)(.failure(ZeroSettleError.checkoutFailed(reason: .other("Failed to create payment for \(product.id). Check that the product has a valid web price configured in the ZeroSettle dashboard."))))
             isPresented = false
             return
         }
@@ -422,7 +422,7 @@ internal struct CheckoutSheetModifier<Header: View>: ViewModifier {
         let ready = await pool.ensureReady(for: product.id, url: result.checkoutURL)
         if !ready {
             guard !Task.isCancelled else { return }
-            onComplete(.failure(ZeroSettleError.checkoutFailed(
+            wrappedOnComplete(productId: product.id)(.failure(ZeroSettleError.checkoutFailed(
                 reason: .other(checkoutTimeoutMessage)
             )))
             isPresented = false
