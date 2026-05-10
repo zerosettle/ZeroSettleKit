@@ -143,4 +143,34 @@ final class ZSOfferManagerBookkeepingTests: XCTestCase {
         XCTAssertEqual(mgr.state, .completed)
         XCTAssertNil(mgr.checkoutTransactionId)
     }
+
+    // MARK: Public method regression (post-refactor)
+
+    func test_legacyPresent_fromEligible_transitionsToPresented() {
+        let mgr = makeManager(state: .eligible, offerData: makeOfferData())
+        mgr.present()
+        XCTAssertEqual(mgr.state, .presented)
+    }
+
+    func test_legacyPresent_fromIneligible_isNoOp() {
+        let mgr = makeManager(state: .ineligible, offerData: makeOfferData())
+        mgr.present()
+        XCTAssertEqual(mgr.state, .ineligible)
+    }
+
+    func test_legacyMarkCheckoutSucceeded_withNilTxnId_advancesState() async {
+        // .upgrade + .webToWeb → needsAppleCancel == false → .completed
+        let mgr = makeManager(
+            state: .presented,
+            offerData: makeOfferData(flowType: .upgrade, upgradeType: .webToWeb)
+        )
+        await mgr.markCheckoutSucceeded(transactionId: nil)
+        XCTAssertEqual(mgr.state, .completed)
+    }
+
+    func test_legacyMarkCheckoutSucceeded_alreadyAccepted_isNoOp() async {
+        let mgr = makeManager(state: .accepted, offerData: makeOfferData())
+        await mgr.markCheckoutSucceeded(transactionId: "txn_x")
+        XCTAssertEqual(mgr.state, .accepted)
+    }
 }

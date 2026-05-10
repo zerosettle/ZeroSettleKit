@@ -605,7 +605,7 @@ public final class ZSOfferManager: ObservableObject {
             )
             return
         }
-        state = .presented
+        _armForCheckout(source: .manualLegacy)
     }
 
     /// Start the checkout flow. Returns the checkout URL for WebView,
@@ -700,22 +700,24 @@ public final class ZSOfferManager: ObservableObject {
     /// and handles post-checkout state transitions.
     public func markCheckoutSucceeded(transactionId: String? = nil) async {
         ZSLogger.info("[OfferManager] markCheckoutSucceeded called. state=\(state) needsAppleCancel=\(offerData?.needsAppleCancel ?? false)", category: .migration)
+
+        // Preserve legacy guard: if not in `.presented`, this is a no-op for
+        // the entire method body — including verify+delegate+refresh. Adopters
+        // calling this method when state has already advanced (e.g., the
+        // auto-path beat them to it) must NOT see a duplicate verify call or
+        // a duplicate delegate fire. `_applyCheckoutCompletion` enforces the
+        // same guard for the state-transition half, so this top-level guard
+        // is redundant for state but necessary to gate the verify chain.
         guard state == .presented else {
-            ZSLogger.error("[OfferManager] markCheckoutSucceeded SKIPPED — state is \(state), expected .presented", category: .migration)
+            await _applyCheckoutCompletion(transactionId: transactionId, source: .manualLegacy)
             return
         }
-        guard let data = offerData else { return }
 
-        checkoutTransactionId = transactionId
-
-        if data.needsAppleCancel {
-            storekitCancelRequired = true
-            state = .accepted
-        } else {
-            state = .completed
-        }
-
-        // Verify transaction and refresh entitlements
+        // Verify transaction + refresh entitlements — preserved from legacy
+        // implementation because raw-URL escape-hatch adopters call this method
+        // after their out-of-band checkout completes and depend on the
+        // verify+delegate+refresh chain. The auto-path (Task 4) skips this
+        // chain because CheckoutSheet.present already does both.
         if let transactionId {
             do {
                 let backend = try makeBackend()
@@ -727,17 +729,7 @@ public final class ZSOfferManager: ObservableObject {
             }
         }
 
-        // Fire-and-forget conversion tracking (both migration and storekit_to_web upgrades)
-        if data.flowType == .migration || data.upgradeType == .storekitToWeb {
-            Task {
-                do {
-                    ZeroSettle.shared.setActiveUserId(userId)
-                    try await ZeroSettle.shared._trackMigrationConversionImpl(userId: userId)
-                } catch {
-                    ZSLogger.error("[OfferManager] Conversion tracking failed: \(error)", category: .migration)
-                }
-            }
-        }
+        await _applyCheckoutCompletion(transactionId: transactionId, source: .manualLegacy)
     }
 
     /// Abort an in-flight browser checkout — cancels the poll task and
