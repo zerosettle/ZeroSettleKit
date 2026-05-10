@@ -344,9 +344,17 @@ public struct OfferTipView: View {
             switch result {
             case .success(let txn):
                 Task {
-                    ZSLogger.info("[OfferTipView] Sheet checkout succeeded, calling markCheckoutSucceeded. state=\(manager.state) txn=\(txn.id)", category: .migration)
-                    await manager.markCheckoutSucceeded(transactionId: txn.id)
-                    ZSLogger.info("[OfferTipView] After markCheckoutSucceeded: state=\(manager.state) ctaTapped=\(ctaTapped)", category: .migration)
+                    ZSLogger.info("[OfferTipView] Sheet checkout succeeded, applying offer completion. state=\(manager.state) txn=\(txn.id)", category: .migration)
+                    // The `.checkoutSheet(...)` modifier already ran the
+                    // verify+delegate+refresh chain and called the auto-path
+                    // `_applyCheckoutCompletion(.auto)`. This call is a
+                    // belt-and-suspenders state-transition: idempotent under
+                    // the `.presented` guard, so it's a no-op when the
+                    // auto-path already advanced state. We call the internal
+                    // entry directly to avoid a deprecation warning inside
+                    // Kit's own sources.
+                    await manager._applyCheckoutCompletion(transactionId: txn.id, source: .manualLegacy)
+                    ZSLogger.info("[OfferTipView] After offer completion: state=\(manager.state) ctaTapped=\(ctaTapped)", category: .migration)
                     ctaTapped = false
                     onEvent?(.checkoutCompleted)
                     if manager.state == .accepted {
@@ -675,8 +683,11 @@ public struct OfferTipView: View {
         onEvent?(.ctaTapped)
         ctaTapped = true
         ZSLogger.info("[OfferTipView] handleCtaTapped: state=\(manager.state) upgradeType=\(manager.offerData?.upgradeType?.rawValue ?? "nil") checkoutPresentation=\(manager.offerData?.checkoutPresentation?.rawValue ?? "nil")", category: .migration)
-        manager.present()
-        ZSLogger.info("[OfferTipView] after present(): state=\(manager.state)", category: .migration)
+        // Use internal `_present()` directly — calling deprecated public
+        // `present()` from non-deprecated source would emit a warning that
+        // adopters cloning Kit would see. Same body, no behavior change.
+        manager._present()
+        ZSLogger.info("[OfferTipView] after _present(): state=\(manager.state)", category: .migration)
 
         // If present() didn't transition to .presented (demo-mode gate fired,
         // or any other short-circuit), abort — don't initiate any checkout.
@@ -978,8 +989,19 @@ public struct OfferTipView: View {
             checkoutURL = nil
         }
         Task {
-            await manager.markCheckoutSucceeded(transactionId: transactionId)
-            ZSLogger.info("[OfferTipView] after markCheckoutSucceeded: state=\(manager.state) needsAppleCancel=\(manager.needsAppleCancel)", category: .migration)
+            // Inline WebView path — `CheckoutWebView` only relays the
+            // transaction id; it does NOT run verify+delegate+refresh
+            // (that's the sheet-checkout path's job). So we drive the
+            // legacy chain directly via canonical internals: verify chain
+            // (gated on `.presented` to avoid duplicate fire), then state
+            // transition. Calling the deprecated public `markCheckoutSucceeded`
+            // would do the same thing, but emit a deprecation warning inside
+            // Kit's own sources.
+            if manager.state == .presented, let transactionId {
+                await manager._verifyAndRefreshAfterCheckout(transactionId: transactionId)
+            }
+            await manager._applyCheckoutCompletion(transactionId: transactionId, source: .manualLegacy)
+            ZSLogger.info("[OfferTipView] after offer completion: state=\(manager.state) needsAppleCancel=\(manager.needsAppleCancel)", category: .migration)
             ctaTapped = false
             onEvent?(.checkoutCompleted)
             if manager.state == .completed {

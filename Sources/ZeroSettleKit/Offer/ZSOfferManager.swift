@@ -592,7 +592,17 @@ public final class ZSOfferManager: ObservableObject {
     // MARK: - Public Methods
 
     /// Transition from `.eligible` → `.presented`.
+    @available(*, deprecated, message: "Bookkeeping is automatic when you call .checkoutSheet(...) / CheckoutSheet.present / ZeroSettle.shared.purchase / Flutter presentPaymentSheet. Will be removed in ZeroSettleKit 2.0.")
     public func present() {
+        _present()
+    }
+
+    /// Internal entry point for the legacy CTA-tap flow. Same body as the
+    /// deprecated public `present()` — preserves the demo-mode guard before
+    /// arming the checkout. Extracted so Kit's own UI (e.g. `OfferTipView`)
+    /// can drive the legacy CTA path without tripping its own deprecation
+    /// warning.
+    internal func _present() {
         guard state == .eligible else {
             ZSLogger.info("[OfferManager] present() skipped — state is \(state), expected .eligible", category: .migration)
             return
@@ -698,6 +708,7 @@ public final class ZSOfferManager: ObservableObject {
 
     /// Mark checkout as succeeded. Verifies transaction, refreshes entitlements,
     /// and handles post-checkout state transitions.
+    @available(*, deprecated, message: "Bookkeeping is automatic when you call .checkoutSheet(...) / CheckoutSheet.present / ZeroSettle.shared.purchase / Flutter presentPaymentSheet. The body is preserved through 1.x for adopters using `startCheckout` (raw URL escape hatch) who need to call it manually after their out-of-band checkout completes. Will be removed in ZeroSettleKit 2.0.")
     public func markCheckoutSucceeded(transactionId: String? = nil) async {
         ZSLogger.info("[OfferManager] markCheckoutSucceeded called. state=\(state) needsAppleCancel=\(offerData?.needsAppleCancel ?? false)", category: .migration)
 
@@ -719,17 +730,26 @@ public final class ZSOfferManager: ObservableObject {
         // verify+delegate+refresh chain. The auto-path (Task 4) skips this
         // chain because CheckoutSheet.present already does both.
         if let transactionId {
-            do {
-                let backend = try makeBackend()
-                let transaction = try await backend.verifyTransaction(transactionId: transactionId)
-                await ZeroSettle.shared.delegate?.zeroSettleCheckoutDidComplete(transaction: transaction)
-                await ZeroSettle.shared.refreshEntitlementsAfterCheckout(transaction: transaction)
-            } catch {
-                ZSLogger.error("[OfferManager] Transaction verification failed: \(error)", category: .migration)
-            }
+            await _verifyAndRefreshAfterCheckout(transactionId: transactionId)
         }
 
         await _applyCheckoutCompletion(transactionId: transactionId, source: .manualLegacy)
+    }
+
+    /// Internal verify+delegate+refresh chain shared by the deprecated
+    /// `markCheckoutSucceeded` and the legacy raw-URL polling path
+    /// (`startCheckoutCompletionPoll`). Extracted so non-deprecated internal
+    /// callers don't have to route through the deprecated public method and
+    /// trigger spurious deprecation warnings inside Kit's own sources.
+    internal func _verifyAndRefreshAfterCheckout(transactionId: String) async {
+        do {
+            let backend = try makeBackend()
+            let transaction = try await backend.verifyTransaction(transactionId: transactionId)
+            await ZeroSettle.shared.delegate?.zeroSettleCheckoutDidComplete(transaction: transaction)
+            await ZeroSettle.shared.refreshEntitlementsAfterCheckout(transaction: transaction)
+        } catch {
+            ZSLogger.error("[OfferManager] Transaction verification failed: \(error)", category: .migration)
+        }
     }
 
     /// Abort an in-flight browser checkout — cancels the poll task and
@@ -785,7 +805,15 @@ public final class ZSOfferManager: ObservableObject {
             guard let self else { return }
             switch outcome {
             case .completed:
-                await self.markCheckoutSucceeded(transactionId: transactionId)
+                // Internal poll-completion path — drives the verify chain +
+                // state transition directly via canonical internals so this
+                // non-deprecated source code doesn't trigger a deprecation
+                // warning. Mirrors what the deprecated `markCheckoutSucceeded`
+                // does for raw-URL adopters who call it manually.
+                if self.state == .presented {
+                    await self._verifyAndRefreshAfterCheckout(transactionId: transactionId)
+                }
+                await self._applyCheckoutCompletion(transactionId: transactionId, source: .manualLegacy)
             case .failed:
                 ZSLogger.info("[OfferManager] Checkout poll terminal: failed (txn=\(transactionId))", category: .migration)
                 self.state = .eligible

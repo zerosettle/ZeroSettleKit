@@ -145,19 +145,28 @@ final class ZSOfferManagerBookkeepingTests: XCTestCase {
     }
 
     // MARK: Public method regression (post-refactor)
+    //
+    // These four tests exist BY DESIGN to verify the deprecated public
+    // `present()` and `markCheckoutSucceeded(transactionId:)` keep working
+    // through the 1.x line. Each is annotated `@available(*, deprecated)`
+    // to silence the deprecation warning on the call sites — testing a
+    // deprecated API IS a legitimate (and the only honest) use of it.
 
+    @available(*, deprecated)
     func test_legacyPresent_fromEligible_transitionsToPresented() {
         let mgr = makeManager(state: .eligible, offerData: makeOfferData())
         mgr.present()
         XCTAssertEqual(mgr.state, .presented)
     }
 
+    @available(*, deprecated)
     func test_legacyPresent_fromIneligible_isNoOp() {
         let mgr = makeManager(state: .ineligible, offerData: makeOfferData())
         mgr.present()
         XCTAssertEqual(mgr.state, .ineligible)
     }
 
+    @available(*, deprecated)
     func test_legacyMarkCheckoutSucceeded_withNilTxnId_advancesState() async {
         // .upgrade + .webToWeb → needsAppleCancel == false → .completed
         let mgr = makeManager(
@@ -168,6 +177,7 @@ final class ZSOfferManagerBookkeepingTests: XCTestCase {
         XCTAssertEqual(mgr.state, .completed)
     }
 
+    @available(*, deprecated)
     func test_legacyMarkCheckoutSucceeded_alreadyAccepted_isNoOp() async {
         let mgr = makeManager(state: .accepted, offerData: makeOfferData())
         await mgr.markCheckoutSucceeded(transactionId: "txn_x")

@@ -40,6 +40,10 @@ final class ZSOfferManagerSynthesizeDemoEntitlementTests: XCTestCase {
     }
 }
 
+// Class-level `@available(*, deprecated)` silences `present()` deprecation
+// warnings on every test method here. These tests exist BY DESIGN to verify
+// the deprecated `present()` keeps honoring the demo-mode gate through 1.x.
+@available(*, deprecated)
 final class ZSOfferManagerPresentDemoGateTests: XCTestCase {
 
     @MainActor
