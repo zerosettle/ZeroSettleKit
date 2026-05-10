@@ -183,4 +183,29 @@ final class OfferCheckoutBookkeepingTests: XCTestCase {
         // State remains .presented; adopter can retry.
         XCTAssertEqual(mgr.state, .presented)
     }
+
+    // MARK: Modifier wiring (logic-level)
+
+    /// Verifies the contract that modifier code MUST follow: arm before
+    /// presenting, apply on success, no-op on failure/cancel. This isn't a
+    /// SwiftUI host test — it asserts the call ordering by simulation.
+    func test_modifierWiring_successPath_completesOffer() async {
+        let mgr = primeManager(state: .eligible, productId: "com.example.pro", needsAppleCancel: false)
+
+        // Modifier sees binding flip true, arms:
+        armOfferForCheckoutIfApplicable(productId: "com.example.pro")
+        // Stripe completes, success arrives:
+        await applyOfferCheckoutCompletionIfApplicable(productId: "com.example.pro", transactionId: "txn_modifier")
+
+        XCTAssertEqual(mgr.state, .completed)
+    }
+
+    func test_modifierWiring_failurePath_stateRemainsPresented() {
+        let mgr = primeManager(state: .eligible, productId: "com.example.pro")
+        armOfferForCheckoutIfApplicable(productId: "com.example.pro")
+        XCTAssertEqual(mgr.state, .presented)
+        // Stripe failure — apply NOT called.
+        // (Adopter's onComplete fires with .failure; no state change.)
+        XCTAssertEqual(mgr.state, .presented)
+    }
 }

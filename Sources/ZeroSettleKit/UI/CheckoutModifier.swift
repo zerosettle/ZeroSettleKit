@@ -244,6 +244,25 @@ internal struct CheckoutSheetModifier<Header: View>: ViewModifier {
     @State private var preloadedTransactionId: String?
     @State private var overlayWindow: UIWindow?
 
+    /// Wraps `onComplete` so the post-purchase apply runs on success before
+    /// the adopter's callback fires. Failure/cancellation paths forward
+    /// unchanged (state stays .presented; adopter retries by tapping CTA).
+    /// Mirrors `CheckoutSheet.present`'s wrapping.
+    @MainActor
+    private func wrappedOnComplete(productId: String) -> (Result<CheckoutTransaction, Error>) -> Void {
+        let original = onComplete
+        return { result in
+            if case .success(let txn) = result {
+                Task { @MainActor in
+                    await applyOfferCheckoutCompletionIfApplicable(productId: productId, transactionId: txn.id)
+                    original(result)
+                }
+            } else {
+                original(result)
+            }
+        }
+    }
+
     func body(content: Content) -> some View {
         content
             .onAppear {
@@ -272,6 +291,11 @@ internal struct CheckoutSheetModifier<Header: View>: ViewModifier {
             }
             .task(id: isPresented) {
                 if isPresented {
+                    // Auto-bookkeeping: arm the offer state machine if this
+                    // purchase is offer-bound. Idempotent — no-op for non-offer
+                    // products. Mirrors `CheckoutSheet.present`.
+                    armOfferForCheckoutIfApplicable(productId: product.id)
+
                     // Jurisdiction gate: if web checkout is disabled for the
                     // detected jurisdiction (per the dashboard's per-jurisdiction
                     // override or global setting), refuse to present the sheet.
@@ -285,7 +309,7 @@ internal struct CheckoutSheetModifier<Header: View>: ViewModifier {
                             "[CheckoutSheet] Refusing to present — web checkout disabled for \(jurisdiction.rawValue) jurisdiction. Configure this in your ZeroSettle dashboard under Checkout Configuration.",
                             category: .checkout
                         )
-                        onComplete(.failure(
+                        wrappedOnComplete(productId: product.id)(.failure(
                             ZeroSettleError.webCheckoutDisabledForJurisdiction(jurisdiction)
                         ))
                         isPresented = false
@@ -313,6 +337,7 @@ internal struct CheckoutSheetModifier<Header: View>: ViewModifier {
 
                 let preloader = pool.preloader(for: product.id)
 
+                let wrapped = wrappedOnComplete(productId: product.id)
                 let bridge = WindowLevelSheetBridge(
                     product: product,
                     userId: userId,
@@ -331,7 +356,7 @@ internal struct CheckoutSheetModifier<Header: View>: ViewModifier {
                             preloadedURL = nil
                             preloadedTransactionId = nil
                         }
-                        onComplete(result)
+                        wrapped(result)
                     },
                     onDismissed: {
                         CheckoutPresentationCoordinator.shared.release()
@@ -459,6 +484,25 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
     @State private var presentedProduct: ZSProduct?
     @State private var overlayWindow: UIWindow?
 
+    /// Wraps `onComplete` so the post-purchase apply runs on success before
+    /// the adopter's callback fires. Failure/cancellation paths forward
+    /// unchanged (state stays .presented; adopter retries by tapping CTA).
+    /// Mirrors `CheckoutSheet.present`'s wrapping.
+    @MainActor
+    private func wrappedOnComplete(productId: String) -> (Result<CheckoutTransaction, Error>) -> Void {
+        let original = onComplete
+        return { result in
+            if case .success(let txn) = result {
+                Task { @MainActor in
+                    await applyOfferCheckoutCompletionIfApplicable(productId: productId, transactionId: txn.id)
+                    original(result)
+                }
+            } else {
+                original(result)
+            }
+        }
+    }
+
     func body(content: Content) -> some View {
         content
             .onAppear {
@@ -487,6 +531,11 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
             }
             .task(id: item?.id) {
                 if let product = item {
+                    // Auto-bookkeeping: arm the offer state machine if this
+                    // purchase is offer-bound. Idempotent — no-op for non-offer
+                    // products. Mirrors `CheckoutSheet.present`.
+                    armOfferForCheckoutIfApplicable(productId: product.id)
+
                     // Jurisdiction gate — see same comment in CheckoutSheetModifier.
                     if !ZeroSettle.shared.isWebCheckoutEnabled {
                         let jurisdiction = ZeroSettle.shared.effectiveJurisdiction
@@ -494,7 +543,7 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
                             "[CheckoutSheet] Refusing to present — web checkout disabled for \(jurisdiction.rawValue) jurisdiction. Configure this in your ZeroSettle dashboard under Checkout Configuration.",
                             category: .checkout
                         )
-                        onComplete(.failure(
+                        wrappedOnComplete(productId: product.id)(.failure(
                             ZeroSettleError.webCheckoutDisabledForJurisdiction(jurisdiction)
                         ))
                         item = nil
@@ -532,6 +581,7 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
                 let builtHeader = header()
                 let preloader = pool.preloader(for: product.id)
 
+                let wrapped = wrappedOnComplete(productId: product.id)
                 let bridge = WindowLevelSheetBridge(
                     product: product,
                     userId: userId,
@@ -550,7 +600,7 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
                             preloadedURL = nil
                             preloadedTransactionId = nil
                         }
-                        onComplete(result)
+                        wrapped(result)
                     },
                     onDismissed: {
                         CheckoutPresentationCoordinator.shared.release()
@@ -599,7 +649,7 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
         guard checkoutType == .webView || checkoutType == .nativePay else {
             await performSafariCheckout(
                 product: product, userId: userId, checkoutType: checkoutType,
-                onComplete: onComplete, onFinally: { item = nil }
+                onComplete: wrappedOnComplete(productId: product.id), onFinally: { item = nil }
             )
             return
         }
@@ -627,7 +677,7 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
                 return
             }
             ZSLogger.error("[Checkout] preloadAll: preload() returned nil after \(Int((CFAbsoluteTimeGetCurrent() - preloadStart) * 1000))ms — no PI created", category: .checkout)
-            onComplete(.failure(ZeroSettleError.checkoutFailed(reason: .other("Failed to create payment for \(product.id). Check that the product has a valid web price configured in the ZeroSettle dashboard."))))
+            wrappedOnComplete(productId: product.id)(.failure(ZeroSettleError.checkoutFailed(reason: .other("Failed to create payment for \(product.id). Check that the product has a valid web price configured in the ZeroSettle dashboard."))))
             item = nil
             return
         }
@@ -648,7 +698,7 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
         if !ready {
             guard !Task.isCancelled else { return }
             ZSLogger.error("[Checkout] preloadAll: payment buttons never loaded for \(product.id)", category: .checkout)
-            onComplete(.failure(ZeroSettleError.checkoutFailed(
+            wrappedOnComplete(productId: product.id)(.failure(ZeroSettleError.checkoutFailed(
                 reason: .other(checkoutTimeoutMessage)
             )))
             item = nil
