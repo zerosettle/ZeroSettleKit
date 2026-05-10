@@ -345,15 +345,6 @@ public struct OfferTipView: View {
             case .success(let txn):
                 Task {
                     ZSLogger.info("[OfferTipView] Sheet checkout succeeded, applying offer completion. state=\(manager.state) txn=\(txn.id)", category: .migration)
-                    // The `.checkoutSheet(...)` modifier already ran the
-                    // verify+delegate+refresh chain and called the auto-path
-                    // `_applyCheckoutCompletion(.auto)`. This call is a
-                    // belt-and-suspenders state-transition: idempotent under
-                    // the `.presented` guard, so it's a no-op when the
-                    // auto-path already advanced state. We call the internal
-                    // entry directly to avoid a deprecation warning inside
-                    // Kit's own sources.
-                    await manager._applyCheckoutCompletion(transactionId: txn.id, source: .manualLegacy)
                     ZSLogger.info("[OfferTipView] After offer completion: state=\(manager.state) ctaTapped=\(ctaTapped)", category: .migration)
                     ctaTapped = false
                     onEvent?(.checkoutCompleted)
