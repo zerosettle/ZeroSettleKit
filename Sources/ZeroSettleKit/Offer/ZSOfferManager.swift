@@ -618,13 +618,29 @@ public final class ZSOfferManager: ObservableObject {
         _armForCheckout(source: .manualLegacy)
     }
 
-    /// Start the checkout flow. Returns the checkout URL for WebView,
-    /// or nil for web-to-web upgrades (handled internally).
+    /// **Advanced — raw URL escape hatch.** For ordinary use, prefer
+    /// `ZeroSettle.shared.purchase(productId:)`, `CheckoutSheet.present(...)`,
+    /// or the SwiftUI `.checkoutSheet(item:)` modifier. Those entry points
+    /// handle the offer state machine automatically — you don't need to
+    /// call `present()` or `markCheckoutSucceeded()` yourself.
+    ///
+    /// Use this method only when you need full control over presentation or
+    /// transport: a custom WebView with bespoke chrome, a third-party browser
+    /// SDK, or a context where there's no view hierarchy at all (CLI/server).
+    ///
+    /// When you go down this path, you are responsible for calling
+    /// `markCheckoutSucceeded(transactionId:)` after your out-of-band
+    /// checkout completes. The auto-bookkeeping path doesn't apply to URLs
+    /// you handle yourself.
+    ///
     /// - Parameters:
     ///   - stripeCustomerId: Optional Stripe customer ID for unified billing portal.
     ///   - checkoutMode: Pass `.browser` for Safari / SFSafariViewController paths.
-    ///     `nil` defers to the backend default (`.native`, the WebView-embed template).
-    ///     Mismatching the mode and the presentation renders the wrong checkout page.
+    ///     `nil` defers to the backend default (`.native`, the WebView-embed
+    ///     template). Mismatching the mode and the presentation renders the
+    ///     wrong checkout page.
+    /// - Returns: The checkout URL for WebView, or nil for web-to-web upgrades
+    ///   (handled internally).
     public func startCheckout(
         stripeCustomerId: String? = nil,
         checkoutMode: CheckoutMode? = nil
