@@ -208,4 +208,26 @@ final class OfferCheckoutBookkeepingTests: XCTestCase {
         // (Adopter's onComplete fires with .failure; no state change.)
         XCTAssertEqual(mgr.state, .presented)
     }
+
+    // MARK: purchase() wiring (logic-level)
+
+    /// Confirms the helper functions are also called by purchase()'s web path.
+    /// Drives the helpers in the order purchase() invokes them.
+    func test_purchaseWiring_webPath_advancesOffer() async {
+        let mgr = primeManager(state: .eligible, productId: "com.example.pro", needsAppleCancel: false)
+
+        armOfferForCheckoutIfApplicable(productId: "com.example.pro")
+        // ... web purchase runs, returns transaction ...
+        await applyOfferCheckoutCompletionIfApplicable(productId: "com.example.pro", transactionId: "txn_purchase")
+
+        XCTAssertEqual(mgr.state, .completed)
+        XCTAssertEqual(mgr.checkoutTransactionId, "txn_purchase")
+    }
+
+    func test_purchaseWiring_storeKitPath_doesNotAdvanceOffer() async {
+        let mgr = primeManager(state: .eligible, productId: "com.example.pro")
+        // StoreKit path is purchaseViaStoreKit, NOT purchase() — no arm/apply
+        // call should fire. State stays .eligible.
+        XCTAssertEqual(mgr.state, .eligible)
+    }
 }

@@ -1676,6 +1676,10 @@ public final class ZeroSettle: ObservableObject {
             throw ZeroSettleError.webCheckoutDisabledForJurisdiction(effectiveJurisdiction)
         }
 
+        // Auto-bookkeeping: arm the offer state machine if this purchase is
+        // offer-bound. Idempotent — no-op for non-offer products.
+        armOfferForCheckoutIfApplicable(productId: productId)
+
         // Update StoreKit manager with user ID for future sync operations
         if let userId {
             setActiveUserId(userId)
@@ -1701,6 +1705,7 @@ public final class ZeroSettle: ObservableObject {
                     case .success(let transaction):
                         delegate?.zeroSettleCheckoutDidComplete(transaction: transaction)
                         await refreshEntitlementsAfterCheckout(transaction: transaction)
+                        await applyOfferCheckoutCompletionIfApplicable(productId: productId, transactionId: transaction.id)
                         return transaction
                     case .cancelled:
                         delegate?.zeroSettleCheckoutDidCancel(productId: productId)
@@ -1748,6 +1753,7 @@ public final class ZeroSettle: ObservableObject {
                 ZSLogger.debug("Callback already processed via universal link", category: .checkout)
                 if let transactionId = session.transactionId {
                     let transaction = try await backend.getTransaction(transactionId: transactionId)
+                    await applyOfferCheckoutCompletionIfApplicable(productId: productId, transactionId: transaction.id)
                     return transaction
                 }
                 // Universal link callback fired (success path) but we have no
@@ -1782,6 +1788,7 @@ public final class ZeroSettle: ObservableObject {
                     pendingCheckout = false
                     delegate?.zeroSettleCheckoutDidComplete(transaction: transaction)
                     await refreshEntitlementsAfterCheckout(transaction: transaction)
+                    await applyOfferCheckoutCompletionIfApplicable(productId: productId, transactionId: transaction.id)
                     return transaction
                 } catch {
                     ZSLogger.debug("Transaction \(transactionId) not completed: \(error)", category: .checkout)
