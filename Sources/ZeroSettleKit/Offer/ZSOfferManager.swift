@@ -46,11 +46,18 @@ internal import ZeroSettleCore
 /// Identifies which call site triggered a checkout-bookkeeping transition,
 /// so analytics / logs can distinguish auto-bookkeeping (the new 1.4.0 path)
 /// from the deprecated public methods.
-internal enum CheckoutBookkeepingSource: Sendable {
+internal enum CheckoutBookkeepingSource: Sendable, CustomStringConvertible {
     /// Triggered automatically by CheckoutSheet.present / .checkoutSheet / purchase().
     case auto
     /// Triggered by deprecated public methods (present(), markCheckoutSucceeded()).
     case manualLegacy
+
+    var description: String {
+        switch self {
+        case .auto: return "auto"
+        case .manualLegacy: return "manualLegacy"
+        }
+    }
 }
 
 @MainActor
@@ -512,7 +519,16 @@ public final class ZSOfferManager: ObservableObject {
     /// `present()` (Task 3). Any state other than `.eligible` is a no-op so
     /// combined call paths never double-fire.
     internal func _armForCheckout(source: CheckoutBookkeepingSource) {
-        guard state == .eligible else { return }
+        guard state == .eligible else {
+            if source == .manualLegacy {
+                ZSLogger.info(
+                    "[OfferManager] _armForCheckout(.manualLegacy) skipped — state already \(state); auto-path likely advanced it",
+                    category: .migration
+                )
+            }
+            return
+        }
+        ZSLogger.info("[OfferManager] _armForCheckout(\(source)) → state .eligible → .presented", category: .migration)
         state = .presented
     }
 
@@ -531,8 +547,22 @@ public final class ZSOfferManager: ObservableObject {
         transactionId: String?,
         source: CheckoutBookkeepingSource
     ) async {
-        guard state == .presented else { return }
-        guard let data = offerData else { return }
+        guard state == .presented else {
+            if source == .manualLegacy {
+                ZSLogger.info(
+                    "[OfferManager] _applyCheckoutCompletion(.manualLegacy) skipped — state \(state); auto-path likely already advanced. Drop deprecated markCheckoutSucceeded() — bookkeeping is automatic.",
+                    category: .migration
+                )
+            }
+            return
+        }
+        guard let data = offerData else {
+            ZSLogger.error(
+                "[OfferManager] _applyCheckoutCompletion(\(source)) reached .presented with nil offerData — defensive no-op",
+                category: .migration
+            )
+            return
+        }
 
         checkoutTransactionId = transactionId
         if data.needsAppleCancel {
@@ -541,6 +571,10 @@ public final class ZSOfferManager: ObservableObject {
         } else {
             state = .completed
         }
+        ZSLogger.info(
+            "[OfferManager] _applyCheckoutCompletion(\(source)) → state .presented → \(state) txnId=\(transactionId ?? "nil")",
+            category: .migration
+        )
 
         // Conversion analytics — fire-and-forget for migration & storekitToWeb flows.
         if data.flowType == .migration || data.upgradeType == .storekitToWeb {
