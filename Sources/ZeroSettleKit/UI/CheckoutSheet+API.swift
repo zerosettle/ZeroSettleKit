@@ -358,6 +358,27 @@ extension CheckoutSheet {
             return
         }
 
+        // Auto-bookkeeping: arm the offer state machine if this purchase is
+        // offer-bound. Idempotent — no-op for non-offer products.
+        armOfferForCheckoutIfApplicable(productId: product.id)
+
+        // Wrap onComplete so the post-purchase apply runs on success before
+        // the adopter's callback fires. Failure/cancellation paths forward
+        // unchanged (state stays .presented; adopter retries by tapping CTA).
+        let wrappedOnComplete: (Result<CheckoutTransaction, Error>) -> Void = { result in
+            if case .success(let txn) = result {
+                Task { @MainActor in
+                    await applyOfferCheckoutCompletionIfApplicable(
+                        productId: product.id,
+                        transactionId: txn.id
+                    )
+                    onComplete(result)
+                }
+            } else {
+                onComplete(result)
+            }
+        }
+
         let bridge = UIKitSheetBridge<H>(
             product: product,
             userId: userId,
@@ -365,7 +386,7 @@ extension CheckoutSheet {
             checkoutURL: checkoutURL,
             transactionId: transactionId,
             header: header,
-            onComplete: onComplete,
+            onComplete: wrappedOnComplete,
             onDismissed: {
                 viewController.dismiss(animated: false)
             }

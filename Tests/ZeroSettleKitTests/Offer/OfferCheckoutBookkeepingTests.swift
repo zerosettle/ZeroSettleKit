@@ -155,4 +155,32 @@ final class OfferCheckoutBookkeepingTests: XCTestCase {
         )
         XCTAssertNil(ZeroSettle.shared._activeOfferManagerForBookkeeping)
     }
+
+    // MARK: CheckoutSheet.present wiring (logic-level)
+
+    /// Smoke test: arming the offer + simulating the wrapped onComplete
+    /// firing the apply path produces the same end state as a real checkout
+    /// flow would. We don't drive UIKit/Stripe — we drive the helper directly
+    /// in the same order CheckoutSheet.present invokes it.
+    func test_checkoutSheetWiring_simulatedSuccess_advancesOfferState() async {
+        let mgr = primeManager(state: .eligible, productId: "com.example.pro", needsAppleCancel: false)
+
+        // Simulate CheckoutSheet.present's call ordering:
+        armOfferForCheckoutIfApplicable(productId: "com.example.pro")
+        XCTAssertEqual(mgr.state, .presented)
+
+        // ... checkout sheet runs, Stripe completes, success arrives ...
+        await applyOfferCheckoutCompletionIfApplicable(productId: "com.example.pro", transactionId: "txn_xyz")
+        XCTAssertEqual(mgr.state, .completed)
+        XCTAssertEqual(mgr.checkoutTransactionId, "txn_xyz")
+    }
+
+    func test_checkoutSheetWiring_simulatedCancellation_keepsStatePresented() {
+        let mgr = primeManager(state: .eligible, productId: "com.example.pro")
+        armOfferForCheckoutIfApplicable(productId: "com.example.pro")
+        XCTAssertEqual(mgr.state, .presented)
+        // No apply call — user cancelled, sheet dismissed without success.
+        // State remains .presented; adopter can retry.
+        XCTAssertEqual(mgr.state, .presented)
+    }
 }
