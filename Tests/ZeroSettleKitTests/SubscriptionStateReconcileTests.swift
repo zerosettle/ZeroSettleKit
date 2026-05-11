@@ -3,6 +3,19 @@ import XCTest
 
 final class SubscriptionStateReconcileTests: XCTestCase {
 
+    /// Production decoder configuration. The shared Backend decoder uses
+    /// `.convertFromSnakeCase` (see Backend.swift:35), so tests MUST too.
+    /// A plain `JSONDecoder()` tests the wrong configuration and previously
+    /// allowed `.convertFromSnakeCase` + explicit-CodingKeys bugs to slip
+    /// through (the existing reconcile-response tests passed against a
+    /// broken-in-production struct because the default decoder was used).
+    private func productionDecoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }
+
     func testEntryEncodesWithSignedTransactionOnly() throws {
         let entry = SubscriptionStateEntry(
             signedTransaction: "fake-tx-jws",
@@ -42,7 +55,7 @@ final class SubscriptionStateReconcileTests: XCTestCase {
           ]
         }
         """.data(using: .utf8)!
-        let response = try JSONDecoder().decode(ReconcileSubscriptionStatesResponse.self, from: json)
+        let response = try productionDecoder().decode(ReconcileSubscriptionStatesResponse.self, from: json)
         XCTAssertEqual(response.status, "ok")
         XCTAssertEqual(response.processed, 3)
         XCTAssertEqual(response.eventsEmitted, 1)
@@ -55,7 +68,7 @@ final class SubscriptionStateReconcileTests: XCTestCase {
         let json = """
         { "status": "ok", "processed": 0, "events_emitted": 0 }
         """.data(using: .utf8)!
-        let response = try JSONDecoder().decode(ReconcileSubscriptionStatesResponse.self, from: json)
+        let response = try productionDecoder().decode(ReconcileSubscriptionStatesResponse.self, from: json)
         XCTAssertEqual(response.processed, 0)
         XCTAssertEqual(response.eventsEmitted, 0)
         XCTAssertNil(response.skipped)

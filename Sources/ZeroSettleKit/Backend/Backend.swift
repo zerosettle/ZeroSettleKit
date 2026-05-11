@@ -1053,14 +1053,12 @@ internal struct SyncStoreKitTransactionResponse: Decodable {
     let claimAvailable: Bool?
     let existingOwnerHint: String?
 
-    enum CodingKeys: String, CodingKey {
-        case status
-        case owned
-        case originalTransactionId = "original_transaction_id"
-        case conflict
-        case claimAvailable = "claim_available"
-        case existingOwnerHint = "existing_owner_hint"
-    }
+    // No explicit CodingKeys — the shared decoder's
+    // `.convertFromSnakeCase` (Backend.swift:35) maps snake_case
+    // JSON keys to camelCase property names automatically.
+    // An explicit `case originalTransactionId = "original_transaction_id"`
+    // would BREAK decoding because the strategy transforms JSON keys
+    // to camelCase BEFORE matching against CodingKey raw values.
 }
 
 internal struct ReconcileSubscriptionStatesRequest: Encodable {
@@ -1086,17 +1084,20 @@ internal struct ReconcileSubscriptionStatesResponse: Decodable {
     struct SkipEntry: Decodable {
         let reason: String
         let transactionId: String?
-
-        enum CodingKeys: String, CodingKey {
-            case reason
-            case transactionId = "transaction_id"
-        }
+        // No explicit CodingKeys — the shared decoder's
+        // `.convertFromSnakeCase` maps JSON `transaction_id` →
+        // Swift `transactionId` automatically. An explicit
+        // `case transactionId = "transaction_id"` here would BREAK
+        // decoding under `.convertFromSnakeCase`: the strategy
+        // transforms JSON keys to camelCase BEFORE matching
+        // against CodingKey raw values, so a snake_case raw value
+        // never matches.
     }
 
-    enum CodingKeys: String, CodingKey {
-        case status, processed, skipped
-        case eventsEmitted = "events_emitted"
-    }
+    // No explicit CodingKeys — see the comment on `SkipEntry`.
+    // Adding `case eventsEmitted = "events_emitted"` here was a
+    // production bug: it caused `keyNotFound` on every reconcile
+    // response despite the field being present in the JSON.
 }
 
 internal struct ClaimEntitlementResponse: Decodable {
@@ -1106,11 +1107,11 @@ internal struct ClaimEntitlementResponse: Decodable {
     let originalTransactionId: String?
     let message: String?
 
-    enum CodingKeys: String, CodingKey {
-        case status, claimed, message
-        case productId = "product_id"
-        case originalTransactionId = "original_transaction_id"
-    }
+    // No explicit CodingKeys — the shared decoder's
+    // `.convertFromSnakeCase` (Backend.swift:35) handles snake_case
+    // JSON → camelCase Swift mapping. See ReconcileSubscriptionStatesResponse
+    // for the full explanation of why explicit snake_case raw values
+    // break under `.convertFromSnakeCase`.
 }
 
 private struct MigrationConversionRequest: Encodable {
