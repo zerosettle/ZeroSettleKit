@@ -734,6 +734,41 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
 
 // MARK: - UIKit Sheet Bridge
 
+/// Hidden SwiftUI host that observes a `CheckoutPreloader` and mounts its
+/// WKWebView into the view hierarchy as soon as `webView` becomes non-nil.
+///
+/// Used by `UIKitSheetBridge` to give the off-screen preloader a window
+/// during the preload phase. Without an in-window mount, WKWebView never
+/// fires paint cycles — and the JS `ready` signal (which sets
+/// `measuredContentHeight` and `isReady = true`) depends on paint. The
+/// existing SwiftUI `.checkoutSheet` path gets this mount for free via
+/// `OfferTipView` / `MigrationTipView`; UIKit-static adopters
+/// (`CheckoutSheet.present(...)`) did not, so the preloader timed out and
+/// the sheet rendered at the 300pt fallback height before snapping to the
+/// real content height when the geometry observer fired.
+///
+/// When the actual sheet animates open and `PaymentWebView` reparents the
+/// WKWebView (standard `addSubview` reparent), `MigrationPreloaderHost`
+/// gracefully steps aside — it only re-adds the WebView when
+/// `wv.superview == nil`.
+private struct HiddenPreloaderHost: View {
+    @ObservedObject var preloader: CheckoutPreloader
+
+    var body: some View {
+        let _ = ZSLogger.info("[HiddenPreloaderHost] body re-eval — webView=\(preloader.webView == nil ? "nil" : "non-nil") isReady=\(preloader.isReady) buttonsReady=\(preloader.buttonsReady)", category: .checkout)
+        if let wv = preloader.webView {
+            MigrationPreloaderHost(webView: wv)
+                .frame(width: 393, height: 600)
+                .opacity(0)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+                .onAppear {
+                    ZSLogger.info("[HiddenPreloaderHost] MigrationPreloaderHost APPEARED — wv.window=\(wv.window != nil ? "set" : "nil") wv.superview=\(wv.superview != nil ? "set" : "nil")", category: .checkout)
+                }
+        }
+    }
+}
+
 /// Transparent bridge that preloads the PaymentIntent and WebView, then
 /// presents `CheckoutSheet` via SwiftUI's `.sheet()` so
 /// `.presentationDetents` works correctly when called from UIKit.
@@ -758,6 +793,24 @@ internal struct UIKitSheetBridge<SheetHeader: View>: View {
     var body: some View {
         Color.clear
             .task { await preloadAll() }
+            .background(alignment: .topLeading) {
+                // Hidden host — mounts the preloader's WKWebView into the view
+                // hierarchy at 393x600 so WebKit can fire paint cycles. Without
+                // this, the off-window preloader never gets the JS `ready`
+                // signal (paint-dependent), `measuredContentHeight` stays 0,
+                // and the sheet renders the WebView at a 300pt fallback frame
+                // — causing a visible resize when the geometry observer fires
+                // after the sheet animates open. The SwiftUI .checkoutSheet
+                // modifier path benefits from OfferTipView / MigrationTipView
+                // mounting the same host; UIKit-static adopters had no
+                // equivalent before this fix.
+                //
+                // When the actual sheet animates and PaymentWebView
+                // reparents the WKWebView, MigrationPreloaderHost.updateUIView
+                // gracefully steps aside (it only re-adds the WebView when
+                // wv.superview == nil).
+                HiddenPreloaderHost(preloader: pool.preloader(for: product.id))
+            }
             .sheet(isPresented: $showSheet, onDismiss: {
                 CheckoutPresentationCoordinator.shared.release()
                 onDismissed()
