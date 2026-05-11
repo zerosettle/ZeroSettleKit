@@ -366,7 +366,7 @@ extension CheckoutSheet {
         // the adopter's callback fires. Failure/cancellation paths forward
         // unchanged (state stays .presented; adopter retries by tapping CTA).
         let wrappedOnComplete: (Result<CheckoutTransaction, Error>) -> Void = { result in
-            if case .success(let txn) = result {
+            if case .success(let txn) = result, ZeroSettle.shared._activeOfferManagerForBookkeeping != nil {
                 Task { @MainActor in
                     await applyOfferCheckoutCompletionIfApplicable(
                         productId: product.id,

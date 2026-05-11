@@ -252,7 +252,7 @@ internal struct CheckoutSheetModifier<Header: View>: ViewModifier {
     private func wrappedOnComplete(productId: String) -> (Result<CheckoutTransaction, Error>) -> Void {
         let original = onComplete
         return { result in
-            if case .success(let txn) = result {
+            if case .success(let txn) = result, ZeroSettle.shared._activeOfferManagerForBookkeeping != nil {
                 Task { @MainActor in
                     await applyOfferCheckoutCompletionIfApplicable(productId: productId, transactionId: txn.id)
                     original(result)
@@ -492,7 +492,7 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
     private func wrappedOnComplete(productId: String) -> (Result<CheckoutTransaction, Error>) -> Void {
         let original = onComplete
         return { result in
-            if case .success(let txn) = result {
+            if case .success(let txn) = result, ZeroSettle.shared._activeOfferManagerForBookkeeping != nil {
                 Task { @MainActor in
                     await applyOfferCheckoutCompletionIfApplicable(productId: productId, transactionId: txn.id)
                     original(result)
