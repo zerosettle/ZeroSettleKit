@@ -130,6 +130,7 @@ internal final class CheckoutPreloader: ObservableObject {
     private var loadToken: UInt = 0
     private var continuation: CheckedContinuation<Void, Never>?
     private var buttonsReadyContinuation: CheckedContinuation<Void, Never>?
+    private var readyContinuation: CheckedContinuation<Void, Never>?
 
     private(set) var loadedURL: URL?
     private var navigationDelegate: PreloaderNavigationDelegate?
@@ -287,6 +288,8 @@ internal final class CheckoutPreloader: ObservableObject {
                             }
                             self.isReady = true
                             self.loadedURL = url
+                            self.readyContinuation?.resume()
+                            self.readyContinuation = nil
                             self.continuation?.resume()
                             self.continuation = nil
                             ZSLogger.info("[Preloader] loadAndWait COMPLETE: isReady=true at \(Int((CFAbsoluteTimeGetCurrent() - start) * 1000))ms. product=\(shortURL)", category: .checkout)
@@ -303,6 +306,8 @@ internal final class CheckoutPreloader: ObservableObject {
                     guard let wv = self.webView else {
                         self.isReady = true
                         self.loadedURL = url
+                        self.readyContinuation?.resume()
+                        self.readyContinuation = nil
                         self.continuation?.resume()
                         self.continuation = nil
                         return
@@ -315,6 +320,8 @@ internal final class CheckoutPreloader: ObservableObject {
                             }
                             self.isReady = true
                             self.loadedURL = url
+                            self.readyContinuation?.resume()
+                            self.readyContinuation = nil
                             self.continuation?.resume()
                             self.continuation = nil
                         }
@@ -361,6 +368,45 @@ internal final class CheckoutPreloader: ObservableObject {
         return !timedOut
     }
 
+    /// Waits until `isReady = true`, which is set AFTER `measureContentJS`
+    /// completes and `measuredContentHeight` is populated. Returns immediately
+    /// if already ready.
+    ///
+    /// This is distinct from `waitForButtonsReady()`:
+    /// - `buttonsReady` fires as soon as Stripe payment buttons are interactive.
+    /// - `isReady` fires later, after the DOM measurement round-trip lands.
+    ///
+    /// Callers that need a non-zero `measuredContentHeight` (e.g. so
+    /// `CheckoutSheet`'s internal init seeds `webContentHeight` correctly and
+    /// the sheet doesn't visibly shrink on first present) MUST wait for this,
+    /// not just for `buttonsReady`.
+    ///
+    /// Returns `true` if ready, `false` if the 8-second timeout elapsed
+    /// (matching the `loadAndWait` JS-ready timeout above).
+    @MainActor
+    @discardableResult
+    func waitForReady() async -> Bool {
+        if isReady { return true }
+
+        let myToken = loadToken
+        var timedOut = false
+
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            self.readyContinuation = cont
+
+            // Timeout: resume so the caller can handle the failure.
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                guard let self, self.loadToken == myToken, self.readyContinuation != nil else { return }
+                ZSLogger.error("[CheckoutPreloader] waitForReady timeout 8s — isReady never fired", category: .checkout)
+                timedOut = true
+                self.readyContinuation?.resume()
+                self.readyContinuation = nil
+            }
+        }
+        return !timedOut
+    }
+
     /// Low-level cleanup: resumes any waiting continuations and clears the
     /// message handler. Does NOT touch the WebView or readiness flags —
     /// use `reset()` for full teardown.
@@ -369,6 +415,8 @@ internal final class CheckoutPreloader: ObservableObject {
         continuation = nil
         buttonsReadyContinuation?.resume()
         buttonsReadyContinuation = nil
+        readyContinuation?.resume()
+        readyContinuation = nil
         messageRouter.onMessage = nil
     }
 
@@ -520,7 +568,8 @@ internal final class CheckoutPreloaderPool: ObservableObject {
 
     // MARK: - WebView Readiness
 
-    /// Ensures the WebView for a product is loaded with payment buttons visible.
+    /// Ensures the WebView for a product is loaded with payment buttons visible
+    /// AND the DOM content height has been measured.
     ///
     /// This is the **single entry point** for getting a WebView ready to present.
     /// It encapsulates the full readiness sequence:
@@ -528,6 +577,15 @@ internal final class CheckoutPreloaderPool: ObservableObject {
     /// 1. If the WebView process is dead (`!isAlive`), reset and create a fresh one
     /// 2. Load the checkout URL and wait for the Stripe `ready` signal
     /// 3. Wait for the `buttonsReady` signal (Apple Pay / card buttons rendered)
+    /// 4. Wait for `isReady` (measureContentJS completed → `measuredContentHeight` set)
+    ///
+    /// Step 4 matters because `CheckoutSheet`'s internal init reads
+    /// `preloader.measuredContentHeight` to seed its WebView frame height. If we
+    /// returned at step 3 (the pre-1.3.6 behavior), the init would observe
+    /// `measuredContentHeight == 0`, fall back to a hardcoded 300pt placeholder,
+    /// and the live geometry observer would later report the real (typically
+    /// smaller) height — causing the sheet to visibly shrink mid-presentation
+    /// on the UIKit static `CheckoutSheet.present(...)` path (used by Flutter).
     ///
     /// All three checkout modifier variants (`CheckoutSheetModifier`,
     /// `CheckoutSheetItemModifier`, `UIKitSheetBridge`) must call this instead
@@ -537,8 +595,9 @@ internal final class CheckoutPreloaderPool: ObservableObject {
     /// - Parameters:
     ///   - productId: Product identifier to look up the preloader.
     ///   - url: Checkout URL to load if the WebView needs (re)loading.
-    /// - Returns: `true` if the WebView is ready to present (buttons visible),
-    ///   `false` if buttonsReady timed out (5s) or the task was cancelled.
+    /// - Returns: `true` if the WebView is ready to present (buttons visible
+    ///   AND content height measured), `false` if either signal timed out or
+    ///   the task was cancelled.
     @MainActor
     func ensureReady(for productId: String, url: URL) async -> Bool {
         let preloader = preloader(for: productId)
@@ -553,7 +612,17 @@ internal final class CheckoutPreloaderPool: ObservableObject {
         }
 
         if !preloader.buttonsReady {
-            return await preloader.waitForButtonsReady()
+            let ok = await preloader.waitForButtonsReady()
+            if !ok { return false }
+        }
+
+        // Also wait for measureContentJS to complete (sets measuredContentHeight
+        // alongside isReady). Without this, CheckoutSheet's internal init reads
+        // measuredContentHeight=0, the WebView falls back to a 300pt placeholder
+        // frame, then the geometry observer later reports the real height and
+        // the sheet visibly shrinks during presentation.
+        if !preloader.isReady {
+            return await preloader.waitForReady()
         }
 
         return true

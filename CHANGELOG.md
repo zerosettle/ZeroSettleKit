@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.3.6 — 2026-05-11
+
+Fixes checkout sheet shrink-mid-presentation on the UIKit static `CheckoutSheet.present(...)` path. Adopters using the SwiftUI `.checkoutSheet(item:)` modifier with `preload:` pre-warming are not affected.
+
+### What was wrong
+
+`CheckoutPreloaderPool.ensureReady` returned the moment `buttonsReady` fired (Stripe payment buttons interactive), but `measuredContentHeight` is set later — when `measureContentJS` completes and `isReady` flips. When the sheet animated open during this gap, `CheckoutSheet`'s internal init read `measuredContentHeight = 0`, the WebView frame fell back to a hardcoded 300pt placeholder, then the live geometry observer fired with the real (typically smaller) height and the sheet visibly shrank.
+
+### Fix
+
+`ensureReady` now waits for both `buttonsReady` AND `isReady`. The internal init reads a non-zero `measuredContentHeight` from the start; the WebView mounts at the correct height; the sheet doesn't resize on first present.
+
+Trade-off: ~200-500ms additional cold-start latency between CTA tap and sheet animation. Pre-warmed adopters (modifier path with `preload:`) see no latency change — `isReady` is already true by the time `ensureReady` is called.
+
+### Internals
+
+- New `waitForReady() async -> Bool` on `CheckoutPreloader` (mirrors `waitForButtonsReady`).
+- `CheckoutPreloaderPool.ensureReady` extends its wait to include the `isReady` signal.
+
+### Adopters affected
+
+- UIKit-static adopters calling `CheckoutSheet.present(from:product:...)` directly.
+- Flutter adopters via `ZeroSettle.instance.presentPaymentSheet(productId:)`.
+
+### Bumps
+
+- (No external dependency bumps in this release.)
+
 ## 1.3.5 — 2026-05-11
 
 Auto-bookkeeping for `ZSOfferManager` checkouts. The migration/upgrade flow no longer requires adopters to call `manager.present()` and `manager.markCheckoutSucceeded()` manually — the SDK detects active offer context and runs the state machine automatically when you use any standard purchase entry point.
