@@ -1,5 +1,50 @@
 # Changelog
 
+## 1.3.5 — 2026-05-11
+
+Auto-bookkeeping for `ZSOfferManager` checkouts. The migration/upgrade flow no longer requires adopters to call `manager.present()` and `manager.markCheckoutSucceeded()` manually — the SDK detects active offer context and runs the state machine automatically when you use any standard purchase entry point.
+
+### What's new
+
+The three Kit choke points (`CheckoutSheet.present(...)`, `.checkoutSheet(item:)` SwiftUI modifier, and `ZeroSettle.shared.purchase(...)`) now consult `ZeroSettle.shared.offerManager()` and run the offer state machine when the productId matches the active offer's `checkoutProductId`:
+
+- Pre-checkout: state advances `.eligible → .presented` (replacing `manager.present()`).
+- Post-checkout success: state advances `.presented → .accepted` or `.presented → .completed` based on `needsAppleCancel`. Conversion analytics fire for `flowType == .migration` and `upgradeType == .storekitToWeb`.
+- Failure / cancellation: state stays at `.presented`. Adopter retries by tapping the CTA again.
+
+Adopters using `.checkoutSheet(item: $product)` (the JustOne pattern) stop needing the `manager.markCheckoutSucceeded()` callback in their `onComplete`. Reactive `stateUpdates` listeners see the transitions arrive automatically.
+
+### Deprecations
+
+- `ZSOfferManager.present()` — `@available(*, deprecated)`. Bookkeeping is automatic.
+- `ZSOfferManager.markCheckoutSucceeded(transactionId:)` — `@available(*, deprecated)`. Bookkeeping is automatic. Body retained through 1.x for raw-URL escape-hatch adopters using `startCheckout`.
+
+Both will be removed in 2.0.
+
+### Not deprecated
+
+- `ZSOfferManager.startCheckout(stripeCustomerId:checkoutMode:)` — remains the sanctioned path for adopters who need custom WebView/transport. Docstring rewritten to clarify scope.
+
+### Behavioral note for legacy adopters
+
+`markCheckoutSucceeded(transactionId:)`'s body now performs `verifyTransaction → delegate.zeroSettleCheckoutDidComplete → refreshEntitlementsAfterCheckout` BEFORE the offer state transition (previously: state transition first, then verify chain). This aligns the legacy method's ordering with the auto-path's ordering — `CheckoutSheet.present` runs verify+delegate+refresh internally before any offer bookkeeping fires. If your `zeroSettleCheckoutDidComplete` delegate callback reads `manager.state` synchronously, it will now see `.presented` instead of `.accepted`/`.completed`. Read state from your callback after the manager publishes the state transition (via `@Published` or after `markCheckoutSucceeded` returns) to see the post-bookkeeping value.
+
+### Internals
+
+- New `OfferCheckoutBookkeeping` helper (`armOfferForCheckoutIfApplicable`, `applyOfferCheckoutCompletionIfApplicable`) — single source of truth for the auto-path.
+- New `_armForCheckout(source:)` and `_applyCheckoutCompletion(transactionId:source:)` on `ZSOfferManager`. Existing public methods delegate.
+- New `ZeroSettle.shared._activeOfferManagerForBookkeeping` — non-instantiating peek at the cached manager. Adopters who never use offers pay zero cost (single nil check at the choke points).
+
+### Migration
+
+JustOne and similar adopters with `manager.present()` + `manager.markCheckoutSucceeded()` calls around their `.checkoutSheet`: delete both calls. The SDK now handles them. Compile-time deprecation warnings will guide you.
+
+Adopters using `manager.startCheckout()` for raw URL flows: no change — that path stays manual and supported.
+
+### Compatibility
+
+Source-compatible. Adopters who don't change anything keep working through compile-time deprecation warnings.
+
 ## 1.3.4 — 2026-05-08
 
 ### `ApplePayAvailability` migrated to `@Observable`
