@@ -1608,17 +1608,13 @@ internal struct MigrationPreloaderHost: UIViewRepresentable {
                 subview.removeFromSuperview()
             }
         }
-        // Add the preloaded WebView if not already hosted
-        if let wv = webView {
-            if wv.superview == nil {
-                wv.frame = CGRect(x: 0, y: 0, width: 393, height: 600)
-                uiView.addSubview(wv)
-                ZSLogger.error("[DIAG][MigrationPreloaderHost] updateUIView ADD — wv added to container; wv.window=\(wv.window != nil ? "set" : "nil") container.window=\(uiView.window != nil ? "set" : "nil")", category: .checkout)
-            } else if wv.superview === uiView {
-                ZSLogger.error("[DIAG][MigrationPreloaderHost] updateUIView NOOP — already in this host; wv.window=\(wv.window != nil ? "set" : "nil")", category: .checkout)
-            } else {
-                ZSLogger.error("[DIAG][MigrationPreloaderHost] updateUIView SKIP — wv has different superview (\(type(of: wv.superview!))); leaving it alone", category: .checkout)
-            }
+        // Add the preloaded WebView if not already hosted.
+        // When the actual sheet animates and PaymentWebView reparents the
+        // WKWebView via standard addSubview, this NOOPs gracefully — only
+        // re-adds when the WebView has no superview at all.
+        if let wv = webView, wv.superview == nil {
+            wv.frame = CGRect(x: 0, y: 0, width: 393, height: 600)
+            uiView.addSubview(wv)
         }
     }
 }
