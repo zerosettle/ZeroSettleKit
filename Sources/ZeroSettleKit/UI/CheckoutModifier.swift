@@ -175,6 +175,11 @@ internal struct WindowLevelSheetBridge<SheetHeader: View>: View {
 
     @State private var showSheet = true
     @State private var scrimVisible = false
+    /// Set when the inner `CheckoutSheet` fires its terminal callback. Mirrors
+    /// `UIKitSheetBridge.didComplete` — swipe-dismiss bypasses CheckoutSheet's
+    /// X-button / error-screen Cancel paths, so onComplete must be surfaced
+    /// from `.sheet`'s onDismiss when the user drags down without acting.
+    @State private var didComplete = false
 
     var body: some View {
         // Scrim isolated inside a ZStack so the .sheet modifier below attaches
@@ -192,6 +197,10 @@ internal struct WindowLevelSheetBridge<SheetHeader: View>: View {
         }
             .onAppear { scrimVisible = true }
             .sheet(isPresented: $showSheet, onDismiss: {
+                if !didComplete {
+                    didComplete = true
+                    onComplete(.failure(ZeroSettleError.cancelled))
+                }
                 onDismissed()
             }) {
                 Group {
@@ -203,17 +212,21 @@ internal struct WindowLevelSheetBridge<SheetHeader: View>: View {
                             preloader: preloader,
                             checkoutURL: url,
                             transactionId: transactionId,
-                            header: header,
-                            onComplete: onComplete
-                        )
+                            header: header
+                        ) { result in
+                            didComplete = true
+                            onComplete(result)
+                        }
                     } else {
                         CheckoutSheet(
                             product: product,
                             userId: userId,
                             dismissible: dismissible,
-                            header: header,
-                            onComplete: onComplete
-                        )
+                            header: header
+                        ) { result in
+                            didComplete = true
+                            onComplete(result)
+                        }
                     }
                 }
                 .background {
@@ -799,6 +812,12 @@ internal struct UIKitSheetBridge<SheetHeader: View>: View {
     @State private var showSheet = false
     @State private var preloadedURL: URL?
     @State private var preloadedTransactionId: String?
+    /// Set when the inner `CheckoutSheet` fires its terminal callback (success,
+    /// cancellation via X / error-screen Cancel / JS, or failure). If the sheet
+    /// disappears WITHOUT this flag being set, the user swipe-dismissed and we
+    /// must surface `.cancelled` ourselves — otherwise UIKit/Flutter adopters'
+    /// `onComplete` never fires and their `_inFlight` state stays stuck.
+    @State private var didComplete = false
 
     var body: some View {
         Color.clear
@@ -823,6 +842,13 @@ internal struct UIKitSheetBridge<SheetHeader: View>: View {
             }
             .sheet(isPresented: $showSheet, onDismiss: {
                 CheckoutPresentationCoordinator.shared.release()
+                // Swipe-to-dismiss bypasses CheckoutSheet's X-button /
+                // error-screen Cancel paths, so onComplete never fires
+                // unless we surface it here.
+                if !didComplete {
+                    didComplete = true
+                    onComplete(.failure(ZeroSettleError.cancelled))
+                }
                 onDismissed()
             }) {
                 if let url = preloadedURL {
@@ -835,6 +861,7 @@ internal struct UIKitSheetBridge<SheetHeader: View>: View {
                         transactionId: preloadedTransactionId,
                         header: header
                     ) { result in
+                        didComplete = true
                         if case .success = result {
                             handleCheckoutSuccess(
                                 product: product,
@@ -853,9 +880,11 @@ internal struct UIKitSheetBridge<SheetHeader: View>: View {
                         dismissible: dismissible,
                         checkoutURL: checkoutURL,
                         transactionId: transactionId,
-                        header: header,
-                        onComplete: onComplete
-                    )
+                        header: header
+                    ) { result in
+                        didComplete = true
+                        onComplete(result)
+                    }
                 }
             }
     }

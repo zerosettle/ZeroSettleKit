@@ -613,7 +613,10 @@ internal final class CheckoutPreloaderPool: ObservableObject {
 
         if !preloader.buttonsReady {
             let ok = await preloader.waitForButtonsReady()
-            if !ok { return false }
+            if !ok {
+                ZSLogger.error("[BUTTONS] ensureReady returning false — buttonsReady timed out for \(productId). isAlive=\(preloader.isAlive) isReady=\(preloader.isReady) measuredHeight=\(preloader.measuredContentHeight)", category: .checkout)
+                return false
+            }
         }
 
         // Also wait for measureContentJS to complete (sets measuredContentHeight
@@ -622,9 +625,12 @@ internal final class CheckoutPreloaderPool: ObservableObject {
         // frame, then the geometry observer later reports the real height and
         // the sheet visibly shrinks during presentation.
         if !preloader.isReady {
-            return await preloader.waitForReady()
+            let isReadyOk = await preloader.waitForReady()
+            ZSLogger.error("[BUTTONS] ensureReady returning \(isReadyOk) — buttonsReady=\(preloader.buttonsReady) isReady=\(preloader.isReady) measuredHeight=\(preloader.measuredContentHeight) inWindow=\(preloader.webView?.window != nil) for \(productId)", category: .checkout)
+            return isReadyOk
         }
 
+        ZSLogger.error("[BUTTONS] ensureReady returning true — buttonsReady=\(preloader.buttonsReady) isReady=\(preloader.isReady) measuredHeight=\(preloader.measuredContentHeight) inWindow=\(preloader.webView?.window != nil) for \(productId)", category: .checkout)
         return true
     }
 
