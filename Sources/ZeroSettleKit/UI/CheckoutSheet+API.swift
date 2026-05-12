@@ -358,6 +358,13 @@ extension CheckoutSheet {
             return
         }
 
+        // Resolve identity: if caller passes nil, fall back to the user
+        // identified via `ZeroSettle.shared.identify(...)`. Mirrors the
+        // userId-less ergonomic of `purchaseViaStoreKit` (ZeroSettle.swift:1862).
+        // Validation downstream still throws `userIdRequired` correctly when
+        // BOTH are nil for a user-scoped product type.
+        let effectiveUserId = userId ?? ZeroSettle.shared.currentUserId
+
         // Auto-bookkeeping: arm the offer state machine if this purchase is
         // offer-bound. Idempotent — no-op for non-offer products.
         armOfferForCheckoutIfApplicable(productId: product.id)
@@ -381,7 +388,7 @@ extension CheckoutSheet {
 
         let bridge = UIKitSheetBridge<H>(
             product: product,
-            userId: userId,
+            userId: effectiveUserId,
             dismissible: dismissible,
             checkoutURL: checkoutURL,
             transactionId: transactionId,

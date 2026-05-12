@@ -244,6 +244,12 @@ internal struct CheckoutSheetModifier<Header: View>: ViewModifier {
     @State private var preloadedTransactionId: String?
     @State private var overlayWindow: UIWindow?
 
+    /// Resolved identity: caller-supplied `userId` overrides; otherwise fall
+    /// back to the user identified via `ZeroSettle.shared.identify(...)`.
+    /// Mirrors `CheckoutSheet.present` and `purchaseViaStoreKit` so adopters
+    /// who identify once don't have to thread `userId` through every modifier.
+    internal var effectiveUserId: String? { userId ?? ZeroSettle.shared.currentUserId }
+
     /// Wraps `onComplete` so the post-purchase apply runs on success before
     /// the adopter's callback fires. Failure/cancellation paths forward
     /// unchanged (state stays .presented; adopter retries by tapping CTA).
@@ -275,8 +281,9 @@ internal struct CheckoutSheetModifier<Header: View>: ViewModifier {
                 if preload != nil { pool.unregisterModifier() }
                 #endif
             }
-            .task(id: userId) {
-                // Key on userId so an account switch:
+            .task(id: effectiveUserId) {
+                // Key on effective userId so an account switch (via either
+                // explicit `userId` or `ZeroSettle.shared.identify`):
                 //  (a) discards the previous user's preloaded PI URL/txn,
                 //  (b) re-runs the warm-up for the current user, and
                 //  (c) never presents a sheet with someone else's client_secret.
@@ -340,7 +347,7 @@ internal struct CheckoutSheetModifier<Header: View>: ViewModifier {
                 let wrapped = wrappedOnComplete(productId: product.id)
                 let bridge = WindowLevelSheetBridge(
                     product: product,
-                    userId: userId,
+                    userId: effectiveUserId,
                     dismissible: dismissible,
                     preloader: preloader,
                     checkoutURL: preloadedURL,
@@ -350,7 +357,7 @@ internal struct CheckoutSheetModifier<Header: View>: ViewModifier {
                         if case .success = result {
                             handleCheckoutSuccess(
                                 product: product,
-                                userId: userId,
+                                userId: effectiveUserId,
                                 pool: pool
                             )
                             preloadedURL = nil
@@ -398,7 +405,7 @@ internal struct CheckoutSheetModifier<Header: View>: ViewModifier {
         // ── Safari / SafariVC — delegate to purchase() which opens the browser ──
         guard checkoutType == .webView || checkoutType == .nativePay else {
             await performSafariCheckout(
-                product: product, userId: userId, checkoutType: checkoutType,
+                product: product, userId: effectiveUserId, checkoutType: checkoutType,
                 onComplete: wrappedOnComplete(productId: product.id), onFinally: { isPresented = false }
             )
             return
@@ -406,7 +413,7 @@ internal struct CheckoutSheetModifier<Header: View>: ViewModifier {
 
         // ── Fetch PaymentIntent (cached or fresh) ──
         guard let result = await CheckoutSheet<EmptyView>.preload(
-            productId: product.id, userId: userId
+            productId: product.id, userId: effectiveUserId
         ) else {
             guard !Task.isCancelled else { return }
             wrappedOnComplete(productId: product.id)(.failure(ZeroSettleError.checkoutFailed(reason: .other("Failed to create payment for \(product.id). Check that the product has a valid web price configured in the ZeroSettle dashboard."))))
@@ -444,7 +451,7 @@ internal struct CheckoutSheetModifier<Header: View>: ViewModifier {
         guard !products.isEmpty else { return }
 
         await CheckoutSheet<EmptyView>.warmUp(
-            productIds: products.map(\.id), userId: userId
+            productIds: products.map(\.id), userId: effectiveUserId
         )
 
         // Pre-render the bound product's WebView via the shared pool.
@@ -453,7 +460,7 @@ internal struct CheckoutSheetModifier<Header: View>: ViewModifier {
         guard checkoutType == .webView || checkoutType == .nativePay else { return }
 
         let pk = ZeroSettle.shared.currentConfig?.publishableKey ?? ""
-        if let result = await CheckoutResponseCache.shared.getURLAndTransactionId(productId: product.id, userId: userId, publishableKey: pk) {
+        if let result = await CheckoutResponseCache.shared.getURLAndTransactionId(productId: product.id, userId: effectiveUserId, publishableKey: pk) {
             preloadedURL = result.checkoutURL
             preloadedTransactionId = result.transactionId
             let preloader = pool.preloader(for: product.id)
@@ -483,6 +490,12 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
     @State private var preloadedTransactionId: String?
     @State private var presentedProduct: ZSProduct?
     @State private var overlayWindow: UIWindow?
+
+    /// Resolved identity: caller-supplied `userId` overrides; otherwise fall
+    /// back to the user identified via `ZeroSettle.shared.identify(...)`.
+    /// Mirrors `CheckoutSheet.present` and `purchaseViaStoreKit` so adopters
+    /// who identify once don't have to thread `userId` through every modifier.
+    internal var effectiveUserId: String? { userId ?? ZeroSettle.shared.currentUserId }
 
     /// Wraps `onComplete` so the post-purchase apply runs on success before
     /// the adopter's callback fires. Failure/cancellation paths forward
@@ -515,8 +528,9 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
                 if preload != nil { pool.unregisterModifier() }
                 #endif
             }
-            .task(id: userId) {
-                // Key on userId so an account switch:
+            .task(id: effectiveUserId) {
+                // Key on effective userId so an account switch (via either
+                // explicit `userId` or `ZeroSettle.shared.identify`):
                 //  (a) discards the previous user's preloaded PI URL/txn,
                 //  (b) re-runs the warm-up for the current user, and
                 //  (c) never presents a sheet with someone else's client_secret.
@@ -584,7 +598,7 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
                 let wrapped = wrappedOnComplete(productId: product.id)
                 let bridge = WindowLevelSheetBridge(
                     product: product,
-                    userId: userId,
+                    userId: effectiveUserId,
                     dismissible: dismissible,
                     preloader: preloader,
                     checkoutURL: preloadedURL,
@@ -594,7 +608,7 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
                         if case .success = result {
                             handleCheckoutSuccess(
                                 product: product,
-                                userId: userId,
+                                userId: effectiveUserId,
                                 pool: pool
                             )
                             preloadedURL = nil
@@ -648,7 +662,7 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
         // ── Safari / SafariVC — delegate to purchase() which opens the browser ──
         guard checkoutType == .webView || checkoutType == .nativePay else {
             await performSafariCheckout(
-                product: product, userId: userId, checkoutType: checkoutType,
+                product: product, userId: effectiveUserId, checkoutType: checkoutType,
                 onComplete: wrappedOnComplete(productId: product.id), onFinally: { item = nil }
             )
             return
@@ -670,7 +684,7 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
         // ── Fetch PaymentIntent (cached or fresh) ──
         let preloadStart = CFAbsoluteTimeGetCurrent()
         guard let result = await CheckoutSheet<EmptyView>.preload(
-            productId: product.id, userId: userId
+            productId: product.id, userId: effectiveUserId
         ) else {
             guard !Task.isCancelled else {
                 ZSLogger.info("[Checkout] preloadAll: cancelled during preload", category: .checkout)
@@ -724,11 +738,11 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
         guard !products.isEmpty else { return }
 
         await CheckoutSheet<EmptyView>.warmUp(
-            productIds: products.map(\.id), userId: userId
+            productIds: products.map(\.id), userId: effectiveUserId
         )
 
         guard !Task.isCancelled, presentedProduct == nil else { return }
-        await pool.loadFromCache(products: products, userId: userId)
+        await pool.loadFromCache(products: products, userId: effectiveUserId)
     }
 }
 
