@@ -789,10 +789,19 @@ internal struct UIKitSheetBridge<SheetHeader: View>: View {
     @State private var showSheet = false
     @State private var preloadedURL: URL?
     @State private var preloadedTransactionId: String?
+    @State private var bridgeAppearedAt: CFAbsoluteTime = 0
 
     var body: some View {
+        let _ = ZSLogger.info("[UIKitSheetBridge] body eval — product=\(product.id) showSheet=\(showSheet) preloadedURL=\(preloadedURL == nil ? "nil" : "set")", category: .checkout)
         Color.clear
-            .task { await preloadAll() }
+            .onAppear {
+                bridgeAppearedAt = CFAbsoluteTimeGetCurrent()
+                ZSLogger.info("[UIKitSheetBridge] APPEARED product=\(product.id) at t=0", category: .checkout)
+            }
+            .task {
+                ZSLogger.info("[UIKitSheetBridge] .task fired +\(elapsedMs())ms product=\(product.id)", category: .checkout)
+                await preloadAll()
+            }
             .background(alignment: .topLeading) {
                 // Hidden host — mounts the preloader's WKWebView into the view
                 // hierarchy at 393x600 so WebKit can fire paint cycles. Without
@@ -850,17 +859,31 @@ internal struct UIKitSheetBridge<SheetHeader: View>: View {
             }
     }
 
+    /// Milliseconds since `bridgeAppearedAt`. Used for timeline-aligned diagnostics.
+    private func elapsedMs() -> Int {
+        guard bridgeAppearedAt > 0 else { return 0 }
+        return Int((CFAbsoluteTimeGetCurrent() - bridgeAppearedAt) * 1000)
+    }
+
     /// Prepares and presents the checkout sheet via UIKit window overlay.
     ///
     /// Flow: bootstrap wait → checkout type guard → fetch PI → ensureReady → present.
     /// See `CheckoutPreloaderPool.ensureReady(for:url:)` for WebView readiness logic.
     private func preloadAll() async {
-        guard await awaitBootstrap() else { return }
+        ZSLogger.info("[UIKitSheetBridge] preloadAll START +\(elapsedMs())ms product=\(product.id)", category: .checkout)
+
+        guard await awaitBootstrap() else {
+            ZSLogger.error("[UIKitSheetBridge] preloadAll: bootstrap returned false +\(elapsedMs())ms", category: .checkout)
+            return
+        }
+        ZSLogger.info("[UIKitSheetBridge] preloadAll: bootstrap OK +\(elapsedMs())ms", category: .checkout)
 
         let checkoutType = ZeroSettle.shared.checkoutType
+        ZSLogger.info("[UIKitSheetBridge] preloadAll: checkoutType=\(checkoutType.rawValue) +\(elapsedMs())ms", category: .checkout)
 
         // ── Safari / SafariVC — delegate to purchase() which opens the browser ──
         guard checkoutType == .webView || checkoutType == .nativePay else {
+            ZSLogger.info("[UIKitSheetBridge] preloadAll: delegating to Safari +\(elapsedMs())ms", category: .checkout)
             await performSafariCheckout(
                 product: product, userId: userId, checkoutType: checkoutType,
                 onComplete: onComplete, onFinally: onDismissed
@@ -868,27 +891,37 @@ internal struct UIKitSheetBridge<SheetHeader: View>: View {
             return
         }
 
+        // Inspect preloader state at this point — was it pre-warmed by warmUpAll?
+        let preloader = pool.preloader(for: product.id)
+        ZSLogger.info("[UIKitSheetBridge] preloadAll: preloader state before resolve — webView=\(preloader.webView == nil ? "nil" : "non-nil") isAlive=\(preloader.isAlive) isReady=\(preloader.isReady) buttonsReady=\(preloader.buttonsReady) measuredContentHeight=\(preloader.measuredContentHeight) +\(elapsedMs())ms", category: .checkout)
+
         // ── Resolve checkout URL (caller-provided or fetched) ──
         let url: URL
         if let checkoutURL {
+            ZSLogger.info("[UIKitSheetBridge] preloadAll: using caller-provided URL +\(elapsedMs())ms", category: .checkout)
             url = checkoutURL
             preloadedURL = checkoutURL
             preloadedTransactionId = transactionId
         } else if let result = await CheckoutSheet<EmptyView>.preload(
             productId: product.id, userId: userId
         ) {
+            ZSLogger.info("[UIKitSheetBridge] preloadAll: CheckoutSheet.preload returned URL +\(elapsedMs())ms", category: .checkout)
             url = result.checkoutURL
             preloadedURL = result.checkoutURL
             preloadedTransactionId = result.transactionId
         } else {
             guard !Task.isCancelled else { return }
+            ZSLogger.error("[UIKitSheetBridge] preloadAll: CheckoutSheet.preload returned nil +\(elapsedMs())ms", category: .checkout)
             onComplete(.failure(ZeroSettleError.checkoutFailed(reason: .other("Failed to create payment for \(product.id). Check that the product has a valid web price configured in the ZeroSettle dashboard."))))
             onDismissed()
             return
         }
 
         // ── Ensure WebView is loaded with payment buttons visible ──
+        ZSLogger.info("[UIKitSheetBridge] preloadAll: calling ensureReady +\(elapsedMs())ms", category: .checkout)
         let ready = await pool.ensureReady(for: product.id, url: url)
+        ZSLogger.info("[UIKitSheetBridge] preloadAll: ensureReady returned \(ready) +\(elapsedMs())ms — webView=\(preloader.webView == nil ? "nil" : "non-nil") inWindow=\(preloader.webView?.window != nil ? "yes" : "no") isReady=\(preloader.isReady) buttonsReady=\(preloader.buttonsReady) measuredContentHeight=\(preloader.measuredContentHeight)", category: .checkout)
+
         if !ready {
             guard !Task.isCancelled else { return }
             onComplete(.failure(ZeroSettleError.checkoutFailed(
@@ -899,9 +932,11 @@ internal struct UIKitSheetBridge<SheetHeader: View>: View {
         }
 
         guard CheckoutPresentationCoordinator.shared.acquire(for: product.id) else {
+            ZSLogger.info("[UIKitSheetBridge] preloadAll: presentation coordinator declined +\(elapsedMs())ms", category: .checkout)
             return
         }
 
+        ZSLogger.info("[UIKitSheetBridge] preloadAll: setting showSheet=true +\(elapsedMs())ms", category: .checkout)
         showSheet = true
     }
 }

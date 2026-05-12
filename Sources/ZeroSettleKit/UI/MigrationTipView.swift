@@ -1609,9 +1609,16 @@ internal struct MigrationPreloaderHost: UIViewRepresentable {
             }
         }
         // Add the preloaded WebView if not already hosted
-        if let wv = webView, wv.superview == nil {
-            wv.frame = CGRect(x: 0, y: 0, width: 393, height: 600)
-            uiView.addSubview(wv)
+        if let wv = webView {
+            if wv.superview == nil {
+                wv.frame = CGRect(x: 0, y: 0, width: 393, height: 600)
+                uiView.addSubview(wv)
+                ZSLogger.info("[MigrationPreloaderHost] updateUIView ADD — wv added to container; wv.window=\(wv.window != nil ? "set" : "nil") container.window=\(uiView.window != nil ? "set" : "nil")", category: .checkout)
+            } else if wv.superview === uiView {
+                ZSLogger.debug("[MigrationPreloaderHost] updateUIView NOOP — already in this host; wv.window=\(wv.window != nil ? "set" : "nil")", category: .checkout)
+            } else {
+                ZSLogger.info("[MigrationPreloaderHost] updateUIView SKIP — wv has different superview (\(type(of: wv.superview!))); leaving it alone", category: .checkout)
+            }
         }
     }
 }
