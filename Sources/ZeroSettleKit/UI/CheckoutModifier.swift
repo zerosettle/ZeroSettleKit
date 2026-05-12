@@ -755,7 +755,7 @@ private struct HiddenPreloaderHost: View {
     @ObservedObject var preloader: CheckoutPreloader
 
     var body: some View {
-        let _ = ZSLogger.info("[HiddenPreloaderHost] body re-eval — webView=\(preloader.webView == nil ? "nil" : "non-nil") isReady=\(preloader.isReady) buttonsReady=\(preloader.buttonsReady)", category: .checkout)
+        let _ = ZSLogger.error("[DIAG][HiddenPreloaderHost] body re-eval — webView=\(preloader.webView == nil ? "nil" : "non-nil") isReady=\(preloader.isReady) buttonsReady=\(preloader.buttonsReady)", category: .checkout)
         if let wv = preloader.webView {
             MigrationPreloaderHost(webView: wv)
                 .frame(width: 393, height: 600)
@@ -763,7 +763,7 @@ private struct HiddenPreloaderHost: View {
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
                 .onAppear {
-                    ZSLogger.info("[HiddenPreloaderHost] MigrationPreloaderHost APPEARED — wv.window=\(wv.window != nil ? "set" : "nil") wv.superview=\(wv.superview != nil ? "set" : "nil")", category: .checkout)
+                    ZSLogger.error("[DIAG][HiddenPreloaderHost] MigrationPreloaderHost APPEARED — wv.window=\(wv.window != nil ? "set" : "nil") wv.superview=\(wv.superview != nil ? "set" : "nil")", category: .checkout)
                 }
         }
     }
@@ -792,14 +792,14 @@ internal struct UIKitSheetBridge<SheetHeader: View>: View {
     @State private var bridgeAppearedAt: CFAbsoluteTime = 0
 
     var body: some View {
-        let _ = ZSLogger.info("[UIKitSheetBridge] body eval — product=\(product.id) showSheet=\(showSheet) preloadedURL=\(preloadedURL == nil ? "nil" : "set")", category: .checkout)
+        let _ = ZSLogger.error("[DIAG][UIKitSheetBridge] body eval — product=\(product.id) showSheet=\(showSheet) preloadedURL=\(preloadedURL == nil ? "nil" : "set")", category: .checkout)
         Color.clear
             .onAppear {
                 bridgeAppearedAt = CFAbsoluteTimeGetCurrent()
-                ZSLogger.info("[UIKitSheetBridge] APPEARED product=\(product.id) at t=0", category: .checkout)
+                ZSLogger.error("[DIAG][UIKitSheetBridge] APPEARED product=\(product.id) at t=0", category: .checkout)
             }
             .task {
-                ZSLogger.info("[UIKitSheetBridge] .task fired +\(elapsedMs())ms product=\(product.id)", category: .checkout)
+                ZSLogger.error("[DIAG][UIKitSheetBridge] .task fired +\(elapsedMs())ms product=\(product.id)", category: .checkout)
                 await preloadAll()
             }
             .background(alignment: .topLeading) {
@@ -870,20 +870,20 @@ internal struct UIKitSheetBridge<SheetHeader: View>: View {
     /// Flow: bootstrap wait → checkout type guard → fetch PI → ensureReady → present.
     /// See `CheckoutPreloaderPool.ensureReady(for:url:)` for WebView readiness logic.
     private func preloadAll() async {
-        ZSLogger.info("[UIKitSheetBridge] preloadAll START +\(elapsedMs())ms product=\(product.id)", category: .checkout)
+        ZSLogger.error("[DIAG][UIKitSheetBridge] preloadAll START +\(elapsedMs())ms product=\(product.id)", category: .checkout)
 
         guard await awaitBootstrap() else {
             ZSLogger.error("[UIKitSheetBridge] preloadAll: bootstrap returned false +\(elapsedMs())ms", category: .checkout)
             return
         }
-        ZSLogger.info("[UIKitSheetBridge] preloadAll: bootstrap OK +\(elapsedMs())ms", category: .checkout)
+        ZSLogger.error("[DIAG][UIKitSheetBridge] preloadAll: bootstrap OK +\(elapsedMs())ms", category: .checkout)
 
         let checkoutType = ZeroSettle.shared.checkoutType
-        ZSLogger.info("[UIKitSheetBridge] preloadAll: checkoutType=\(checkoutType.rawValue) +\(elapsedMs())ms", category: .checkout)
+        ZSLogger.error("[DIAG][UIKitSheetBridge] preloadAll: checkoutType=\(checkoutType.rawValue) +\(elapsedMs())ms", category: .checkout)
 
         // ── Safari / SafariVC — delegate to purchase() which opens the browser ──
         guard checkoutType == .webView || checkoutType == .nativePay else {
-            ZSLogger.info("[UIKitSheetBridge] preloadAll: delegating to Safari +\(elapsedMs())ms", category: .checkout)
+            ZSLogger.error("[DIAG][UIKitSheetBridge] preloadAll: delegating to Safari +\(elapsedMs())ms", category: .checkout)
             await performSafariCheckout(
                 product: product, userId: userId, checkoutType: checkoutType,
                 onComplete: onComplete, onFinally: onDismissed
@@ -893,19 +893,19 @@ internal struct UIKitSheetBridge<SheetHeader: View>: View {
 
         // Inspect preloader state at this point — was it pre-warmed by warmUpAll?
         let preloader = pool.preloader(for: product.id)
-        ZSLogger.info("[UIKitSheetBridge] preloadAll: preloader state before resolve — webView=\(preloader.webView == nil ? "nil" : "non-nil") isAlive=\(preloader.isAlive) isReady=\(preloader.isReady) buttonsReady=\(preloader.buttonsReady) measuredContentHeight=\(preloader.measuredContentHeight) +\(elapsedMs())ms", category: .checkout)
+        ZSLogger.error("[DIAG][UIKitSheetBridge] preloadAll: preloader state before resolve — webView=\(preloader.webView == nil ? "nil" : "non-nil") isAlive=\(preloader.isAlive) isReady=\(preloader.isReady) buttonsReady=\(preloader.buttonsReady) measuredContentHeight=\(preloader.measuredContentHeight) +\(elapsedMs())ms", category: .checkout)
 
         // ── Resolve checkout URL (caller-provided or fetched) ──
         let url: URL
         if let checkoutURL {
-            ZSLogger.info("[UIKitSheetBridge] preloadAll: using caller-provided URL +\(elapsedMs())ms", category: .checkout)
+            ZSLogger.error("[DIAG][UIKitSheetBridge] preloadAll: using caller-provided URL +\(elapsedMs())ms", category: .checkout)
             url = checkoutURL
             preloadedURL = checkoutURL
             preloadedTransactionId = transactionId
         } else if let result = await CheckoutSheet<EmptyView>.preload(
             productId: product.id, userId: userId
         ) {
-            ZSLogger.info("[UIKitSheetBridge] preloadAll: CheckoutSheet.preload returned URL +\(elapsedMs())ms", category: .checkout)
+            ZSLogger.error("[DIAG][UIKitSheetBridge] preloadAll: CheckoutSheet.preload returned URL +\(elapsedMs())ms", category: .checkout)
             url = result.checkoutURL
             preloadedURL = result.checkoutURL
             preloadedTransactionId = result.transactionId
@@ -918,9 +918,9 @@ internal struct UIKitSheetBridge<SheetHeader: View>: View {
         }
 
         // ── Ensure WebView is loaded with payment buttons visible ──
-        ZSLogger.info("[UIKitSheetBridge] preloadAll: calling ensureReady +\(elapsedMs())ms", category: .checkout)
+        ZSLogger.error("[DIAG][UIKitSheetBridge] preloadAll: calling ensureReady +\(elapsedMs())ms", category: .checkout)
         let ready = await pool.ensureReady(for: product.id, url: url)
-        ZSLogger.info("[UIKitSheetBridge] preloadAll: ensureReady returned \(ready) +\(elapsedMs())ms — webView=\(preloader.webView == nil ? "nil" : "non-nil") inWindow=\(preloader.webView?.window != nil ? "yes" : "no") isReady=\(preloader.isReady) buttonsReady=\(preloader.buttonsReady) measuredContentHeight=\(preloader.measuredContentHeight)", category: .checkout)
+        ZSLogger.error("[DIAG][UIKitSheetBridge] preloadAll: ensureReady returned \(ready) +\(elapsedMs())ms — webView=\(preloader.webView == nil ? "nil" : "non-nil") inWindow=\(preloader.webView?.window != nil ? "yes" : "no") isReady=\(preloader.isReady) buttonsReady=\(preloader.buttonsReady) measuredContentHeight=\(preloader.measuredContentHeight)", category: .checkout)
 
         if !ready {
             guard !Task.isCancelled else { return }
@@ -932,11 +932,11 @@ internal struct UIKitSheetBridge<SheetHeader: View>: View {
         }
 
         guard CheckoutPresentationCoordinator.shared.acquire(for: product.id) else {
-            ZSLogger.info("[UIKitSheetBridge] preloadAll: presentation coordinator declined +\(elapsedMs())ms", category: .checkout)
+            ZSLogger.error("[DIAG][UIKitSheetBridge] preloadAll: presentation coordinator declined +\(elapsedMs())ms", category: .checkout)
             return
         }
 
-        ZSLogger.info("[UIKitSheetBridge] preloadAll: setting showSheet=true +\(elapsedMs())ms", category: .checkout)
+        ZSLogger.error("[DIAG][UIKitSheetBridge] preloadAll: setting showSheet=true +\(elapsedMs())ms", category: .checkout)
         showSheet = true
     }
 }
