@@ -1,11 +1,5 @@
 # Changelog
 
-## 1.5.0 — 2026-05-11
-
-No functional changes. Version aligned with `package:zerosettle` 1.5.0 and `io.zerosettle:zerosettle-android` 1.5.0 for cross-platform release symmetry — adopters consuming all three platforms can now pin one version number across iOS, Android, and Flutter.
-
-1.4.x was skipped on ZeroSettleKit; the previous release was 1.3.6.
-
 ## 1.3.6 — 2026-05-11
 
 Fixes checkout sheet shrink-mid-presentation on the UIKit static `CheckoutSheet.present(...)` path. Adopters using the SwiftUI `.checkoutSheet(item:)` modifier with `preload:` pre-warming are not affected.
