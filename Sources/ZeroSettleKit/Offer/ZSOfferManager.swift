@@ -1,6 +1,5 @@
 import Foundation
 import StoreKit
-import CryptoKit
 #if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
 #endif
@@ -85,9 +84,10 @@ public final class ZSOfferManager: ObservableObject {
     /// ## Bypassed gates (SDK-side)
     ///
     /// - active StoreKit subscription (for `needsAppleCancel` offers)
-    /// - rollout bucket hash
     /// - min / max subscription-tenure
     /// - "already has active web subscription"
+    ///
+    /// Note: rollout cohort is gated server-side (no client re-bucketing).
     ///
     /// ## Still enforced
     ///
@@ -387,17 +387,7 @@ public final class ZSOfferManager: ObservableObject {
     }
 
     private func resolveFromOffer(_ offer: Offer.OfferData, iap: ZeroSettle) {
-        // Rollout cohort check (skipped in demo mode — devs always see their tip)
-        if !Self.demoMode.isActive, let rollout = offer.rolloutPercent, rollout < 100 {
-            let digest = SHA256.hash(data: Data(userId.utf8))
-            let firstBytes = digest.prefix(4)
-            let hashValue = firstBytes.reduce(0) { ($0 << 8) | UInt32($1) }
-            let bucket = Int(hashValue % 100)
-            if bucket >= rollout {
-                state = .ineligible
-                return
-            }
-        }
+        // Rollout gate is server-side (api/services/offer_service.py); client-side re-bucketing was removed as redundant + risk of false exclusion.
 
         // Verify target product exists in catalog
         let targetId = offer.checkoutProductId

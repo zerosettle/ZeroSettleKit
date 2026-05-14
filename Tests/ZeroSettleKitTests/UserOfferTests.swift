@@ -294,4 +294,189 @@ final class UserOfferDecodingTests: XCTestCase {
         XCTAssertEqual(decoded.offer.checkoutPresentation, original.offer.checkoutPresentation)
         XCTAssertEqual(decoded, original)
     }
+
+    // MARK: - max_subscription_days / source / rollout_percent
+
+    /// Decodes a backend-shaped payload that includes all three fields the
+    /// iOS Kit previously dropped: `max_subscription_days`,
+    /// `source: "play_store"`, and `rollout_percent: 50`.
+    ///
+    /// Emit sites: `api/services/user_offer/types.py:106-138` (backend).
+    func testDecodePlayStoreSourceWithRolloutAndMaxDays() throws {
+        let json = """
+        {
+          "user_id": "u",
+          "app_id": 1,
+          "is_sandbox": false,
+          "subscription": { "type": "active_storekit", "product_id": "com.app.premium" },
+          "offer": {
+            "action_type": "migrate_storekit_to_web",
+            "is_eligible": true,
+            "checkout_product_id": "com.app.zs.premium",
+            "from_product_id": "com.app.premium",
+            "savings_percent": 15,
+            "free_trial_days": 3,
+            "min_subscription_days": 0,
+            "max_subscription_days": 90,
+            "display": null,
+            "proration": null,
+            "requires_apple_cancel": false,
+            "apple_subscription": null,
+            "checkout_presentation": null,
+            "experiment_variant_id": null,
+            "source": "play_store",
+            "rollout_percent": 50
+          },
+          "server_time": "2026-04-20T00:00:00+00:00"
+        }
+        """.data(using: .utf8)!
+
+        let response = try decoder.decode(UserOffer.Response.self, from: json)
+        XCTAssertEqual(response.offer.maxSubscriptionDays, 90)
+        XCTAssertEqual(response.offer.source, .playStore)
+        XCTAssertEqual(response.offer.rolloutPercent, 50)
+    }
+
+    /// Decodes the StoreKit-source variant (the typical iOS migration case).
+    func testDecodeStoreKitSource() throws {
+        let json = """
+        {
+          "user_id": "u",
+          "app_id": 1,
+          "is_sandbox": false,
+          "subscription": { "type": "active_storekit", "product_id": "com.app.premium" },
+          "offer": {
+            "action_type": "migrate_storekit_to_web",
+            "is_eligible": true,
+            "checkout_product_id": "com.app.zs.premium",
+            "from_product_id": "com.app.premium",
+            "savings_percent": 15,
+            "free_trial_days": 3,
+            "min_subscription_days": 0,
+            "max_subscription_days": 365,
+            "display": null,
+            "proration": null,
+            "requires_apple_cancel": true,
+            "apple_subscription": null,
+            "checkout_presentation": null,
+            "experiment_variant_id": null,
+            "source": "store_kit",
+            "rollout_percent": 100
+          },
+          "server_time": "2026-04-20T00:00:00+00:00"
+        }
+        """.data(using: .utf8)!
+
+        let response = try decoder.decode(UserOffer.Response.self, from: json)
+        XCTAssertEqual(response.offer.source, .storeKit)
+        XCTAssertEqual(response.offer.maxSubscriptionDays, 365)
+        XCTAssertEqual(response.offer.rolloutPercent, 100)
+    }
+
+    /// Backend omits `source` when the offer is web-only (e.g.
+    /// `upgrade_web_to_web` or `no_action`). The key is always present for
+    /// `max_subscription_days` (value may still be null). Verify both decode
+    /// to `nil`.
+    func testDecodeOmittedSourceAndNullMaxDays() throws {
+        let json = """
+        {
+          "user_id": "u",
+          "app_id": 1,
+          "is_sandbox": false,
+          "subscription": { "type": "active_web", "product_id": "com.app.zs.weekly" },
+          "offer": {
+            "action_type": "upgrade_web_to_web",
+            "is_eligible": true,
+            "checkout_product_id": "com.app.zs.monthly",
+            "from_product_id": "com.app.zs.weekly",
+            "savings_percent": 20,
+            "free_trial_days": 0,
+            "min_subscription_days": 0,
+            "max_subscription_days": null,
+            "display": null,
+            "proration": null,
+            "requires_apple_cancel": false,
+            "apple_subscription": null,
+            "checkout_presentation": "webview",
+            "experiment_variant_id": null,
+            "rollout_percent": 100
+          },
+          "server_time": "2026-04-20T00:00:00+00:00"
+        }
+        """.data(using: .utf8)!
+
+        let response = try decoder.decode(UserOffer.Response.self, from: json)
+        XCTAssertNil(response.offer.source)
+        XCTAssertNil(response.offer.maxSubscriptionDays)
+    }
+
+    /// Defensive default: if a server (or older test fixture) omits
+    /// `rollout_percent` entirely, decoding falls back to 100. Backend
+    /// currently always emits the field; this guards future schema drift.
+    func testDecodeOmittedRolloutPercentDefaultsTo100() throws {
+        let json = """
+        {
+          "user_id": "u",
+          "app_id": 1,
+          "is_sandbox": false,
+          "subscription": { "type": "none" },
+          "offer": {
+            "action_type": "no_action",
+            "is_eligible": false,
+            "checkout_product_id": "",
+            "from_product_id": null,
+            "savings_percent": 0,
+            "free_trial_days": 0,
+            "min_subscription_days": 0,
+            "display": null,
+            "proration": null,
+            "requires_apple_cancel": false,
+            "apple_subscription": null,
+            "checkout_presentation": null,
+            "experiment_variant_id": null
+          },
+          "server_time": "2026-04-20T00:00:00+00:00"
+        }
+        """.data(using: .utf8)!
+
+        let response = try decoder.decode(UserOffer.Response.self, from: json)
+        XCTAssertEqual(response.offer.rolloutPercent, 100)
+        XCTAssertNil(response.offer.maxSubscriptionDays)
+        XCTAssertNil(response.offer.source)
+    }
+
+    /// Unknown future `source` values must fail decoding loudly rather than
+    /// silently mapping to a default — adopters branching on `source` need
+    /// to know if the wire grows a new variant.
+    func testDecodeUnknownSourceFails() {
+        let json = """
+        {
+          "user_id": "u",
+          "app_id": 1,
+          "is_sandbox": false,
+          "subscription": { "type": "active_storekit", "product_id": "com.app.premium" },
+          "offer": {
+            "action_type": "migrate_storekit_to_web",
+            "is_eligible": true,
+            "checkout_product_id": "com.app.zs.premium",
+            "from_product_id": "com.app.premium",
+            "savings_percent": 10,
+            "free_trial_days": 0,
+            "min_subscription_days": 0,
+            "max_subscription_days": null,
+            "display": null,
+            "proration": null,
+            "requires_apple_cancel": true,
+            "apple_subscription": null,
+            "checkout_presentation": null,
+            "experiment_variant_id": null,
+            "source": "future_store",
+            "rollout_percent": 100
+          },
+          "server_time": "2026-04-20T00:00:00+00:00"
+        }
+        """.data(using: .utf8)!
+
+        XCTAssertThrowsError(try decoder.decode(UserOffer.Response.self, from: json))
+    }
 }

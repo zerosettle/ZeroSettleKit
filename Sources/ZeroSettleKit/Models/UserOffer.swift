@@ -108,12 +108,95 @@ public enum UserOffer {
         public let savingsPercent: Int
         public let freeTrialDays: Int
         public let minSubscriptionDays: Int
+        public let maxSubscriptionDays: Int?
         public let display: Display?
         public let proration: Proration?
         public let requiresAppleCancel: Bool
         public let appleSubscription: AppleSubscription?
         public let checkoutPresentation: CheckoutPresentation?
         public let experimentVariantId: Int?
+        public let source: SourceStorefront?
+        /// Informational — the server applies the rollout gate before responding;
+        /// the SDK does not re-bucket. Provided for telemetry and debug-screen
+        /// display.
+        public let rolloutPercent: Int
+
+        public init(
+            actionType: ActionType,
+            isEligible: Bool,
+            checkoutProductId: String,
+            fromProductId: String?,
+            savingsPercent: Int,
+            freeTrialDays: Int,
+            minSubscriptionDays: Int,
+            maxSubscriptionDays: Int? = nil,
+            display: Display?,
+            proration: Proration?,
+            requiresAppleCancel: Bool,
+            appleSubscription: AppleSubscription?,
+            checkoutPresentation: CheckoutPresentation?,
+            experimentVariantId: Int?,
+            source: SourceStorefront? = nil,
+            rolloutPercent: Int = 100
+        ) {
+            self.actionType = actionType
+            self.isEligible = isEligible
+            self.checkoutProductId = checkoutProductId
+            self.fromProductId = fromProductId
+            self.savingsPercent = savingsPercent
+            self.freeTrialDays = freeTrialDays
+            self.minSubscriptionDays = minSubscriptionDays
+            self.maxSubscriptionDays = maxSubscriptionDays
+            self.display = display
+            self.proration = proration
+            self.requiresAppleCancel = requiresAppleCancel
+            self.appleSubscription = appleSubscription
+            self.checkoutPresentation = checkoutPresentation
+            self.experimentVariantId = experimentVariantId
+            self.source = source
+            self.rolloutPercent = rolloutPercent
+        }
+
+        // No explicit CodingKeys: shared decoders (Backend.swift and the
+        // local UserOfferTests decoder) configure
+        // `keyDecodingStrategy = .convertFromSnakeCase`, which converts
+        // incoming JSON keys to camelCase BEFORE matching against
+        // CodingKey rawValues. Auto-synthesized CodingKeys use the
+        // camelCase property names as rawValues, which is exactly what
+        // we want. Declaring explicit snake_case raw values here would
+        // break decoding under that strategy (the strategy already
+        // rewrote the keys, so `"action_type"` raw values never match).
+        //
+        // The wire shape is documented in the comment block above; see
+        // also the backend emit site at
+        // `api/services/user_offer/types.py:106-138`.
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.actionType = try container.decode(ActionType.self, forKey: .actionType)
+            self.isEligible = try container.decode(Bool.self, forKey: .isEligible)
+            self.checkoutProductId = try container.decode(String.self, forKey: .checkoutProductId)
+            self.fromProductId = try container.decodeIfPresent(String.self, forKey: .fromProductId)
+            self.savingsPercent = try container.decode(Int.self, forKey: .savingsPercent)
+            self.freeTrialDays = try container.decode(Int.self, forKey: .freeTrialDays)
+            self.minSubscriptionDays = try container.decode(Int.self, forKey: .minSubscriptionDays)
+            self.maxSubscriptionDays = try container.decodeIfPresent(Int.self, forKey: .maxSubscriptionDays)
+            self.display = try container.decodeIfPresent(Display.self, forKey: .display)
+            self.proration = try container.decodeIfPresent(Proration.self, forKey: .proration)
+            self.requiresAppleCancel = try container.decode(Bool.self, forKey: .requiresAppleCancel)
+            self.appleSubscription = try container.decodeIfPresent(AppleSubscription.self, forKey: .appleSubscription)
+            self.checkoutPresentation = try container.decodeIfPresent(CheckoutPresentation.self, forKey: .checkoutPresentation)
+            self.experimentVariantId = try container.decodeIfPresent(Int.self, forKey: .experimentVariantId)
+            self.source = try container.decodeIfPresent(SourceStorefront.self, forKey: .source)
+            self.rolloutPercent = try container.decodeIfPresent(Int.self, forKey: .rolloutPercent) ?? 100
+        }
+    }
+
+    /// Originating storefront when an offer arises from an existing
+    /// store-managed subscription. `nil` for web-only flows (e.g.
+    /// `upgrade_web_to_web` or `no_action`).
+    public enum SourceStorefront: String, Codable, Equatable, Sendable {
+        case storeKit = "store_kit"
+        case playStore = "play_store"
     }
 
     /// Discriminator for the resolved action.
