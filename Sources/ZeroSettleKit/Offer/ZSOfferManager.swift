@@ -389,10 +389,9 @@ public final class ZSOfferManager: ObservableObject {
     private func resolveFromOffer(_ offer: Offer.OfferData, iap: ZeroSettle) {
         // Rollout gate is server-side (api/services/offer_service.py); client-side re-bucketing was removed as redundant + risk of false exclusion.
 
-        // Verify target product exists in catalog (case-insensitive — matches backend
-        // `Product.reference_id` semantics; see Array.containsMatching(id:)).
+        // Verify target product exists in catalog
         let targetId = offer.checkoutProductId
-        guard iap.products.containsMatching(id: targetId) else {
+        guard iap.products.contains(where: { $0.id == targetId }) else {
             ZSLogger.info("[OfferManager] Target product \(targetId) not found in catalog", category: .migration)
             state = .ineligible
             return

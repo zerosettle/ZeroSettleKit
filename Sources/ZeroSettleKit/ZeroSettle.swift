@@ -577,11 +577,8 @@ public final class ZeroSettle: ObservableObject {
     // MARK: - Convenience Lookups
 
     /// Returns the product with the given ID, if loaded.
-    ///
-    /// Lookup is case-insensitive to match backend `Product.reference_id`
-    /// semantics — see ``Array/firstMatching(id:)``.
     public func product(for id: String) -> ZSProduct? {
-        products.firstMatching(id: id)
+        products.first(where: { $0.id == id })
     }
 
     /// All currently active entitlements (any source).
@@ -1664,7 +1661,7 @@ public final class ZeroSettle: ObservableObject {
 #endif
 
         // Subscriptions and non-consumables require a userId for entitlement tracking
-        if let product = products.firstMatching(id: productId) {
+        if let product = products.first(where: { $0.id == productId }) {
             try validateUserIdIfRequired(for: product, userId: userId)
         }
 
@@ -1855,7 +1852,7 @@ public final class ZeroSettle: ObservableObject {
             throw ZeroSettleError.notConfigured
         }
 
-        guard let product = products.firstMatching(id: productId) else {
+        guard let product = products.first(where: { $0.id == productId }) else {
             throw ZeroSettleError.productNotFound(productId)
         }
 

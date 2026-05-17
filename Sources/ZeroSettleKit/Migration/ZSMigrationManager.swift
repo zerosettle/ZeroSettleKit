@@ -527,9 +527,7 @@ public final class ZSMigrationManager: ObservableObject {
         }
 
         // ── Check 10: Target product exists in catalog ──
-        // Case-insensitive — matches backend `Product.reference_id` semantics
-        // (see Array.firstMatching(id:)).
-        guard let targetProduct = catalogProducts.firstMatching(id: prompt.productId) else {
+        guard let targetProduct = catalogProducts.first(where: { $0.id == prompt.productId }) else {
             state = .ineligible
             offerData = nil
             ZSLogger.info("[MigrationTip] SKIP: target product \(prompt.productId) not found in catalog", category: .migration)
