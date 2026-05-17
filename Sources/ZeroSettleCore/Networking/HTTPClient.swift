@@ -37,12 +37,21 @@ public final class HTTPClient: @unchecked Sendable {
 
     public init(
         session: URLSession = .shared,
-        decoder: JSONDecoder = JSONDecoder(),
+        decoder: JSONDecoder = HTTPClient.defaultDecoder(),
         encoder: JSONEncoder = JSONEncoder()
     ) {
         self.session = session
         self.decoder = decoder
         self.encoder = encoder
+    }
+
+    /// Default decoder used when callers don't supply one. Uses the permissive
+    /// ISO 8601 strategy so the SDK never crashes on a date string with
+    /// sub-millisecond precision (e.g. microsecond timestamps from the IAP API).
+    public static func defaultDecoder() -> JSONDecoder {
+        let d = JSONDecoder()
+        d.dateDecodingStrategy = .iso8601Permissive
+        return d
     }
 
     // MARK: - GET
