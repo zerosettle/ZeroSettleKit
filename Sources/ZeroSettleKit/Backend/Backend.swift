@@ -801,8 +801,19 @@ internal final class Backend: @unchecked Sendable {
         catch { throw Self.wrapError(error) }
     }
 
-    private func apiURL(_ path: String) -> URL {
-        baseURL.appendingPathComponent(path)
+    /// Builds a full request URL for an API `path` (e.g. `iap/products/`).
+    ///
+    /// Backend endpoints are versioned under `/v1`. `baseURL` may be supplied
+    /// as the bare API origin (`https://api.zerosettle.io`) or already ending
+    /// in `/v1` — both normalize to exactly one `/v1` segment, so callers and
+    /// `setBaseUrlOverride` need not care which form is passed. This keeps the
+    /// base-URL contract consistent with the Android SDK, which takes the bare
+    /// origin and versions the path itself.
+    internal func apiURL(_ path: String) -> URL {
+        let versioned = baseURL.lastPathComponent == "v1"
+            ? baseURL
+            : baseURL.appendingPathComponent("v1")
+        return versioned.appendingPathComponent(path)
     }
 }
 

@@ -113,7 +113,9 @@ public enum ZeroSettleError: Error, LocalizedError {
     /// Web checkout is disabled for the user's jurisdiction.
     case webCheckoutDisabledForJurisdiction(Jurisdiction)
 
-    /// A `userId` is required for this product type (subscriptions, non-consumables).
+    /// No longer thrown. `purchase` / `purchaseViaStoreKit` now require an
+    /// identified user unconditionally and throw ``userNotIdentified`` instead.
+    /// Retained for binary/source compatibility; will be removed in ZeroSettleKit 2.0.
     case userIdRequired(productId: String)
 
     /// Entitlement restoration partially failed. Check `partialEntitlements` for what was recovered.
@@ -1019,18 +1021,6 @@ public final class ZeroSettle: ObservableObject {
         return userId
     }
 
-    /// Throws ``ZeroSettleError/userIdRequired(productId:)`` when a `userId` is needed but absent.
-    private func validateUserIdIfRequired(for product: ZSProduct, userId: String?) throws {
-        guard userId == nil else { return }
-        guard product.type == .autoRenewableSubscription
-                || product.type == .nonRenewingSubscription
-                || product.type == .nonConsumable else { return }
-#if DEBUG
-        assertionFailure("userId is required for \(product.type.rawValue) products. Pass a userId to purchase() or purchaseViaStoreKit().")
-#endif
-        throw ZeroSettleError.userIdRequired(productId: product.id)
-    }
-
     /// Update entitlements and notify all observers (delegate + AsyncStream +
     /// SwiftUI bindings).
     ///
@@ -1590,8 +1580,9 @@ public final class ZeroSettle: ObservableObject {
             // Detect jurisdiction from App Store storefront
             await detectJurisdiction()
 
-            // 2. Try to fetch ALL products from StoreKit (let StoreKit tell us what exists)
-            let allProductIds = products.map { $0.id }
+            // 2. Try to fetch ALL products from StoreKit, keyed by each product's
+            //    StoreKit SKU (storeKitProductId, falling back to the canonical id).
+            let allProductIds = products.map { $0.effectiveStoreKitId }
 
             // 3. Clean up expired unfinished transactions before purchasing
             if let storeKitManager {
@@ -1606,7 +1597,7 @@ public final class ZeroSettle: ObservableObject {
                 // Products that exist in StoreKit get _storeKitProduct populated
                 // Products that don't exist remain web-only
                 for i in products.indices {
-                    if let skProduct = skProducts[products[i].id] {
+                    if let skProduct = skProducts[products[i].effectiveStoreKitId] {
                         products[i]._storeKitProduct = skProduct
                     }
                 }
@@ -1632,16 +1623,20 @@ public final class ZeroSettle: ObservableObject {
     /// Opens a Stripe checkout page in the configured checkout type (Safari, SFSafariViewController,
     /// or WebView) and returns the verified transaction on success. For Safari/SafariVC paths, the
     /// result may arrive via the universal link callback or by polling the backend after the browser
-    /// is dismissed.
+    /// is dismissed. For the WebView type, checkout is hosted in an in-app sheet — the same
+    /// `CheckoutSheet` used by `presentPaymentSheet` and the `.checkoutSheet` modifier — which
+    /// preloads and reports completion directly; no universal link or backend polling is involved.
     ///
-    /// - Important: `userId` is **required** for subscriptions and non-consumable products.
-    ///   Passing `nil` for these product types throws ``ZeroSettleError/userIdRequired(productId:)``.
-    ///   Consumable products may omit `userId`.
+    /// - Important: An identified user is **required**. Call ``ZeroSettle/identify(_:)``
+    ///   with `.user(id:)` or `.anonymous` before purchasing — this method throws
+    ///   ``ZeroSettleError/userNotIdentified`` otherwise. `.deferred` does not count
+    ///   as identified.
     ///
     /// - Parameters:
     ///   - productId: The product identifier to purchase
-    ///   - userId: Your app's user identifier. Required for subscriptions and non-consumables.
-    ///     Must match your RevenueCat app user ID if using RC.
+    ///   - userId: (Deprecated) Explicit app user identifier. Prefer calling
+    ///     ``ZeroSettle/identify(_:)`` once, then `purchase` without `userId`.
+    ///     Will be removed in ZeroSettleKit 2.0.
     /// - Returns: The verified ``CheckoutTransaction`` on success
     @discardableResult
     public func purchase(
@@ -1660,10 +1655,10 @@ public final class ZeroSettle: ObservableObject {
         }
 #endif
 
-        // Subscriptions and non-consumables require a userId for entitlement tracking
-        if let product = products.first(where: { $0.id == productId }) {
-            try validateUserIdIfRequired(for: product, userId: userId)
-        }
+        // Purchases require an identified user. Honor an explicitly passed
+        // (deprecated) userId; otherwise resolve the user set via identify(_:).
+        // Throws userNotIdentified when neither is present.
+        let effectiveUserId = try userId ?? requireIdentifiedUserId()
 
         // Per-call override (e.g. server-driven `Offer.checkoutPresentation`)
         // beats the global setting. Falls back to the global type when nil.
@@ -1681,8 +1676,18 @@ public final class ZeroSettle: ObservableObject {
         armOfferForCheckoutIfApplicable(productId: productId)
 
         // Update StoreKit manager with user ID for future sync operations
-        if let userId {
-            setActiveUserId(userId)
+        setActiveUserId(effectiveUserId)
+
+        // WebView checkout renders inside a hosted WKWebView sheet — it cannot
+        // be handed off to a browser the way .safari/.safariVC are. Route it to
+        // the same CheckoutSheet UIKit bridge that `presentPaymentSheet` and the
+        // `.checkoutSheet` modifier use. CheckoutSheet creates its own
+        // inline-mode session and owns Apple Pay preflight, offer
+        // arming/completion, entitlement refresh, and the
+        // `zeroSettleCheckoutDidComplete` delegate call — so this branch returns
+        // before the browser-oriented flow below rather than duplicating it.
+        if effectiveType == .webView {
+            return try await presentWebViewCheckout(productId: productId, userId: effectiveUserId)
         }
 
         // Signal checkout started BEFORE opening browser
@@ -1697,7 +1702,7 @@ public final class ZeroSettle: ObservableObject {
                 do {
                     let result = try await nativePayFlow.pay(
                         productId: productId,
-                        userId: userId,
+                        userId: effectiveUserId,
                         merchantId: merchantId
                     )
                     pendingCheckout = false
@@ -1734,7 +1739,7 @@ public final class ZeroSettle: ObservableObject {
         do {
             let session = try await checkoutFlow.beginCheckout(
                 productId: productId,
-                userId: userId,
+                userId: effectiveUserId,
                 presentation: presentation
             )
 
@@ -1836,41 +1841,92 @@ public final class ZeroSettle: ObservableObject {
         }
     }
 
+    /// Presents the hosted WebView checkout sheet for `purchase()` when the
+    /// resolved checkout type is `.webView`, bridging `CheckoutSheet`'s
+    /// callback-based completion to async/await.
+    ///
+    /// `CheckoutSheet` creates its own inline-mode checkout session and, on
+    /// success, refreshes entitlements, applies offer completion, and fires the
+    /// `zeroSettleCheckoutDidComplete` delegate callback — so this method does
+    /// not repeat any of that. It owns only what `CheckoutSheet` leaves to the
+    /// caller: the `didBegin` signal, the `didCancel`/`didFail` signals (the
+    /// sheet fires `didComplete` but not these), and `pendingCheckout` state.
+    @MainActor
+    private func presentWebViewCheckout(
+        productId: String,
+        userId: String
+    ) async throws -> CheckoutTransaction {
+        guard let product = product(for: productId) else {
+            throw ZeroSettleError.checkoutFailed(reason: .productNotFound)
+        }
+        guard let topViewController = SafariPresentation.topViewController() else {
+            throw ZeroSettleError.checkoutFailed(
+                reason: .other("No view controller available to present the checkout sheet")
+            )
+        }
+
+        pendingCheckout = true
+        delegate?.zeroSettleCheckoutDidBegin(productId: productId)
+
+        do {
+            let transaction: CheckoutTransaction = try await withCheckedThrowingContinuation { continuation in
+                CheckoutSheet<EmptyView>.present(
+                    from: topViewController,
+                    product: product,
+                    userId: userId,
+                    onComplete: { result in
+                        continuation.resume(with: result)
+                    }
+                )
+            }
+            pendingCheckout = false
+            return transaction
+        } catch {
+            pendingCheckout = false
+            if case ZeroSettleError.cancelled = error {
+                delegate?.zeroSettleCheckoutDidCancel(productId: productId)
+            } else {
+                delegate?.zeroSettleCheckoutDidFail(productId: productId, error: error)
+            }
+            throw error
+        }
+    }
+
     /// Purchase a product via native StoreKit 2.
     ///
     /// Use this for products synced to App Store Connect where ``ZSProduct/storeKitAvailable`` is `true`.
     ///
-    /// - Important: `userId` is **required** for subscriptions and non-consumable products.
-    ///   Passing `nil` for these product types throws ``ZeroSettleError/userIdRequired(productId:)``.
+    /// - Important: An identified user is **required**. Call ``ZeroSettle/identify(_:)``
+    ///   with `.user(id:)` or `.anonymous` before purchasing — this method throws
+    ///   ``ZeroSettleError/userNotIdentified`` otherwise. `.deferred` does not count
+    ///   as identified.
     ///
     /// - Parameters:
     ///   - productId: The product identifier to purchase
-    ///   - userId: Your app's user identifier. Required for subscriptions and non-consumables.
+    ///   - userId: (Deprecated) Explicit app user identifier. Prefer calling
+    ///     ``ZeroSettle/identify(_:)`` once, then `purchaseViaStoreKit` without `userId`.
+    ///     Will be removed in ZeroSettleKit 2.0.
     /// - Returns: The verified StoreKit transaction
     public func purchaseViaStoreKit(productId: String, userId: String? = nil) async throws -> StoreKit.Transaction {
         guard let storeKitManager else {
             throw ZeroSettleError.notConfigured
         }
 
+        // Purchases require an identified user. Honor an explicitly passed
+        // (deprecated) userId; otherwise resolve the user set via identify(_:).
+        // Throws userNotIdentified when neither is present. Checked before the
+        // product lookup so the identity contract fails fast and consistently.
+        let effectiveUserId = try userId ?? requireIdentifiedUserId()
+
         guard let product = products.first(where: { $0.id == productId }) else {
             throw ZeroSettleError.productNotFound(productId)
         }
-
-        // Fall back to the identified user when caller passes no userId.
-        // The validateUserIdIfRequired check below will fail correctly if
-        // neither is set for a user-scoped product type.
-        let effectiveUserId = userId ?? currentUserId
-
-        // Subscriptions and non-consumables require a userId for entitlement tracking
-        try validateUserIdIfRequired(for: product, userId: effectiveUserId)
 
         guard let skProduct = product._storeKitProduct else {
             throw ZeroSettleError.productNotFound(productId)
         }
 
-        if let effectiveUserId {
-            setActiveUserId(effectiveUserId)
-        }
+        setActiveUserId(effectiveUserId)
 
         do {
             return try await storeKitManager.purchase(skProduct)

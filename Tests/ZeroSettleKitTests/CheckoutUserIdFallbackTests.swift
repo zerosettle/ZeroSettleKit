@@ -9,11 +9,11 @@
 //
 //  Background: prior to this test, the modifier structs and the UIKit static
 //  present(...) consumed `userId` raw — never consulting
-//  `ZeroSettle.shared.currentUserId`. `purchaseViaStoreKit` already did
-//  (ZeroSettle.swift:1862). The asymmetry surfaced the moment the Flutter
-//  example migrated to the identify()-then-userId-less API: every checkout
-//  failed with `PaymentSheetError.userIdRequired` because nil propagated all
-//  the way to CheckoutSheet's validation.
+//  `ZeroSettle.shared.currentUserId`. The asymmetry surfaced the moment the
+//  Flutter example migrated to the identify()-then-userId-less API: every
+//  checkout failed because nil propagated all the way to CheckoutSheet's
+//  validation. The modifiers now resolve `currentUserId`; an un-identified
+//  checkout fails with `ZeroSettleError.userNotIdentified`.
 //
 //  This test pins the contract: modifier paths honor `currentUserId` when
 //  the explicit `userId` is nil.
@@ -44,8 +44,9 @@ final class CheckoutUserIdFallbackTests: XCTestCase {
 
     // MARK: - Helpers
 
-    /// Minimal subscription product — `validateUserIdIfRequired` only fires
-    /// for sub/non-consumable types, so this is the type we need to test.
+    /// Minimal subscription product for exercising the modifier `effectiveUserId`
+    /// resolution. Checkout requires an identified user for all product types
+    /// (see `PurchaseIdentityGateTests` / `CheckoutSheet.identityError`).
     private func makeSubscription(id: String = "com.test.pro_monthly") -> ZSProduct {
         ZSProduct(
             id: id,
@@ -88,7 +89,7 @@ final class CheckoutUserIdFallbackTests: XCTestCase {
 
     /// THE REGRESSION: nil explicit userId + identified user must resolve to
     /// the identified user. Before this fix, the modifier consumed `userId`
-    /// raw and `CheckoutSheet`'s validation threw `userIdRequired`.
+    /// raw and `CheckoutSheet`'s validation rejected the checkout.
     func test_modifier_nil_explicit_falls_back_to_identified_user() async {
         await identifyUser("identified-alice")
 
@@ -105,9 +106,9 @@ final class CheckoutUserIdFallbackTests: XCTestCase {
                        "nil userId must fall back to ZeroSettle.shared.currentUserId")
     }
 
-    /// When neither is set, fallback stays nil. Validation downstream still
-    /// throws `userIdRequired` correctly in this case — that's the documented
-    /// behavior for adopters who never identify.
+    /// When neither is set, fallback stays nil — `CheckoutSheet` then fails
+    /// with `ZeroSettleError.userNotIdentified` for adopters who never
+    /// identify (see `CheckoutSheet.identityError`).
     func test_modifier_no_identify_and_nil_explicit_resolves_to_nil() {
         XCTAssertNil(ZeroSettle.shared.currentUserId,
                      "precondition: no identify() called")
@@ -122,7 +123,7 @@ final class CheckoutUserIdFallbackTests: XCTestCase {
             onComplete: { _ in }
         )
         XCTAssertNil(modifier.effectiveUserId,
-                     "nil userId + no identify() must resolve to nil (validation will fire later)")
+                     "nil userId + no identify() must resolve to nil (CheckoutSheet then fails with userNotIdentified)")
     }
 
     // MARK: - CheckoutSheetItemModifier
@@ -186,5 +187,68 @@ final class CheckoutUserIdFallbackTests: XCTestCase {
 
         XCTAssertEqual(modifier.effectiveUserId, "late-alice",
                        "effectiveUserId must re-evaluate against current ZeroSettle.shared.currentUserId on every read")
+    }
+
+    // MARK: - CheckoutSheet identity gate
+
+    /// `CheckoutSheet` receives the already-resolved effective userId. When it
+    /// is nil (no explicit id, no identified user) the sheet must deliver the
+    /// same `ZeroSettleError.userNotIdentified` `purchase()` throws to its
+    /// `onComplete` callback — not present an interstitial error sheet, not the
+    /// old `PaymentSheetError.userIdRequired`.
+    func test_checkoutSheet_noIdentifiedUser_deliversUserNotIdentifiedToCallback() {
+        var captured: Result<CheckoutTransaction, Error>?
+        let sheet = CheckoutSheet<EmptyView>(
+            product: makeSubscription(),
+            userId: nil,
+            header: { EmptyView() },
+            onComplete: { captured = $0 }
+        )
+        XCTAssertTrue(sheet.deliverIdentityErrorIfNeeded(),
+                      "a missing identity must block checkout")
+        guard case .failure(let error)? = captured,
+              case ZeroSettleError.userNotIdentified = error else {
+            return XCTFail("onComplete must receive .failure(.userNotIdentified), got \(String(describing: captured))")
+        }
+    }
+
+    /// The identity gate is unconditional — consumables require an identified
+    /// user too, matching `purchase()`'s all-product-types contract.
+    func test_checkoutSheet_consumable_noIdentifiedUser_alsoBlocked() {
+        let consumable = ZSProduct(
+            id: "com.test.coins_100",
+            displayName: "100 Coins",
+            productDescription: "test",
+            type: .consumable
+        )
+        var captured: Result<CheckoutTransaction, Error>?
+        let sheet = CheckoutSheet<EmptyView>(
+            product: consumable,
+            userId: nil,
+            header: { EmptyView() },
+            onComplete: { captured = $0 }
+        )
+        XCTAssertTrue(sheet.deliverIdentityErrorIfNeeded(),
+                      "a consumable with no identified user must also block checkout")
+        guard case .failure(let error)? = captured,
+              case ZeroSettleError.userNotIdentified = error else {
+            return XCTFail("onComplete must receive .failure(.userNotIdentified) for a consumable, got \(String(describing: captured))")
+        }
+    }
+
+    /// A resolved userId clears the gate — checkout proceeds and the gate
+    /// does not fire `onComplete`.
+    func test_checkoutSheet_withResolvedUserId_doesNotBlock() {
+        var captured: Result<CheckoutTransaction, Error>?
+        let sheet = CheckoutSheet<EmptyView>(
+            product: makeSubscription(),
+            userId: "identified-alice",
+            header: { EmptyView() },
+            onComplete: { captured = $0 }
+        )
+        XCTAssertFalse(sheet.deliverIdentityErrorIfNeeded(),
+                       "a resolved userId must not block checkout")
+        XCTAssertNil(captured,
+                     "onComplete must not fire from the identity gate when checkout may proceed")
     }
 }

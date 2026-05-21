@@ -20,7 +20,10 @@ public enum BillingInterval: String, Sendable, Codable, Hashable {
 // MARK: - ZSProduct
 
 /// A product available for web checkout via ZeroSettle.
-/// The `id` matches the StoreKit product identifier configured on the ZeroSettle dashboard.
+///
+/// `id` is ZeroSettle's canonical product identifier; the App Store Connect
+/// SKU is the separate `storeKitProductId` field. Use `effectiveStoreKitId`
+/// for StoreKit product lookups.
 public struct ZSProduct: Identifiable, Sendable {
 
     // MARK: - Nested Types
@@ -35,8 +38,18 @@ public struct ZSProduct: Identifiable, Sendable {
 
     // MARK: - Properties
 
-    /// StoreKit product identifier (e.g., "com.app.premium_monthly")
+    /// Canonical ZeroSettle product identifier. Not necessarily a store SKU —
+    /// see `storeKitProductId` for the App Store Connect identifier.
     public let id: String
+
+    /// App Store Connect product identifier, when the backend maps one distinct
+    /// from `id`. `nil` when unmapped — `effectiveStoreKitId` then uses `id`.
+    public let storeKitProductId: String?
+
+    /// Identifier to use for StoreKit product lookups: the App Store Connect
+    /// SKU when mapped, otherwise the canonical `id`. Mirrors the Android SDK's
+    /// `playProductId ?: id` resolution so both platforms behave identically.
+    internal var effectiveStoreKitId: String { storeKitProductId ?? id }
 
     /// Display name for the product
     public let displayName: String
@@ -179,6 +192,7 @@ public struct ZSProduct: Identifiable, Sendable {
 
     public init(
         id: String,
+        storeKitProductId: String? = nil,
         displayName: String,
         productDescription: String,
         type: ProductType,
@@ -192,6 +206,7 @@ public struct ZSProduct: Identifiable, Sendable {
         isTrialEligible: Bool? = nil
     ) {
         self.id = id
+        self.storeKitProductId = storeKitProductId
         self.displayName = displayName
         self.productDescription = productDescription
         self.type = type
@@ -212,6 +227,7 @@ public struct ZSProduct: Identifiable, Sendable {
 extension ZSProduct: Codable {
     private enum CodingKeys: String, CodingKey {
         case id
+        case storeKitProductId = "storekitProductId"
         case displayName
         case productDescription
         case type
@@ -228,6 +244,7 @@ extension ZSProduct: Codable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
+        storeKitProductId = try container.decodeIfPresent(String.self, forKey: .storeKitProductId)
         displayName = try container.decode(String.self, forKey: .displayName)
         productDescription = try container.decode(String.self, forKey: .productDescription)
         type = try container.decode(ProductType.self, forKey: .type)
@@ -245,6 +262,7 @@ extension ZSProduct: Codable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
+        try container.encodeIfPresent(storeKitProductId, forKey: .storeKitProductId)
         try container.encode(displayName, forKey: .displayName)
         try container.encode(productDescription, forKey: .productDescription)
         try container.encode(type, forKey: .type)
@@ -265,6 +283,7 @@ extension ZSProduct: Equatable {
     public static func == (lhs: ZSProduct, rhs: ZSProduct) -> Bool {
         // Compare all codable properties (ignoring internal _storeKitProduct)
         lhs.id == rhs.id &&
+        lhs.storeKitProductId == rhs.storeKitProductId &&
         lhs.displayName == rhs.displayName &&
         lhs.productDescription == rhs.productDescription &&
         lhs.type == rhs.type &&

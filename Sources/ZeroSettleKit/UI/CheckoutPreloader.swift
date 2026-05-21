@@ -602,14 +602,16 @@ internal final class CheckoutPreloaderPool: ObservableObject {
     func ensureReady(for productId: String, url: URL) async -> Bool {
         let preloader = preloader(for: productId)
 
-        if !preloader.isAlive {
-            if preloader.isReady {
-                // Process died after ready signal — discard the dead WebView.
-                ZSLogger.info("[Pool] ensureReady: WebView was ready but process died — resetting \(productId)", category: .checkout)
-                preloader.reset()
-            }
-            await preloader.loadAndWait(url: url)
-        }
+        // Always route through loadAndWait — it is idempotent and URL-aware:
+        // it reuses an alive WebView already loaded for THIS exact `url`, and
+        // otherwise (a different checkout URL, or a dead content process)
+        // discards it and loads fresh. Gating this on `isAlive` was a staleness
+        // bug — `isAlive` (webView != nil && isReady && url != nil) never
+        // compares URLs, so a preloader left ready for a *previous* checkout
+        // short-circuited the gate and the sheet presented against a stale
+        // WebView: a wrong/old PaymentIntent and a premature content height,
+        // which the live sheet then cold-reloads and visibly resizes.
+        await preloader.loadAndWait(url: url)
 
         if !preloader.buttonsReady {
             let ok = await preloader.waitForButtonsReady()

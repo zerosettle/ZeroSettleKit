@@ -61,3 +61,6 @@ fastlane/test_output
 .idea/
 
 docs/
+
+# Working notes / scratch
+tasks/

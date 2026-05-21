@@ -369,6 +369,14 @@ public struct CheckoutSheet<Header: View>: View {
     private let header: Header
     private let onComplete: (Result<CheckoutTransaction, Error>) -> Void
 
+    /// The blocking identity error, or `nil` when checkout may proceed.
+    /// Checkout requires an identified user; `userId` is already the effective
+    /// id (explicit, or resolved from `identify(_:)`), so `nil` means no user
+    /// is identified. Mirrors `ZeroSettle.purchase()`'s identify-first contract.
+    internal var identityError: ZeroSettleError? {
+        userId == nil ? .userNotIdentified : nil
+    }
+
     // MARK: - State (see file header for height management documentation)
 
     @Environment(\.dismiss) private var dismiss
@@ -651,14 +659,11 @@ extension CheckoutSheet {
                 """, completionHandler: nil)
         }
         .task {
-            // Validate userId for subscription/non-consumable products
-            if userId == nil {
-                let type = product.type
-                if type == .autoRenewableSubscription || type == .nonRenewingSubscription || type == .nonConsumable {
-                    loadError = PaymentSheetError.userIdRequired
-                    return
-                }
-            }
+            // Checkout requires an identified user. Deliver the failure to
+            // `onComplete` and dismiss — the adopter catches the same
+            // `userNotIdentified` error `purchase()` throws, with no
+            // interstitial error UI.
+            if deliverIdentityErrorIfNeeded() { return }
 
             // For preloaded views, checkoutURL and transactionId are set in init
             // (avoids a ProgressView flash on the first frame). Only fetch if missing.
@@ -719,6 +724,20 @@ extension CheckoutSheet {
     }
 
     // MARK: - Actions
+
+    /// Enforces the identify-first contract for checkout. When no user is
+    /// identified, dismisses the sheet and delivers
+    /// ``ZeroSettleError/userNotIdentified`` to `onComplete` — the same error
+    /// ``ZeroSettle/purchase(productId:userId:presentation:)`` throws — so
+    /// adopters catch one canonical error regardless of checkout entry point.
+    /// Returns `true` when checkout was blocked and the caller should stop.
+    @discardableResult
+    internal func deliverIdentityErrorIfNeeded() -> Bool {
+        guard let identityError else { return false }
+        dismiss()
+        onComplete(.failure(identityError))
+        return true
+    }
 
     private func initiateCheckout() async {
         guard let config = ZeroSettle.shared.currentConfig,
@@ -857,13 +876,19 @@ extension CheckoutSheet {
     }
 
     private func verifyAndComplete(transactionId: String) async {
-        // Dismiss immediately for responsive UX — verification continues in background.
-        // The onComplete closure is captured by the Task and fires when ready.
-        dismiss()
-
+        // Deliver the result via `onComplete` BEFORE dismissing. The sheet
+        // bridges (`UIKitSheetBridge` / `WindowLevelSheetBridge`) set their
+        // `didComplete` flag inside `onComplete`, and surface a `.cancelled`
+        // from `.sheet`'s `onDismiss` only while `didComplete` is still false.
+        // Dismissing first lets the dismiss animation finish during the
+        // `await` below — `onDismiss` then fires a spurious `.cancelled` and
+        // the real result fires second. For callers that bridge `onComplete`
+        // onto a continuation (`presentWebViewCheckout`) that double-resume
+        // is a fatal crash. So: verify, deliver the result, THEN dismiss.
         guard let config = ZeroSettle.shared.currentConfig,
               let baseURL = ZeroSettle.shared.effectiveBaseURL else {
             onComplete(.failure(PaymentSheetError.notConfigured))
+            dismiss()
             return
         }
 
@@ -877,10 +902,12 @@ extension CheckoutSheet {
             // the .checkoutSheet WebView branch was the only gap.
             await ZeroSettle.shared.refreshEntitlementsAfterCheckout(transaction: transaction)
             onComplete(.success(transaction))
+            dismiss()
             // Fire delegate for consistency across all checkout types
             await ZeroSettle.shared.delegate?.zeroSettleCheckoutDidComplete(transaction: transaction)
         } catch {
             onComplete(.failure(PaymentSheetError.verificationFailed(error.localizedDescription)))
+            dismiss()
         }
     }
 }
@@ -1235,7 +1262,9 @@ internal struct PaymentFailureDetail: Sendable {
 ///   - `.paymentFailed` → ``ZeroSettleError/checkoutFailed(reason:)``
 ///   - `.verificationFailed` → ``ZeroSettleError/transactionVerificationFailed(_:)``
 ///   - `.preloadFailed` → ``ZeroSettleError/apiError(_:)``
-///   - `.userIdRequired` → ``ZeroSettleError/userIdRequired(productId:)``
+///
+/// A checkout started without an identified user fails with
+/// ``ZeroSettleError/userNotIdentified`` directly (not a `PaymentSheetError`).
 internal enum PaymentSheetError: Error, LocalizedError {
     case cancelled
     case notConfigured
@@ -1244,7 +1273,6 @@ internal enum PaymentSheetError: Error, LocalizedError {
     case verificationTimedOut
     case verificationFailed(String)
     case preloadFailed(APIErrorDetail)
-    case userIdRequired
 
     public var errorDescription: String? {
         switch self {
@@ -1255,7 +1283,6 @@ internal enum PaymentSheetError: Error, LocalizedError {
         case .verificationTimedOut: return "Transaction verification timed out"
         case .verificationFailed(let message): return "Verification failed: \(message)"
         case .preloadFailed(let detail): return detail.errorDescription
-        case .userIdRequired: return "A userId is required for subscriptions and non-consumable products."
         }
     }
 }

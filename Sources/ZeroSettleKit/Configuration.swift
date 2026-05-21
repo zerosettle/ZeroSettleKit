@@ -23,5 +23,5 @@ public enum Configuration {
     /// the wrapper podspecs (Flutter, React Native). The backend uses this
     /// to gate the deferred-mode pivot — see
     /// `backend/api/services/sdk_version.py:MIN_DEFERRED_VERSION`.
-    public static let sdkVersion: String = "1.3.4"
+    public static let sdkVersion: String = "1.4.0"
 }

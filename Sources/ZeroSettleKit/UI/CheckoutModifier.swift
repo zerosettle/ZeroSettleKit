@@ -214,6 +214,7 @@ internal struct WindowLevelSheetBridge<SheetHeader: View>: View {
                             transactionId: transactionId,
                             header: header
                         ) { result in
+                            guard !didComplete else { return }
                             didComplete = true
                             onComplete(result)
                         }
@@ -224,6 +225,7 @@ internal struct WindowLevelSheetBridge<SheetHeader: View>: View {
                             dismissible: dismissible,
                             header: header
                         ) { result in
+                            guard !didComplete else { return }
                             didComplete = true
                             onComplete(result)
                         }
@@ -861,6 +863,7 @@ internal struct UIKitSheetBridge<SheetHeader: View>: View {
                         transactionId: preloadedTransactionId,
                         header: header
                     ) { result in
+                        guard !didComplete else { return }
                         didComplete = true
                         if case .success = result {
                             handleCheckoutSuccess(
@@ -882,6 +885,7 @@ internal struct UIKitSheetBridge<SheetHeader: View>: View {
                         transactionId: transactionId,
                         header: header
                     ) { result in
+                        guard !didComplete else { return }
                         didComplete = true
                         onComplete(result)
                     }

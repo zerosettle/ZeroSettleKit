@@ -358,11 +358,11 @@ extension CheckoutSheet {
             return
         }
 
-        // Resolve identity: if caller passes nil, fall back to the user
+        // Resolve identity: if the caller passes nil, fall back to the user
         // identified via `ZeroSettle.shared.identify(...)`. Mirrors the
-        // userId-less ergonomic of `purchaseViaStoreKit` (ZeroSettle.swift:1862).
-        // Validation downstream still throws `userIdRequired` correctly when
-        // BOTH are nil for a user-scoped product type.
+        // userId-less ergonomic of `purchase()` / `purchaseViaStoreKit`.
+        // When BOTH are nil, the checkout sheet fails with
+        // `ZeroSettleError.userNotIdentified` (see `CheckoutSheet.identityError`).
         let effectiveUserId = userId ?? ZeroSettle.shared.currentUserId
 
         // Auto-bookkeeping: arm the offer state machine if this purchase is

@@ -137,6 +137,51 @@ final class ProductTests: XCTestCase {
         XCTAssertEqual(decoded.promotion?.type, .percentOff)
     }
 
+    func testStoreKitProductIdResolution() throws {
+        // effectiveStoreKitId prefers the mapped App Store SKU…
+        let mapped = ZSProduct(
+            id: "io.ZeroSettle.JustOneFlutter.5StreakSaver",
+            storeKitProductId: "com.app.streaksaver5",
+            displayName: "Streak Saver",
+            productDescription: "5 streak savers",
+            type: .consumable
+        )
+        XCTAssertEqual(mapped.effectiveStoreKitId, "com.app.streaksaver5")
+
+        // …and falls back to the canonical id when no SKU is mapped.
+        let unmapped = ZSProduct(
+            id: "com.app.premium",
+            displayName: "Premium",
+            productDescription: "Unlock all features",
+            type: .autoRenewableSubscription
+        )
+        XCTAssertNil(unmapped.storeKitProductId)
+        XCTAssertEqual(unmapped.effectiveStoreKitId, "com.app.premium")
+
+        // storeKitProductId round-trips through Codable.
+        let data = try JSONEncoder().encode(mapped)
+        let decoded = try JSONDecoder().decode(ZSProduct.self, from: data)
+        XCTAssertEqual(decoded.storeKitProductId, "com.app.streaksaver5")
+        XCTAssertEqual(decoded.effectiveStoreKitId, "com.app.streaksaver5")
+    }
+
+    func testStoreKitProductIdDecodesFromSnakeCaseWire() throws {
+        // The backend wire key is `storekit_product_id`; the SDK's Backend
+        // decoder applies .convertFromSnakeCase before matching CodingKeys.
+        let json = """
+        {"id":"io.ZeroSettle.JustOneFlutter.5StreakSaver",
+         "storekit_product_id":"com.app.streaksaver5",
+         "display_name":"Streak Saver","product_description":"5 streak savers",
+         "type":"consumable"}
+        """.data(using: .utf8)!
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let decoded = try decoder.decode(ZSProduct.self, from: json)
+        XCTAssertEqual(decoded.id, "io.ZeroSettle.JustOneFlutter.5StreakSaver")
+        XCTAssertEqual(decoded.storeKitProductId, "com.app.streaksaver5")
+        XCTAssertEqual(decoded.effectiveStoreKitId, "com.app.streaksaver5")
+    }
+
     func testProductTypeRawValues() {
         XCTAssertEqual(ZSProduct.ProductType.autoRenewableSubscription.rawValue, "auto_renewable_subscription")
         XCTAssertEqual(ZSProduct.ProductType.nonRenewingSubscription.rawValue, "non_renewing_subscription")
