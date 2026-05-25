@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'ZeroSettleKit'
-  s.version          = '1.4.0'
+  s.version          = '1.4.1'
   s.summary          = 'Merchant of Record SDK for iOS — web checkout, entitlements, and compliance.'
   s.description      = <<-DESC
     ZeroSettleKit lets iOS developers process payments via web checkout
