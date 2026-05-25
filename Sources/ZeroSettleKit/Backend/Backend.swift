@@ -539,10 +539,21 @@ internal final class Backend: @unchecked Sendable {
     /// it routes to the bulk reconcile handler. Legacy single-tx callers
     /// (syncStoreKitTransaction above) are unaffected.
     ///
+    /// Chunks the entry list into batches of `reconcileChunkSize` and posts
+    /// each batch sequentially. Each entry's JWS is ~3 KB and the renewal
+    /// info adds another ~3 KB — at 250 entries per chunk the request body
+    /// stays around 1.5 MB, comfortably under Django's 10 MB
+    /// `DATA_UPLOAD_MAX_MEMORY_SIZE` and any intermediate proxy limit.
+    /// Devices with long Apple-side histories (1000+ entries) used to hit
+    /// `RequestDataTooBig` on the all-in-one payload. Responses are
+    /// aggregated so the caller still sees one combined summary.
+    ///
     /// - Parameters:
     ///   - entries: Built by `SubscriptionStateReconciler.gather()`.
     ///   - userId: The developer's user identifier.
-    ///   - clientRequestId: SDK-generated UUID per call; logged for support.
+    ///   - clientRequestId: SDK-generated UUID per call; the chunk index is
+    ///     appended (e.g. `…-1of4`) for log correlation across the per-chunk
+    ///     server-side `[storekit_recon]` lines.
     ///   - clientSdkVersion: For future migration / deprecation tracking.
     func reconcileSubscriptionStates(
         entries: [SubscriptionStateEntry],
@@ -551,19 +562,73 @@ internal final class Backend: @unchecked Sendable {
         clientSdkVersion: String = "unknown"
     ) async throws -> ReconcileSubscriptionStatesResponse {
         let url = apiURL("iap/storekit-transactions/")
-        let body = ReconcileSubscriptionStatesRequest(
-            transactions: entries,
-            userId: userId,
-            clientRequestId: clientRequestId,
-            clientSdkVersion: clientSdkVersion
-        )
-        return try await wrapped {
-            try await httpClient.post(
-                url, body: body, headers: authHeaders,
-                responseType: ReconcileSubscriptionStatesResponse.self
+        // Empty payload: still issue one call so the backend records a
+        // no-op reconcile and the caller's logging matches the historical
+        // shape. Cheap (~zero body) and the response.processed=0 short-
+        // circuits.
+        if entries.isEmpty {
+            let body = ReconcileSubscriptionStatesRequest(
+                transactions: [],
+                userId: userId,
+                clientRequestId: clientRequestId,
+                clientSdkVersion: clientSdkVersion
             )
+            return try await wrapped {
+                try await httpClient.post(
+                    url, body: body, headers: authHeaders,
+                    responseType: ReconcileSubscriptionStatesResponse.self
+                )
+            }
         }
+
+        let chunkSize = Self.reconcileChunkSize
+        let chunks: [[SubscriptionStateEntry]] = stride(
+            from: 0, to: entries.count, by: chunkSize
+        ).map { Array(entries[$0..<min($0 + chunkSize, entries.count)]) }
+        let chunkCount = chunks.count
+
+        var totalProcessed = 0
+        var totalEmitted = 0
+        var combinedSkipped: [ReconcileSubscriptionStatesResponse.SkipEntry] = []
+        var lastStatus = "ok"
+
+        for (idx, chunk) in chunks.enumerated() {
+            // Sequential — keeps backpressure simple and avoids hammering
+            // the backend with N parallel writes against the same identity.
+            let chunkRequestId = chunkCount == 1
+                ? clientRequestId
+                : "\(clientRequestId)-\(idx + 1)of\(chunkCount)"
+            let body = ReconcileSubscriptionStatesRequest(
+                transactions: chunk,
+                userId: userId,
+                clientRequestId: chunkRequestId,
+                clientSdkVersion: clientSdkVersion
+            )
+            let response: ReconcileSubscriptionStatesResponse = try await wrapped {
+                try await httpClient.post(
+                    url, body: body, headers: authHeaders,
+                    responseType: ReconcileSubscriptionStatesResponse.self
+                )
+            }
+            totalProcessed += response.processed
+            totalEmitted += response.eventsEmitted
+            if let s = response.skipped { combinedSkipped.append(contentsOf: s) }
+            lastStatus = response.status
+        }
+
+        return ReconcileSubscriptionStatesResponse(
+            status: lastStatus,
+            processed: totalProcessed,
+            eventsEmitted: totalEmitted,
+            skipped: combinedSkipped.isEmpty ? nil : combinedSkipped
+        )
     }
+
+    /// Maximum entries per POST to `iap/storekit-transactions/` bulk
+    /// reconcile. Chosen so the serialized body stays comfortably under
+    /// Django's 10 MB `DATA_UPLOAD_MAX_MEMORY_SIZE` (each entry ≈ 3–6 KB,
+    /// 250 × 6 KB ≈ 1.5 MB). Tune if the backend cap or JWS sizes change.
+    private static let reconcileChunkSize = 250
 
     /// Explicitly claim a StoreKit entitlement for the current user, even if
     /// another ZeroSettle account originally purchased it on this Apple ID.
