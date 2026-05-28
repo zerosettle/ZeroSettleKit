@@ -185,6 +185,7 @@ public final class ZSOfferManager: ObservableObject {
     private var preloadTask: Task<URL?, Never>?
     private var monitorObservationTask: Task<Void, Never>?
     private var checkoutPollTask: Task<Void, Never>?
+    private let impressionDedupe = ImpressionDedupe()
 
     // Persistence keys
     private static let dismissedKeyPrefix = "com.zerosettle.offerTipDismissed"
@@ -1007,6 +1008,38 @@ public final class ZSOfferManager: ObservableObject {
 
     private func makeBackend() throws -> Backend {
         try ZeroSettle.shared.makeBackend()
+    }
+
+    // MARK: - Impression Reporting
+
+    /// Report a real on-screen impression of the offer banner — once per
+    /// (session, variant). Safe to call repeatedly (e.g. on every scroll frame);
+    /// the dedupe gate makes all but the first call a no-op.
+    func reportImpressionIfNeeded() {
+        guard let data = offerData else { return }
+        let session = ZeroSettle.shared.sessionId
+        let key = "\(session):\(data.variantId ?? -1)"
+        guard impressionDedupe.shouldReport(key) else { return }
+
+        let flow: String
+        switch data.flowType {
+        case .migration: flow = "migration"
+        case .upgrade:   flow = "upgrade"
+        }
+        let uid = userId
+        let productId = data.productId
+        let variantId = data.variantId
+        Task {
+            do {
+                let backend = try makeBackend()
+                try await backend.reportOfferViewed(
+                    userId: uid, productId: productId,
+                    sessionId: session, variantId: variantId, flowType: flow
+                )
+            } catch {
+                ZSLogger.debug("[OfferManager] reportOfferViewed failed: \(error)", category: .migration)
+            }
+        }
     }
 
     // MARK: - Dismissal Persistence
