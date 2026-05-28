@@ -1018,7 +1018,8 @@ public final class ZSOfferManager: ObservableObject {
     func reportImpressionIfNeeded() {
         guard let data = offerData else { return }
         let session = ZeroSettle.shared.sessionId
-        let key = "\(session):\(data.variantId ?? -1)"
+        let uid = userId.isEmpty ? "anonymous" : userId
+        let key = "\(uid):\(session):\(data.variantId ?? -1)"
         guard impressionDedupe.shouldReport(key) else { return }
 
         let flow: String
@@ -1026,7 +1027,6 @@ public final class ZSOfferManager: ObservableObject {
         case .migration: flow = "migration"
         case .upgrade:   flow = "upgrade"
         }
-        let uid = userId
         let productId = data.productId
         let variantId = data.variantId
         Task {

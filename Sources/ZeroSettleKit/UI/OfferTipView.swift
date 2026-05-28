@@ -60,7 +60,7 @@ extension OfferSafariCoordinator: @preconcurrency UIAdaptivePresentationControll
 #endif
 
 private struct BannerFramePreferenceKey: PreferenceKey {
-    nonisolated(unsafe) static var defaultValue: CGRect = .zero
+    static var defaultValue: CGRect { .zero }
     static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
 }
 
