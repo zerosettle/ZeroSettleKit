@@ -495,6 +495,26 @@ internal final class Backend: @unchecked Sendable {
         try await wrapped { try await httpClient.postVoid(url, body: body, headers: authHeaders) }
     }
 
+    // MARK: - Offer Impression Tracking
+
+    /// Report that the offer banner was actually on screen (fire-and-forget).
+    /// Dedup is once per (user, session, variant); the backend enforces it via a
+    /// unique constraint, so client retries/double-fires never double-count.
+    func reportOfferViewed(
+        userId: String,
+        productId: String,
+        sessionId: String,
+        variantId: Int?,
+        flowType: String
+    ) async throws {
+        let url = apiURL("iap/offer-viewed/")
+        let body = TrackOfferViewedRequest(
+            userId: userId, productId: productId,
+            sessionId: sessionId, variantId: variantId, flowType: flowType
+        )
+        try await wrapped { try await httpClient.postVoid(url, body: body, headers: authHeaders) }
+    }
+
     // MARK: - StoreKit Transaction Sync
 
     /// Forward a StoreKit transaction's JWS representation for server-side verification.
@@ -1241,6 +1261,14 @@ internal struct TrackFunnelEventRequest: Encodable {
     let productId: String
     let screenName: String?
     let metadata: [String: String]?
+}
+
+internal struct TrackOfferViewedRequest: Encodable {
+    let userId: String
+    let productId: String
+    let sessionId: String
+    let variantId: Int?
+    let flowType: String
 }
 
 internal struct StoreKitSubscriptionStatusResponse: Decodable {
