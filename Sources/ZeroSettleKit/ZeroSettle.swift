@@ -2033,6 +2033,35 @@ public final class ZeroSettle: ObservableObject {
         }
     }
 
+    /// Fire-and-forget: report that an offer banner was shown on screen.
+    /// For integrators who render their own offer UI (the built-in
+    /// `OfferTipView` reports automatically). Uses the SDK's per-launch
+    /// `sessionId`; the backend dedups once per (user, session, variant).
+    public nonisolated static func reportOfferViewed(
+        productId: String,
+        variantId: Int? = nil,
+        flowType: String = "migration"
+    ) {
+        Task.detached(priority: .utility) {
+            let instance = await ZeroSettle.shared
+            guard let backend = await instance.backend else {
+                ZSLogger.debug("reportOfferViewed: SDK not configured, dropping", category: .general)
+                return
+            }
+            let userId = await instance.storeKitManager?.currentUserId ?? "anonymous"
+            let sessionId = await instance.sessionId
+            do {
+                try await backend.reportOfferViewed(
+                    userId: userId, productId: productId,
+                    sessionId: sessionId, variantId: variantId, flowType: flowType
+                )
+                ZSLogger.debug("reportOfferViewed: sent for product=\(productId)", category: .general)
+            } catch {
+                ZSLogger.debug("reportOfferViewed: failed: \(error)", category: .general)
+            }
+        }
+    }
+
     // MARK: - Universal Link Handling
 
     /// Handle a universal link callback from the web checkout.
