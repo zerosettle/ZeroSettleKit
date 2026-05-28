@@ -420,6 +420,18 @@ public final class ZeroSettle: ObservableObject {
     /// Whether the SDK has been configured.
     public private(set) var isConfigured: Bool = false
 
+    /// Per-launch session identifier (new each process start; regenerated on
+    /// `logout()`). Sent with on-screen offer impressions so the backend can
+    /// dedup once per (user, session, variant). In-memory only — NOT persisted,
+    /// unlike the anonymous-session UUID.
+    public private(set) var sessionId: String = UUID().uuidString.lowercased()
+
+    /// Regenerate the per-launch session id (called on logout so a new
+    /// signed-in/guest session starts a fresh impression window).
+    internal func regenerateSessionId() {
+        sessionId = UUID().uuidString.lowercased()
+    }
+
     /// Cached products from the last `fetchProducts()` call.
     public private(set) var products: [ZSProduct] = []
 
@@ -843,6 +855,7 @@ public final class ZeroSettle: ObservableObject {
         // inheriting A's. The invariant "same UUID across launches" is
         // scoped to a session, not an install.
         UserDefaults.standard.removeObject(forKey: Self.anonymousSessionUUIDKey)
+        regenerateSessionId()
 
         // Deferred-identification flag — logout means we no longer have
         // an explicit "auth coming later" assertion. The next configure()
