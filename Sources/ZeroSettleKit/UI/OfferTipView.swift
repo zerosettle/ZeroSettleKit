@@ -59,6 +59,11 @@ extension OfferSafariCoordinator: @preconcurrency UIAdaptivePresentationControll
 }
 #endif
 
+private struct BannerFramePreferenceKey: PreferenceKey {
+    nonisolated(unsafe) static var defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
+}
+
 // MARK: - Unified Offer Tip View
 
 /// Unified offer tip card for both migration and upgrade flows.
@@ -276,6 +281,22 @@ public struct OfferTipView: View {
                     Color.clear.frame(height: 0)
                 } else {
                     offerCardView
+                        .background(
+                            GeometryReader { geo in
+                                Color.clear.preference(
+                                    key: BannerFramePreferenceKey.self,
+                                    value: geo.frame(in: .global)
+                                )
+                            }
+                        )
+                        .onPreferenceChange(BannerFramePreferenceKey.self) { frame in
+                            // UIScreen.main.bounds is the visible-viewport proxy. The
+                            // manager's dedupe gate means repeated scroll-driven
+                            // callbacks fire the network at most once per session.
+                            if BannerVisibility.isOnScreen(frame, in: UIScreen.main.bounds, threshold: 0.5) {
+                                Task { @MainActor in manager.reportImpressionIfNeeded() }
+                            }
+                        }
                 }
 
             case .accepted:
