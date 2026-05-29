@@ -355,6 +355,7 @@ public final class ZSOfferManager: ObservableObject {
         // Check dismissal
         if Self.isPermanentlyDismissed(forUserId: userId) {
             state = .ineligible
+            ZeroSettle.shared.setCurrentOffer(nil)
             return
         }
 
@@ -365,6 +366,7 @@ public final class ZSOfferManager: ObservableObject {
         // fail at checkout time anyway; skip rendering it.
         guard iap.isWebCheckoutEnabled else {
             state = .ineligible
+            ZeroSettle.shared.setCurrentOffer(nil)
             ZSLogger.info(
                 "[OfferManager] SKIP: web checkout disabled for jurisdiction=\(iap.effectiveJurisdiction.rawValue)",
                 category: .migration
@@ -385,6 +387,7 @@ public final class ZSOfferManager: ObservableObject {
         }
 
         state = .ineligible
+        ZeroSettle.shared.setCurrentOffer(nil)
     }
 
     private func resolveFromOffer(_ offer: Offer.OfferData, iap: ZeroSettle) {
@@ -395,6 +398,7 @@ public final class ZSOfferManager: ObservableObject {
         guard iap.products.contains(where: { $0.id == targetId }) else {
             ZSLogger.info("[OfferManager] Target product \(targetId) not found in catalog", category: .migration)
             state = .ineligible
+            ZeroSettle.shared.setCurrentOffer(nil)
             return
         }
 
@@ -404,6 +408,7 @@ public final class ZSOfferManager: ObservableObject {
             guard !activeStoreKitEntitlements.isEmpty else {
                 ZSLogger.info("[OfferManager] Skipping: no active StoreKit subscription to migrate", category: .migration)
                 state = .ineligible
+                ZeroSettle.shared.setCurrentOffer(nil)
                 return
             }
         }
@@ -441,6 +446,10 @@ public final class ZSOfferManager: ObservableObject {
         offerData = resolvedOffer
         state = .eligible
         ZSLogger.info("[OfferManager] Eligible: flowType=\(offer.flowType.rawValue) product=\(targetId)", category: .migration)
+        let flow = (resolvedOffer.flowType == .migration) ? "migration" : "upgrade"
+        ZeroSettle.shared.setCurrentOffer(
+            ResolvedOffer(productId: resolvedOffer.productId, variantId: resolvedOffer.variantId, flowType: flow)
+        )
     }
 
     private func resolveFromMigration(_ migration: MigrationPrompt, iap: ZeroSettle) {
@@ -459,12 +468,14 @@ public final class ZSOfferManager: ObservableObject {
         }
         guard !skEntitlements.isEmpty else {
             state = .ineligible
+            ZeroSettle.shared.setCurrentOffer(nil)
             return
         }
 
         // Find matched product
         guard let matched = skEntitlements.first(where: { migration.eligibleProductIds.contains($0.productId) }) ?? skEntitlements.first else {
             state = .ineligible
+            ZeroSettle.shared.setCurrentOffer(nil)
             return
         }
 
@@ -501,6 +512,9 @@ public final class ZSOfferManager: ObservableObject {
             checkoutPresentation: nil
         )
         state = .eligible
+        ZeroSettle.shared.setCurrentOffer(
+            ResolvedOffer(productId: matched.productId, variantId: nil, flowType: "migration")
+        )
     }
 
     // MARK: - Bookkeeping Internals
@@ -700,6 +714,7 @@ public final class ZSOfferManager: ObservableObject {
                 category: .migration
             )
             state = .ineligible
+            ZeroSettle.shared.setCurrentOffer(nil)
             Task { [weak self] in
                 guard let self else { return }
                 _ = try? await ZeroSettle.shared.fetchProducts(userId: self.userId)
@@ -934,6 +949,7 @@ public final class ZSOfferManager: ObservableObject {
     /// Dismiss the offer and persist dismissal.
     public func dismiss() {
         state = .dismissed
+        ZeroSettle.shared.setCurrentOffer(nil)
         Self.setDismissed(true, forUserId: userId)
     }
 

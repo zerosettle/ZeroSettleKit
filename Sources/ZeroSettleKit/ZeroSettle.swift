@@ -432,6 +432,17 @@ public final class ZeroSettle: ObservableObject {
         sessionId = UUID().uuidString.lowercased()
     }
 
+    /// The most-recently-resolved eligible offer for the active identified user,
+    /// or nil if none is currently eligible. Used by the offer-impression APIs
+    /// to auto-resolve what to report.
+    public private(set) var currentOffer: ResolvedOffer?
+
+    internal func setCurrentOffer(_ offer: ResolvedOffer?) { currentOffer = offer }
+
+    #if DEBUG
+    internal func setCurrentOfferForTesting(_ offer: ResolvedOffer?) { currentOffer = offer }
+    #endif
+
     /// Cached products from the last `fetchProducts()` call.
     public private(set) var products: [ZSProduct] = []
 
@@ -856,6 +867,7 @@ public final class ZeroSettle: ObservableObject {
         // scoped to a session, not an install.
         UserDefaults.standard.removeObject(forKey: Self.anonymousSessionUUIDKey)
         regenerateSessionId()
+        currentOffer = nil
 
         // Deferred-identification flag — logout means we no longer have
         // an explicit "auth coming later" assertion. The next configure()
