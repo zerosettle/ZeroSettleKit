@@ -59,11 +59,6 @@ extension OfferSafariCoordinator: @preconcurrency UIAdaptivePresentationControll
 }
 #endif
 
-private struct BannerFramePreferenceKey: PreferenceKey {
-    static var defaultValue: CGRect { .zero }
-    static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
-}
-
 // MARK: - Unified Offer Tip View
 
 /// Unified offer tip card for both migration and upgrade flows.
@@ -282,21 +277,20 @@ public struct OfferTipView: View {
                 } else {
                     offerCardView
                         .background(
+                            // Read the banner's on-screen frame DIRECTLY inside the
+                            // GeometryReader. (A PreferenceKey set in .background does
+                            // not reliably propagate to .onPreferenceChange — it only
+                            // ever delivered the default .zero here.) onAppear gives the
+                            // first frame; onChange catches scroll/layout updates. The
+                            // manager's dedupe makes repeated callbacks a no-op.
                             GeometryReader { geo in
-                                Color.clear.preference(
-                                    key: BannerFramePreferenceKey.self,
-                                    value: geo.frame(in: .global)
-                                )
+                                Color.clear
+                                    .onAppear { handleBannerVisibility(geo.frame(in: .global)) }
+                                    .onChange(of: geo.frame(in: .global)) { _, newFrame in
+                                        handleBannerVisibility(newFrame)
+                                    }
                             }
                         )
-                        .onPreferenceChange(BannerFramePreferenceKey.self) { frame in
-                            // UIScreen.main.bounds is the visible-viewport proxy. The
-                            // manager's dedupe gate means repeated scroll-driven
-                            // callbacks fire the network at most once per session.
-                            if BannerVisibility.isOnScreen(frame, in: UIScreen.main.bounds, threshold: 0.5) {
-                                Task { @MainActor in manager.reportImpressionIfNeeded() }
-                            }
-                        }
                 }
 
             case .accepted:
@@ -398,6 +392,17 @@ public struct OfferTipView: View {
                 + "Set ZSOfferManager.demoMode = .off and complete a StoreKit "
                 + "sandbox purchase to test checkout end-to-end."
             )
+        }
+    }
+
+    // MARK: - Impression Visibility
+
+    /// Called as the banner lays out / scrolls. Fires a once-per-session
+    /// impression when at least 50% of the card height is on screen.
+    @MainActor
+    private func handleBannerVisibility(_ frame: CGRect) {
+        if BannerVisibility.isOnScreen(frame, in: UIScreen.main.bounds, threshold: 0.5) {
+            manager.reportImpressionIfNeeded()
         }
     }
 
