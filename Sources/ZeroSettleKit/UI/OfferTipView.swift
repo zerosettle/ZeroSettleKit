@@ -276,21 +276,7 @@ public struct OfferTipView: View {
                     Color.clear.frame(height: 0)
                 } else {
                     offerCardView
-                        .background(
-                            // Read the banner's on-screen frame DIRECTLY inside the
-                            // GeometryReader. (A PreferenceKey set in .background does
-                            // not reliably propagate to .onPreferenceChange — it only
-                            // ever delivered the default .zero here.) onAppear gives the
-                            // first frame; onChange catches scroll/layout updates. The
-                            // manager's dedupe makes repeated callbacks a no-op.
-                            GeometryReader { geo in
-                                Color.clear
-                                    .onAppear { handleBannerVisibility(geo.frame(in: .global)) }
-                                    .onChange(of: geo.frame(in: .global)) { _, newFrame in
-                                        handleBannerVisibility(newFrame)
-                                    }
-                            }
-                        )
+                        .offerImpression()
                 }
 
             case .accepted:
@@ -392,17 +378,6 @@ public struct OfferTipView: View {
                 + "Set ZSOfferManager.demoMode = .off and complete a StoreKit "
                 + "sandbox purchase to test checkout end-to-end."
             )
-        }
-    }
-
-    // MARK: - Impression Visibility
-
-    /// Called as the banner lays out / scrolls. Fires a once-per-session
-    /// impression when at least 50% of the card height is on screen.
-    @MainActor
-    private func handleBannerVisibility(_ frame: CGRect) {
-        if BannerVisibility.isOnScreen(frame, in: UIScreen.main.bounds, threshold: 0.5) {
-            manager.reportImpressionIfNeeded()
         }
     }
 
