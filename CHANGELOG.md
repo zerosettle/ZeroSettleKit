@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.0 — 2026-06-01
+
+On-screen offer-impression tracking:
+- `ZeroSettle.reportOfferViewed(productId:variantId:flowType:)` — low-level fire-and-forget impression report.
+- `.offerImpression()` SwiftUI view modifier and `OfferImpressionInteraction` (UIKit) — attach to any banner to report a ≥50%-on-screen impression once per session; auto-resolve the active offer via the new `ZeroSettle.currentOffer`.
+- `OfferTipView` now reports its own impressions through the modifier.
+
 ## 1.3.6 — 2026-05-11
 
 Fixes checkout sheet shrink-mid-presentation on the UIKit static `CheckoutSheet.present(...)` path. Adopters using the SwiftUI `.checkoutSheet(item:)` modifier with `preload:` pre-warming are not affected.
