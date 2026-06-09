@@ -34,10 +34,12 @@ public struct ZSTrialFacts: Sendable, Equatable, Codable {
     /// Free-trial duration token (e.g. "1_week", "30"). `nil` if not provided.
     public let duration: String?
 
-    /// Amount charged up front in `.paid` mode, in cents. `0` otherwise.
+    /// Amount charged up front in `.paid` mode, in cents. Always present; zero
+    /// when this mode is not active.
     public let upfrontAmountCents: Int
 
-    /// Authorization hold amount in `.authHold` mode, in cents. `0` otherwise.
+    /// Authorization hold amount in `.authHold` mode, in cents. Always present;
+    /// zero when this mode is not active.
     public let holdAmountCents: Int
 
     /// `true` for `.paid` / `.authHold` (a real charge/hold confirms the card).

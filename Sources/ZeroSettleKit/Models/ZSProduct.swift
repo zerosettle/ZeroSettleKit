@@ -247,7 +247,7 @@ extension ZSProduct: Codable {
         case subscriptionGroupId
         case freeTrialDuration
         case isTrialEligible
-        case trial
+        case trial = "trial"
     }
 
     public init(from decoder: Decoder) throws {

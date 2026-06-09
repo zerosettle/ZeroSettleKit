@@ -50,6 +50,18 @@ final class ZSTrialFactsTests: XCTestCase {
         let p = try decoder().decode(ZSProduct.self, from: json)
         XCTAssertEqual(p.trial?.mode, .authHold)
         XCTAssertEqual(p.trial?.holdAmountCents, 100)
+        XCTAssertEqual(p.trial?.upfrontAmountCents, 0)
+        XCTAssertEqual(p.trial?.validatesCard, true)
+    }
+
+    func test_duration_absent_is_nil() throws {
+        let json = productJSON(trial: """
+        , "trial": {"mode": "free", "upfront_amount_cents": 0, "hold_amount_cents": 0, "validates_card": false}
+        """)
+        let p = try decoder().decode(ZSProduct.self, from: json)
+        XCTAssertEqual(p.trial?.mode, .free)
+        XCTAssertNil(p.trial?.duration)
+        XCTAssertEqual(p.trial?.validatesCard, false)
     }
 
     func test_free_trial_decodes() throws {
