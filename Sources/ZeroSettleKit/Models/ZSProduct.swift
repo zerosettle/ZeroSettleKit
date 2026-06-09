@@ -90,6 +90,12 @@ public struct ZSProduct: Identifiable, Sendable {
     /// `nil` when no `userId` was provided to `fetchProducts()` or the product has no trial.
     public let isTrialEligible: Bool?
 
+    /// Trial-mode facts for paywall copy (free/paid/auth_hold + amounts).
+    /// `nil` unless the backend returned a `trial` object for this product
+    /// (trial-eligible subscription with a user id). Additive; the existing
+    /// `freeTrialDuration`/`isTrialEligible` fields are unchanged.
+    public let trial: ZSTrialFacts?
+
     /// The underlying StoreKit product (populated after reconciliation)
     internal var _storeKitProduct: StoreKit.Product?
 
@@ -203,7 +209,8 @@ public struct ZSProduct: Identifiable, Sendable {
         billingInterval: String? = nil,
         subscriptionGroupId: Int? = nil,
         freeTrialDuration: String? = nil,
-        isTrialEligible: Bool? = nil
+        isTrialEligible: Bool? = nil,
+        trial: ZSTrialFacts? = nil
     ) {
         self.id = id
         self.storeKitProductId = storeKitProductId
@@ -218,6 +225,7 @@ public struct ZSProduct: Identifiable, Sendable {
         self.subscriptionGroupId = subscriptionGroupId
         self.freeTrialDuration = freeTrialDuration
         self.isTrialEligible = isTrialEligible
+        self.trial = trial
         self._storeKitProduct = nil
     }
 }
@@ -239,6 +247,7 @@ extension ZSProduct: Codable {
         case subscriptionGroupId
         case freeTrialDuration
         case isTrialEligible
+        case trial
     }
 
     public init(from decoder: Decoder) throws {
@@ -256,6 +265,7 @@ extension ZSProduct: Codable {
         subscriptionGroupId = try container.decodeIfPresent(Int.self, forKey: .subscriptionGroupId)
         freeTrialDuration = try container.decodeIfPresent(String.self, forKey: .freeTrialDuration)
         isTrialEligible = try container.decodeIfPresent(Bool.self, forKey: .isTrialEligible)
+        trial = try? container.decodeIfPresent(ZSTrialFacts.self, forKey: .trial)
         _storeKitProduct = nil
     }
 
@@ -274,6 +284,7 @@ extension ZSProduct: Codable {
         try container.encodeIfPresent(subscriptionGroupId, forKey: .subscriptionGroupId)
         try container.encodeIfPresent(freeTrialDuration, forKey: .freeTrialDuration)
         try container.encodeIfPresent(isTrialEligible, forKey: .isTrialEligible)
+        try container.encodeIfPresent(trial, forKey: .trial)
     }
 }
 
@@ -294,7 +305,8 @@ extension ZSProduct: Equatable {
         lhs.billingInterval == rhs.billingInterval &&
         lhs.subscriptionGroupId == rhs.subscriptionGroupId &&
         lhs.freeTrialDuration == rhs.freeTrialDuration &&
-        lhs.isTrialEligible == rhs.isTrialEligible
+        lhs.isTrialEligible == rhs.isTrialEligible &&
+        lhs.trial == rhs.trial
     }
 }
 
