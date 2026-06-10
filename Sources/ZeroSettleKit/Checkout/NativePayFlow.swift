@@ -172,8 +172,10 @@ extension NativePay {
             if let cached = await CheckoutResponseCache.shared.consume(productId: productId, userId: userId, publishableKey: pk) {
                 response = cached
             } else {
+                // interactive: pay() runs in direct response to the user's
+                // buy action (the Apple Pay sheet presents next).
                 response = try await backend.initiateCheckout(
-                    productId: productId, userId: userId
+                    productId: productId, userId: userId, interactive: true
                 )
             }
 

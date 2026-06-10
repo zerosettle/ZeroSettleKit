@@ -697,7 +697,8 @@ public final class ZSMigrationManager: ObservableObject {
         isLoading = true
 
         do {
-            let result = try await createCheckout(stripeCustomerId: stripeCustomerId)
+            // interactive: startCheckout is the user's "Switch Now" tap.
+            let result = try await createCheckout(stripeCustomerId: stripeCustomerId, interactive: true)
             isLoading = false
             checkoutTransactionId = result.transactionId
             return result.url
@@ -902,7 +903,9 @@ public final class ZSMigrationManager: ObservableObject {
             guard let self else { return nil }
 
             do {
-                let result = try await self.createCheckout(stripeCustomerId: stripeCustomerId)
+                // interactive false: preload is a warm-up — never presents
+                // the external-purchase notice sheet.
+                let result = try await self.createCheckout(stripeCustomerId: stripeCustomerId, interactive: false)
                 self.preloadedCheckoutURL = result.url
                 self.preloadedTransactionId = result.transactionId
                 return result.url
@@ -946,7 +949,11 @@ public final class ZSMigrationManager: ObservableObject {
     ///
     /// Shared by `startCheckout()` and `preloadCheckout()` to avoid duplicating
     /// the `initiateCheckout` + `updateStorekitStatus` call sequence.
-    private func createCheckout(stripeCustomerId: String?) async throws -> (url: URL?, transactionId: String) {
+    ///
+    /// - Parameter interactive: `true` only on the user-initiated path
+    ///   (`startCheckout`). Gates external-purchase notice-sheet minting —
+    ///   `preloadCheckout` must never present UI.
+    private func createCheckout(stripeCustomerId: String?, interactive: Bool) async throws -> (url: URL?, transactionId: String) {
         guard let offerData else { throw ZeroSettleError.notConfigured }
 
         let productId = offerData.prompt.productId
@@ -969,7 +976,8 @@ public final class ZSMigrationManager: ObservableObject {
                 userId: userId,
                 stripeCustomerId: resolvedCustomerId,
                 storekitSubscriptionEnd: offerData.storekitSubscriptionEnd,
-                storekitOriginalTransactionId: offerData.activeStoreKitOriginalTransactionId
+                storekitOriginalTransactionId: offerData.activeStoreKitOriginalTransactionId,
+                interactive: interactive
             )
         }
 

@@ -65,6 +65,20 @@ extension CheckoutSheet where Header == EmptyView {
         productId: String,
         userId: String? = nil
     ) async -> (checkoutURL: URL, transactionId: String)? {
+        // Public entry point is a warm-up: never user-initiated, so the
+        // external-purchase notice sheet must never present from here.
+        await preload(productId: productId, userId: userId, interactive: false)
+    }
+
+    /// Interactive-aware variant. `interactive` must be `true` only when the
+    /// fetch is a direct response to user intent (the buy tap / sheet
+    /// presentation path in the checkout modifiers) — it permits the Apple
+    /// external-purchase disclosure sheet to present where required.
+    internal static func preload(
+        productId: String,
+        userId: String?,
+        interactive: Bool
+    ) async -> (checkoutURL: URL, transactionId: String)? {
         if let product = ZeroSettle.shared.product(for: productId), product.webPrice == nil {
             ZSLogger.info("[Checkout] preload(\(productId)): no webPrice — skipping", category: .checkout)
             return nil
@@ -85,7 +99,8 @@ extension CheckoutSheet where Header == EmptyView {
             do {
                 return try await backend.initiateCheckout(
                     productId: productId, userId: userId,
-                    storekitSubscriptionEnd: migrationEndDate(for: productId)
+                    storekitSubscriptionEnd: migrationEndDate(for: productId),
+                    interactive: interactive
                 )
             } catch {
                 ZSLogger.error("[Checkout] PI creation error for \(productId): \(error)", category: .checkout)

@@ -83,10 +83,13 @@ internal final class WebCheckoutFlow: NSObject {
 
         // WebCheckoutFlow uses checkoutMode=browser which produces a different
         // checkout URL path than cached PIs (native mode). Always call the server.
+        // interactive: beginCheckout is only reached from purchase() — a
+        // user-initiated buy action.
         let response = try await backend.initiateCheckout(
             productId: productId,
             userId: userId,
-            checkoutMode: .browser
+            checkoutMode: .browser,
+            interactive: true
         )
 
         guard let checkoutUrl = URL(string: response.checkoutUrl) else {

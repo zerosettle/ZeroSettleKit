@@ -222,7 +222,15 @@ internal final class Backend: @unchecked Sendable {
     /// tells the caller which mode they got.
     ///
     /// Spec: docs/superpowers/specs/2026-04-29-deferred-mode-architecture-design.md §3.1 §3.2
-    func initiateCheckout(productId: String, userId: String? = nil, stripeCustomerId: String? = nil, storekitSubscriptionEnd: Date? = nil, storekitOriginalTransactionId: String? = nil, checkoutMode: CheckoutMode? = nil, externalPurchaseToken: String? = nil) async throws -> CheckoutResponse {
+    ///
+    /// - Parameter interactive: `true` only when this call is a direct
+    ///   response to user intent (buy tap, paywall sheet presentation).
+    ///   Gates external-purchase token minting: only interactive checkouts
+    ///   may present Apple's disclosure (notice) sheet — preloads/warm-ups
+    ///   are restricted to the silent custom-link mint. Defaults to `false`
+    ///   (fail-safe: an unaudited caller can never present a sheet
+    ///   unprompted).
+    func initiateCheckout(productId: String, userId: String? = nil, stripeCustomerId: String? = nil, storekitSubscriptionEnd: Date? = nil, storekitOriginalTransactionId: String? = nil, checkoutMode: CheckoutMode? = nil, externalPurchaseToken: String? = nil, interactive: Bool = false) async throws -> CheckoutResponse {
         let url = apiURL("iap/checkout-configs/")
         let iso8601End: String? = storekitSubscriptionEnd.map {
             $0.formatted(.iso8601)
@@ -271,10 +279,14 @@ internal final class Backend: @unchecked Sendable {
         // to nil — never blocks checkout. A user-cancelled notice sheet also
         // returns nil: the checkout proceeds token-less rather than aborting
         // (v1 keeps minting strictly non-blocking; revisit if Apple review
-        // pushes back).
+        // pushes back). The notice-sheet fallback only runs when
+        // `interactive` — preloads/warm-ups never present UI.
         var resolvedToken = externalPurchaseToken
         if resolvedToken == nil {
-            resolvedToken = await ExternalPurchaseTokenProvider.mintIfNeeded(storefront: storefrontCode)
+            resolvedToken = await ExternalPurchaseTokenProvider.mintIfNeeded(
+                storefront: storefrontCode,
+                interactive: interactive
+            )
         }
         let body = InitiateCheckoutRequest(
             productId: productId,
@@ -402,7 +414,7 @@ internal final class Backend: @unchecked Sendable {
     ///
     /// Throws ``ZeroSettleError/checkoutConfigExpired`` if the server returns
     /// HTTP 410 (the underlying `checkout_config_expires_at` has passed); the
-    /// caller should restart checkout via ``initiateCheckout(productId:userId:stripeCustomerId:storekitSubscriptionEnd:storekitOriginalTransactionId:checkoutMode:externalPurchaseToken:)``
+    /// caller should restart checkout via ``initiateCheckout(productId:userId:stripeCustomerId:storekitSubscriptionEnd:storekitOriginalTransactionId:checkoutMode:externalPurchaseToken:interactive:)``
     /// rather than retrying.
     ///
     /// Spec: docs/superpowers/specs/2026-04-29-deferred-mode-architecture-design.md §4.1

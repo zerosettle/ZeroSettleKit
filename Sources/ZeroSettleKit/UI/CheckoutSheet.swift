@@ -750,7 +750,9 @@ extension CheckoutSheet {
 
         do {
             let backend = Backend(baseURL: baseURL, publishableKey: config.publishableKey)
-            let checkout = try await backend.initiateCheckout(productId: product.id, userId: userId, storekitSubscriptionEnd: migrationEndDate(for: product.id))
+            // interactive: this only runs while the sheet is presenting (or on
+            // the user's "Try Again" tap) — direct user intent.
+            let checkout = try await backend.initiateCheckout(productId: product.id, userId: userId, storekitSubscriptionEnd: migrationEndDate(for: product.id), interactive: true)
             await MainActor.run {
                 self.transactionId = checkout.transactionId
                 self.checkoutURL = URL(string: checkout.checkoutUrl)

@@ -663,10 +663,13 @@ public final class ZSOfferManager: ObservableObject {
                 return nil  // No WebView needed
 
             default:
+                // interactive: startCheckout is the user's explicit offer
+                // accept (CTA tap / raw-URL escape hatch).
                 let url = try await startWebViewCheckout(
                     data: data,
                     stripeCustomerId: stripeCustomerId ?? self.stripeCustomerId,
-                    checkoutMode: checkoutMode
+                    checkoutMode: checkoutMode,
+                    interactive: true
                 )
                 isLoading = false
                 return url
@@ -961,18 +964,25 @@ public final class ZSOfferManager: ObservableObject {
         // Web-to-web doesn't need preloading (no WebView)
         if data.upgradeType == .webToWeb { return nil }
 
+        // interactive false: preload is a warm-up — never presents the
+        // external-purchase notice sheet.
         return try? await startWebViewCheckout(
             data: data,
-            stripeCustomerId: stripeCustomerId ?? self.stripeCustomerId
+            stripeCustomerId: stripeCustomerId ?? self.stripeCustomerId,
+            interactive: false
         )
     }
 
     // MARK: - Private Checkout Helpers
 
+    /// - Parameter interactive: `true` only on the user-initiated path
+    ///   (`startCheckout`). Gates external-purchase notice-sheet minting —
+    ///   `preloadCheckout` must never present UI.
     private func startWebViewCheckout(
         data: Offer.OfferData,
         stripeCustomerId: String?,
-        checkoutMode: CheckoutMode? = nil
+        checkoutMode: CheckoutMode? = nil,
+        interactive: Bool
     ) async throws -> URL {
         let backend = try makeBackend()
 
@@ -992,7 +1002,8 @@ public final class ZSOfferManager: ObservableObject {
             stripeCustomerId: stripeCustomerId,
             storekitSubscriptionEnd: storekitEnd,
             storekitOriginalTransactionId: storekitOrigTxnId,
-            checkoutMode: checkoutMode
+            checkoutMode: checkoutMode,
+            interactive: interactive
         )
 
         checkoutTransactionId = checkout.transactionId

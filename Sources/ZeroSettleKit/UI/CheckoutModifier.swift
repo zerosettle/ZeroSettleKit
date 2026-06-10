@@ -427,8 +427,10 @@ internal struct CheckoutSheetModifier<Header: View>: ViewModifier {
         }
 
         // ── Fetch PaymentIntent (cached or fresh) ──
+        // interactive: this runs because the adopter flipped `isPresented`
+        // to true — a user-initiated checkout presentation.
         guard let result = await CheckoutSheet<EmptyView>.preload(
-            productId: product.id, userId: effectiveUserId
+            productId: product.id, userId: effectiveUserId, interactive: true
         ) else {
             guard !Task.isCancelled else { return }
             wrappedOnComplete(productId: product.id)(.failure(ZeroSettleError.checkoutFailed(reason: .other("Failed to create payment for \(product.id). Check that the product has a valid web price configured in the ZeroSettle dashboard."))))
@@ -697,9 +699,11 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
         }
 
         // ── Fetch PaymentIntent (cached or fresh) ──
+        // interactive: this runs because the adopter set `item` — a
+        // user-initiated checkout presentation.
         let preloadStart = CFAbsoluteTimeGetCurrent()
         guard let result = await CheckoutSheet<EmptyView>.preload(
-            productId: product.id, userId: effectiveUserId
+            productId: product.id, userId: effectiveUserId, interactive: true
         ) else {
             guard !Task.isCancelled else {
                 ZSLogger.info("[Checkout] preloadAll: cancelled during preload", category: .checkout)
@@ -918,7 +922,9 @@ internal struct UIKitSheetBridge<SheetHeader: View>: View {
             preloadedURL = checkoutURL
             preloadedTransactionId = transactionId
         } else if let result = await CheckoutSheet<EmptyView>.preload(
-            productId: product.id, userId: userId
+            // interactive: UIKitSheetBridge only mounts from
+            // CheckoutSheet.present(from:) — a user-initiated presentation.
+            productId: product.id, userId: userId, interactive: true
         ) {
             url = result.checkoutURL
             preloadedURL = result.checkoutURL

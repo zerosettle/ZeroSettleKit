@@ -235,7 +235,7 @@ In jurisdictions where Apple permits external purchases but still requires repor
 **What the SDK does automatically (no code required):**
 
 - Detects the user's true App Store storefront (`Storefront.current`) and sends it with every checkout, so ZeroSettle attributes the transaction to the correct jurisdiction (not the card billing country).
-- Mints an Apple external-purchase token at checkout in eligible regions — `ExternalPurchaseCustomLink.token(for:)` on iOS 18.1+ (`ACQUISITION`, falling back to `SERVICES`; `LINK_OUT` for Japan on iOS 26.4+), or the `ExternalPurchase` notice sheet on iOS 17.4–18.0 in the EEA — and attaches it to the checkout request.
+- Mints an Apple external-purchase token at checkout in eligible regions and attaches it to the checkout request. The SDK first tries the silent `ExternalPurchaseCustomLink.token(for:)` API on iOS 18.1+ (`ACQUISITION`, falling back to `SERVICES`; `LINK_OUT` for Japan on iOS 26.4+). In the EEA, whenever the custom-link mint yields no token — older iOS, or the app holds only the alternative-payments entitlement — the SDK falls back to the `ExternalPurchase` notice sheet on iOS 17.4+. The notice sheet presents UI, so it only runs for user-initiated checkouts (a buy tap or sheet presentation), never during preloads/warm-ups.
 - Degrades gracefully: if the entitlement is missing, the OS is too old, the user cancels the notice sheet, or minting fails for any reason, checkout proceeds without a token. Minting never blocks a purchase.
 
 ZeroSettle's backend decodes the token and submits the required reports to Apple's External Purchase Server API on your behalf.
@@ -247,7 +247,7 @@ ZeroSettle's backend decodes the token and submits the required reports to Apple
    - `com.apple.developer.storekit.external-purchase-link`
    - `com.apple.developer.storekit.custom-purchase-link.allowed-regions` (for custom-link regions, including Japan)
 3. **Add the matching Info.plist keys** (`SKExternalPurchase`, `SKExternalPurchaseLink`, and the `SKExternalPurchaseCustomLinkRegions` / `SKExternalPurchaseLinkStreamingRegions` region lists, as applicable to your enrollment).
-4. **Mind the iOS floors.** Link-out external purchases require iOS 17.4+; the custom-link token API the SDK prefers requires iOS 18.1+; Japan token minting requires iOS 26.4+. The SDK handles older versions by simply not minting.
+4. **Mind the iOS floors.** The `ExternalPurchaseLink` API itself exists since iOS 15.4, but Apple's DMA alternative-terms program requires iOS 17.4+ — and the in-app notice-sheet token requires iOS 17.4+ too. The custom-link token API the SDK prefers requires iOS 18.1+; Japan token minting requires iOS 26.4+. The SDK handles older versions by simply not minting.
 5. **Upload your In-App Purchase key** in the ZeroSettle dashboard and enable Apple reporting so the backend can submit reports.
 
 **Honest fine print:**

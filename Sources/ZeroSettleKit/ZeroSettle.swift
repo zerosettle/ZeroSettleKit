@@ -100,7 +100,7 @@ public enum ZeroSettleError: Error, LocalizedError {
 
     /// The deferred-mode checkout config has expired (the server-side
     /// PENDING transaction's `checkout_config_expires_at` has passed). The SDK
-    /// should re-initiate checkout via ``Backend/initiateCheckout(productId:userId:stripeCustomerId:storekitSubscriptionEnd:storekitOriginalTransactionId:checkoutMode:externalPurchaseToken:)``
+    /// should re-initiate checkout via ``Backend/initiateCheckout(productId:userId:stripeCustomerId:storekitSubscriptionEnd:storekitOriginalTransactionId:checkoutMode:externalPurchaseToken:interactive:)``
     /// to get a fresh config rather than retrying
     /// ``Backend/finalizePaymentIntent(transactionId:)``.
     ///
