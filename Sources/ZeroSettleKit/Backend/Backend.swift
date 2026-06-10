@@ -266,6 +266,16 @@ internal final class Backend: @unchecked Sendable {
         // backend normalizes alpha-3 → alpha-2 for regime detection. nil when
         // no storefront is available (e.g. Simulator with no App Store login).
         let storefrontCode = await Storefront.current?.countryCode
+        // Auto-mint an Apple external-purchase token when the caller didn't
+        // supply one (manual param remains as an advanced override). Degrades
+        // to nil — never blocks checkout. A user-cancelled notice sheet also
+        // returns nil: the checkout proceeds token-less rather than aborting
+        // (v1 keeps minting strictly non-blocking; revisit if Apple review
+        // pushes back).
+        var resolvedToken = externalPurchaseToken
+        if resolvedToken == nil {
+            resolvedToken = await ExternalPurchaseTokenProvider.mintIfNeeded(storefront: storefrontCode)
+        }
         let body = InitiateCheckoutRequest(
             productId: productId,
             userId: userId,
@@ -275,7 +285,7 @@ internal final class Backend: @unchecked Sendable {
             checkoutMode: checkoutMode?.rawValue,
             customerName: custName,
             customerEmail: custEmail,
-            externalPurchaseToken: externalPurchaseToken,
+            externalPurchaseToken: resolvedToken,
             iosVersion: iosVersion,
             storefront: storefrontCode
         )
