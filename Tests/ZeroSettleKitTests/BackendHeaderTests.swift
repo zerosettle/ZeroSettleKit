@@ -22,6 +22,5 @@ final class BackendHeaderTests: XCTestCase {
         let headers = backend.testAuthHeaders  // see Step 3 — small test-only accessor
         XCTAssertEqual(headers["X-ZeroSettle-Key"], "zs_pk_test_xyz")
         XCTAssertEqual(headers["X-ZS-SDK-Version"], Configuration.sdkVersion)
-        XCTAssertEqual(headers["X-ZS-SDK-Version"], "1.5.0")
     }
 }
