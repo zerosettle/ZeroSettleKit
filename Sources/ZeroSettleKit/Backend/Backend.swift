@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import StoreKit
 
 #if canImport(UIKit)
 import UIKit
@@ -261,6 +262,10 @@ internal final class Backend: @unchecked Sendable {
             return (name, email, nil)
             #endif
         }
+        // True App Store storefront (ISO alpha-3, e.g. "FRA") — sent raw; the
+        // backend normalizes alpha-3 → alpha-2 for regime detection. nil when
+        // no storefront is available (e.g. Simulator with no App Store login).
+        let storefrontCode = await Storefront.current?.countryCode
         let body = InitiateCheckoutRequest(
             productId: productId,
             userId: userId,
@@ -271,7 +276,8 @@ internal final class Backend: @unchecked Sendable {
             customerName: custName,
             customerEmail: custEmail,
             externalPurchaseToken: externalPurchaseToken,
-            iosVersion: iosVersion
+            iosVersion: iosVersion,
+            storefront: storefrontCode
         )
         do {
             let response = try await httpClient.post(url, body: body, headers: authHeaders, responseType: CheckoutResponse.self)
@@ -987,6 +993,10 @@ internal struct InitiateCheckoutRequest: Encodable {
     /// Device iOS version (e.g. "26.4.1") — used by the backend regime detector
     /// to decide whether a transaction qualifies for Japan MSCA reporting.
     let iosVersion: String?
+    /// True App Store storefront (ISO 3166-1 alpha-3, e.g. "FRA") from
+    /// `Storefront.current`. Feeds the backend's Apple reporting regime
+    /// detector — fixes jurisdiction misattribution from card billing country.
+    let storefront: String?
 }
 
 internal struct UpdateStorekitStatusRequest: Encodable {

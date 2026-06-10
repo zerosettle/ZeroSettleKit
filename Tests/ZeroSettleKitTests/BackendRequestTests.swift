@@ -25,7 +25,8 @@ final class BackendRequestTests: XCTestCase {
             customerName: nil,
             customerEmail: nil,
             externalPurchaseToken: "xpt-abc-123",
-            iosVersion: "26.4.1"
+            iosVersion: "26.4.1",
+            storefront: "FRA"
         )
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
@@ -33,6 +34,7 @@ final class BackendRequestTests: XCTestCase {
         let dict = try JSONSerialization.jsonObject(with: data) as! [String: Any]
         XCTAssertEqual(dict["external_purchase_token"] as? String, "xpt-abc-123")
         XCTAssertEqual(dict["ios_version"] as? String, "26.4.1")
+        XCTAssertEqual(dict["storefront"] as? String, "FRA")
         XCTAssertEqual(dict["product_id"] as? String, "com.app.pro")
         XCTAssertEqual(dict["platform"] as? String, "ios")
     }
@@ -48,7 +50,8 @@ final class BackendRequestTests: XCTestCase {
             customerName: nil,
             customerEmail: nil,
             externalPurchaseToken: nil,
-            iosVersion: nil
+            iosVersion: nil,
+            storefront: nil
         )
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
@@ -61,5 +64,7 @@ final class BackendRequestTests: XCTestCase {
                       "Expected external_purchase_token to be absent or null when nil")
         XCTAssertTrue(dict["ios_version"] is NSNull || dict["ios_version"] == nil,
                       "Expected ios_version to be absent or null when nil")
+        XCTAssertTrue(dict["storefront"] is NSNull || dict["storefront"] == nil,
+                      "Expected storefront to be absent or null when nil")
     }
 }
