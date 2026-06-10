@@ -228,6 +228,34 @@ Web checkout callbacks require universal links. Add an Apple App Site Associatio
 
 **Note:** Universal links do not work in the iOS Simulator — test on a physical device.
 
+## Apple External Purchase Compliance (EU / Japan)
+
+In jurisdictions where Apple permits external purchases but still requires reporting (EU/EEA under the DMA alternative terms, EEA music streaming, and Japan under the MSCA), every external sale must be reported to Apple with an external-purchase token. The SDK automates the device-side half of this:
+
+**What the SDK does automatically (no code required):**
+
+- Detects the user's true App Store storefront (`Storefront.current`) and sends it with every checkout, so ZeroSettle attributes the transaction to the correct jurisdiction (not the card billing country).
+- Mints an Apple external-purchase token at checkout in eligible regions — `ExternalPurchaseCustomLink.token(for:)` on iOS 18.1+ (`ACQUISITION`, falling back to `SERVICES`; `LINK_OUT` for Japan on iOS 26.4+), or the `ExternalPurchase` notice sheet on iOS 17.4–18.0 in the EEA — and attaches it to the checkout request.
+- Degrades gracefully: if the entitlement is missing, the OS is too old, the user cancels the notice sheet, or minting fails for any reason, checkout proceeds without a token. Minting never blocks a purchase.
+
+ZeroSettle's backend decodes the token and submits the required reports to Apple's External Purchase Server API on your behalf.
+
+**What you (the developer) must do — the SDK cannot do this for you:**
+
+1. **Enroll with Apple.** Sign the applicable addendum (EU Alternative Terms Addendum, Japan link-out under the MSCA, or the music-streaming entitlement) and request the external-purchase entitlements for your app.
+2. **Add the entitlements to your app target** (entitlements are baked into your app's code signature — a Swift package cannot declare them):
+   - `com.apple.developer.storekit.external-purchase-link`
+   - `com.apple.developer.storekit.custom-purchase-link.allowed-regions` (for custom-link regions, including Japan)
+3. **Add the matching Info.plist keys** (`SKExternalPurchase`, `SKExternalPurchaseLink`, and the `SKExternalPurchaseCustomLinkRegions` / `SKExternalPurchaseLinkStreamingRegions` region lists, as applicable to your enrollment).
+4. **Mind the iOS floors.** Link-out external purchases require iOS 17.4+; the custom-link token API the SDK prefers requires iOS 18.1+; Japan token minting requires iOS 26.4+. The SDK handles older versions by simply not minting.
+5. **Upload your In-App Purchase key** in the ZeroSettle dashboard and enable Apple reporting so the backend can submit reports.
+
+**Honest fine print:**
+
+- **Commission still applies in the EU and Japan.** External purchases there carry a reduced Apple commission — reporting is what makes Apple's invoice possible. The savings versus standard App Store pricing are real but jurisdiction-dependent.
+- **The US requires none of this today.** Post-injunction, US external purchases need no token, no report, and carry no Apple commission. The SDK does not mint in the US.
+- **South Korea and the Netherlands are not yet supported** by ZeroSettle's automatic reporting (they use a different entitlement and, for NL, a weekly reporting cadence). If you operate external purchases there, you must report manually for now.
+
 ## Key Types
 
 | Type | Description |
