@@ -665,6 +665,19 @@ extension CheckoutSheet {
             // interstitial error UI.
             if deliverIdentityErrorIfNeeded() { return }
 
+            // Honor the backend's per-user routing directive. When this product
+            // routes to StoreKit (checkout_routing experiment OFF, or no web
+            // price), a WebView/native-pay checkout would be rejected by the
+            // backend (403) or have nothing to charge — so route to native
+            // StoreKit instead of presenting/loading the web sheet, and deliver
+            // the result through `onComplete` (the same callback the web path
+            // uses). Checked BEFORE the `checkoutURL == nil` guard so it also
+            // fires for PRELOADED sheets, whose `checkoutURL` is set in init and
+            // would otherwise skip this entirely. Mirrors purchase()'s routing
+            // (both consult `ZSProduct.routesToStoreKit`) so the directive is
+            // honored on every checkout entry point, not just purchase().
+            if await routeToStoreKitIfNeeded() { return }
+
             // For preloaded views, checkoutURL and transactionId are set in init
             // (avoids a ProgressView flash on the first frame). Only fetch if missing.
             if checkoutURL == nil {
@@ -736,6 +749,57 @@ extension CheckoutSheet {
         guard let identityError else { return false }
         dismiss()
         onComplete(.failure(identityError))
+        return true
+    }
+
+    /// Routes a store-cohort purchase to native StoreKit instead of web
+    /// checkout when the product's directive says so (``ZSProduct/routesToStoreKit``).
+    /// Returns `true` when the purchase was handled here (the caller's `.task`
+    /// should stop); `false` when this is a normal web-checkout product and the
+    /// caller should continue.
+    ///
+    /// On the store path this mirrors the web success sequence (see the WebView
+    /// completion handler: `refreshEntitlementsAfterCheckout` → `onComplete` →
+    /// `dismiss` → delegate). It deliberately uses the bare
+    /// ``ZeroSettle/purchaseViaStoreKit(productId:userId:)`` primitive — NOT
+    /// ``ZeroSettle/purchase(productId:userId:presentation:)``'s
+    /// `purchaseRoutedToStoreKit` — so offer-completion bookkeeping runs exactly
+    /// once, via the sheet's existing `onComplete` wrapper, rather than twice.
+    ///
+    /// `internal` (not `private`) so the test target can exercise the routing
+    /// decision directly, mirroring ``deliverIdentityErrorIfNeeded()`` above.
+    @discardableResult
+    internal func routeToStoreKitIfNeeded() async -> Bool {
+        // Prefer the canonical cached product (it carries the attached
+        // StoreKit product that `purchaseViaStoreKit` needs); fall back to the
+        // sheet's own product if the catalog hasn't been fetched.
+        let routed = ZeroSettle.shared.product(for: product.id) ?? product
+        guard routed.routesToStoreKit else { return false }
+        ZSLogger.info("[CheckoutSheet] product=\(product.id) routed to StoreKit (checkout_route=\(routed.checkoutRoute.rawValue), webPrice=\(routed.webPrice == nil ? "nil" : "set"))", category: .checkout)
+        do {
+            let skTransaction = try await ZeroSettle.shared.purchaseViaStoreKit(productId: product.id, userId: userId)
+            let transaction = CheckoutTransaction(
+                id: String(skTransaction.id),
+                productId: product.id,
+                status: .completed,
+                source: .storeKit,
+                purchasedAt: skTransaction.purchaseDate,
+                expiresAt: skTransaction.expirationDate
+            )
+            // Mirror the web success sequence: refresh entitlements, deliver
+            // success (the onComplete wrapper applies offer completion once),
+            // dismiss, then fire the delegate for cross-type consistency.
+            await ZeroSettle.shared.refreshEntitlementsAfterCheckout(transaction: transaction)
+            onComplete(.success(transaction))
+            dismiss()
+            await ZeroSettle.shared.delegate?.zeroSettleCheckoutDidComplete(transaction: transaction)
+        } catch {
+            // Deliver the failure through the same Result path as any other
+            // checkout failure (cancellation included), then dismiss — no
+            // interstitial error UI for a store-routed purchase.
+            onComplete(.failure(error))
+            dismiss()
+        }
         return true
     }
 

@@ -43,17 +43,22 @@ final class NativePayFlowTests: XCTestCase {
     /// invoking `finalize`. Verifies the SDK does NOT regress to an extra
     /// round-trip when the backend returned a client_secret eagerly.
     func testResolveClientSecret_LegacyCached_ReturnsCachedAndSkipsFinalize() async throws {
-        var finalizeCalls = 0
+        // `finalize` is `@Sendable` (it crosses into the @MainActor finalize-on-tap
+        // Task in production), so the test spy uses a reference-type recorder
+        // rather than a captured `var`. `resolveClientSecret` awaits `finalize`
+        // serially, so there is no real concurrency here — the recorder just
+        // satisfies the Sendable requirement.
+        let recorder = FinalizeRecorder()
         let result = try await NativePay.resolveClientSecret(
             cached: "pi_legacy_secret_xyz",
             transactionId: "txn_abc",
             finalize: { _ in
-                finalizeCalls += 1
+                recorder.calls += 1
                 return "pi_should_not_be_used_secret_xxx"
             }
         )
         XCTAssertEqual(result, "pi_legacy_secret_xyz")
-        XCTAssertEqual(finalizeCalls, 0, "Cached client_secret must not invoke finalize")
+        XCTAssertEqual(recorder.calls, 0, "Cached client_secret must not invoke finalize")
     }
 
     /// Empty-string cached value is treated the same as nil — the legacy
@@ -61,18 +66,18 @@ final class NativePayFlowTests: XCTestCase {
     /// for deferred mode. The resolver normalizes empty to "no cached" and
     /// falls through to finalize.
     func testResolveClientSecret_EmptyCached_TreatedAsDeferred() async throws {
-        var finalizeCalls = 0
+        let recorder = FinalizeRecorder()
         let result = try await NativePay.resolveClientSecret(
             cached: "",
             transactionId: "txn_abc",
             finalize: { id in
-                finalizeCalls += 1
+                recorder.calls += 1
                 XCTAssertEqual(id, "txn_abc")
                 return "pi_finalized_secret_yyy"
             }
         )
         XCTAssertEqual(result, "pi_finalized_secret_yyy")
-        XCTAssertEqual(finalizeCalls, 1)
+        XCTAssertEqual(recorder.calls, 1)
     }
 
     // MARK: - resolveClientSecret: deferred PI branch
@@ -80,17 +85,17 @@ final class NativePayFlowTests: XCTestCase {
     /// Deferred mode + PaymentIntent (`pi_*_secret_*`): the resolver calls
     /// finalize with the txn id and returns its result.
     func testResolveClientSecret_DeferredPI_CallsFinalizeAndReturns() async throws {
-        var observedTxnId: String?
+        let recorder = FinalizeRecorder()
         let result = try await NativePay.resolveClientSecret(
             cached: nil,
             transactionId: "txn_deferred_42",
             finalize: { id in
-                observedTxnId = id
+                recorder.observedTxnId = id
                 return "pi_3PaymentIntent_secret_abc123"
             }
         )
         XCTAssertEqual(result, "pi_3PaymentIntent_secret_abc123")
-        XCTAssertEqual(observedTxnId, "txn_deferred_42")
+        XCTAssertEqual(recorder.observedTxnId, "txn_deferred_42")
     }
 
     // MARK: - resolveClientSecret: deferred SI (trial) branch
@@ -168,6 +173,16 @@ final class NativePayFlowTests: XCTestCase {
             XCTFail("Expected FakeNetworkError, got \(type(of: error)): \(error)")
         }
     }
+}
+
+/// Reference-type spy for `resolveClientSecret`'s now-`@Sendable` `finalize`
+/// closure. `@Sendable` forbids mutating a captured `var`; a class lets the test
+/// record invocation count / the observed txn id without that capture. Safe:
+/// `resolveClientSecret` awaits `finalize` serially (no concurrent access), so
+/// `@unchecked Sendable` is sound here.
+private final class FinalizeRecorder: @unchecked Sendable {
+    var calls = 0
+    var observedTxnId: String?
 }
 
 #endif // NativePay

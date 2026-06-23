@@ -101,7 +101,7 @@ extension NativePay {
     static func resolveClientSecret(
         cached: String?,
         transactionId: String,
-        finalize: (String) async throws -> String
+        finalize: @Sendable (String) async throws -> String
     ) async throws -> String {
         if let cached, !cached.isEmpty {
             return cached
@@ -283,6 +283,20 @@ extension NativePay {
     }
 }
 
+// MARK: - Unchecked Sendable Box
+
+/// Wraps a non-Sendable value so it can be captured into a `Task` under Swift 6
+/// strict concurrency. Used to carry Stripe's non-Sendable
+/// `STPIntentClientSecretCompletionBlock` from a `nonisolated` delegate callback
+/// into the `@MainActor` Task that resolves the client secret. Safe ONLY because
+/// the boxed value is read and used exclusively on the main actor (the delegate
+/// is invoked on the main thread and the completion is called on MainActor) — it
+/// never actually crosses threads.
+private struct UncheckedSendableBox<Value>: @unchecked Sendable {
+    let value: Value
+    init(_ value: Value) { self.value = value }
+}
+
 // MARK: - ApplePayContextDelegate
 
 extension NativePay.Flow: ApplePayContextDelegate {
@@ -293,7 +307,15 @@ extension NativePay.Flow: ApplePayContextDelegate {
         paymentInformation: PKPayment,
         completion: @escaping STPIntentClientSecretCompletionBlock
     ) {
+        // `completion` is Stripe's non-Sendable `STPIntentClientSecretCompletionBlock`.
+        // Under Swift 6 strict concurrency, capturing it into a `Task { @MainActor }`
+        // is a "sending non-Sendable value" error. STPApplePayContext invokes
+        // this delegate on the main thread (per Stripe's contract), and we only
+        // ever call `completion` on the MainActor, so wrapping it in an
+        // @unchecked Sendable box is safe: the box never escapes the main actor.
+        let box = UncheckedSendableBox(completion)
         Task { @MainActor in
+            let completion = box.value
             guard let response = self.currentResponse else {
                 completion(nil, NativePay.PaymentError.missingClientSecret)
                 return
@@ -308,7 +330,7 @@ extension NativePay.Flow: ApplePayContextDelegate {
                 let clientSecret = try await NativePay.resolveClientSecret(
                     cached: response.clientSecret,
                     transactionId: txnId,
-                    finalize: { [backend] id in
+                    finalize: { @Sendable [backend] id in
                         try await backend.finalizePaymentIntent(transactionId: id)
                     }
                 )

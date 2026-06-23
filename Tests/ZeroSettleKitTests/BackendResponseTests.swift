@@ -406,6 +406,11 @@ final class BackendResponseTests: XCTestCase {
         XCTAssertEqual(response.products[3].checkoutRoute, .web, "unrecognized checkout_route must fall back to .web")
     }
 
+    // The `ZSProduct.routesToStoreKit` predicate and the CheckoutSheet routing
+    // gate are covered comprehensively in CheckoutRouteRoutingTests; this file
+    // keeps only the wire-decode test (`testProductCheckoutRouteDecoding`) for
+    // the `checkout_route` field above.
+
     func testProductCatalogResponseWithoutConfig() throws {
         let json = """
         {

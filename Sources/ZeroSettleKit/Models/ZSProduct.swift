@@ -129,6 +129,20 @@ public struct ZSProduct: Identifiable, Sendable {
     /// Whether StoreKit purchase is available for this product
     public var storeKitAvailable: Bool { _storeKitProduct != nil }
 
+    /// Whether a purchase of this product must be routed to native StoreKit
+    /// instead of web checkout. `true` when the backend routed this user OFF
+    /// web checkout (``checkoutRoute`` == ``CheckoutRoute/store``) OR there is
+    /// no web price to charge (``webPrice`` `nil`). The negation — web checkout
+    /// — is therefore allowed only when ``checkoutRoute`` is ``CheckoutRoute/web``
+    /// AND ``webPrice`` is non-nil.
+    ///
+    /// Single source of truth for the checkout-routing decision, consulted by
+    /// every checkout entry point (``ZeroSettle/purchase(productId:userId:presentation:)``
+    /// and the `CheckoutSheet` / `.checkoutSheet` paths) so they can't diverge.
+    internal var routesToStoreKit: Bool {
+        !(checkoutRoute == .web && webPrice != nil)
+    }
+
     /// StoreKit price - prefers on-device fetch, falls back to backend price for display
     public var storeKitPrice: Price? {
         if let skProduct = _storeKitProduct {

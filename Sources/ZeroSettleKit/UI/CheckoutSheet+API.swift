@@ -79,8 +79,13 @@ extension CheckoutSheet where Header == EmptyView {
         userId: String?,
         interactive: Bool
     ) async -> (checkoutURL: URL, transactionId: String)? {
-        if let product = ZeroSettle.shared.product(for: productId), product.webPrice == nil {
-            ZSLogger.info("[Checkout] preload(\(productId)): no webPrice — skipping", category: .checkout)
+        // Skip products that route to StoreKit (checkout_routing OFF, or no web
+        // price): there's no web checkout to preload, and creating a PI would
+        // cache a web URL the store cohort must never use. The CheckoutSheet
+        // `.task` routing check is the safety net; this is the optimization that
+        // avoids the wasted PI creation.
+        if let product = ZeroSettle.shared.product(for: productId), product.routesToStoreKit {
+            ZSLogger.info("[Checkout] preload(\(productId)): routes to StoreKit (checkout_route=\(product.checkoutRoute.rawValue), webPrice=\(product.webPrice == nil ? "nil" : "set")) — skipping", category: .checkout)
             return nil
         }
 

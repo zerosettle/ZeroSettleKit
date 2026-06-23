@@ -1697,12 +1697,9 @@ public final class ZeroSettle: ObservableObject {
         // BEFORE the `isWebCheckoutEnabled` gate so a store-routed user in a
         // web-disabled jurisdiction still gets StoreKit rather than the thrown
         // jurisdiction error.
-        if let routedProduct = product(for: productId) {
-            let useWeb = routedProduct.checkoutRoute == .web && routedProduct.webPrice != nil
-            if !useWeb {
-                ZSLogger.info("Checkout routing: product=\(productId) routed to StoreKit (checkout_route=\(routedProduct.checkoutRoute.rawValue), webPrice=\(routedProduct.webPrice == nil ? "nil" : "set"), storeKitAvailable=\(routedProduct.storeKitAvailable))", category: .checkout)
-                return try await purchaseRoutedToStoreKit(productId: productId, userId: effectiveUserId)
-            }
+        if let routedProduct = product(for: productId), routedProduct.routesToStoreKit {
+            ZSLogger.info("Checkout routing: product=\(productId) routed to StoreKit (checkout_route=\(routedProduct.checkoutRoute.rawValue), webPrice=\(routedProduct.webPrice == nil ? "nil" : "set"), storeKitAvailable=\(routedProduct.storeKitAvailable))", category: .checkout)
+            return try await purchaseRoutedToStoreKit(productId: productId, userId: effectiveUserId)
         }
 
         // Per-call override (e.g. server-driven `Offer.checkoutPresentation`)
