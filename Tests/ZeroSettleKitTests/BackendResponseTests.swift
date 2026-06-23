@@ -349,6 +349,63 @@ final class BackendResponseTests: XCTestCase {
         XCTAssertEqual(migration.ctaText, "Switch Now")
     }
 
+    func testProductCheckoutRouteDecoding() throws {
+        // Decodes the backend's `checkout_route` directive from REAL snake_case
+        // JSON through the production decoder config (`.convertFromSnakeCase`).
+        // This is the discriminating test: an encode→decode round-trip would use
+        // the same key both ways and pass even if the CodingKey raw value were
+        // wrong, so we decode the wire shape the backend actually sends.
+        //   - product 0: checkout_route "store" → .store (routing-disabled cohort)
+        //   - product 1: checkout_route "web"   → .web
+        //   - product 2: field absent           → defaults to .web (older backend)
+        //   - product 3: unrecognized value     → resilient fallback to .web
+        let json = """
+        {
+            "products": [
+                {
+                    "id": "com.app.routed_to_store",
+                    "display_name": "Routed To Store",
+                    "product_description": "Cohort routed off web checkout",
+                    "type": "auto_renewable_subscription",
+                    "synced_to_asc": true,
+                    "checkout_route": "store"
+                },
+                {
+                    "id": "com.app.routed_to_web",
+                    "display_name": "Routed To Web",
+                    "product_description": "Normal web checkout cohort",
+                    "type": "auto_renewable_subscription",
+                    "web_price": { "amount_micros": 6990000, "currency_code": "USD" },
+                    "synced_to_asc": true,
+                    "checkout_route": "web"
+                },
+                {
+                    "id": "com.app.no_route_field",
+                    "display_name": "No Route Field",
+                    "product_description": "Older backend omits the field",
+                    "type": "consumable",
+                    "synced_to_asc": false
+                },
+                {
+                    "id": "com.app.unknown_route",
+                    "display_name": "Unknown Route",
+                    "product_description": "Forward-compat: unrecognized value",
+                    "type": "consumable",
+                    "synced_to_asc": false,
+                    "checkout_route": "carrier_billing"
+                }
+            ]
+        }
+        """.data(using: .utf8)!
+
+        let response = try decoder.decode(ProductsResponse.self, from: json)
+        XCTAssertEqual(response.products.count, 4)
+        XCTAssertEqual(response.products[0].checkoutRoute, .store)
+        XCTAssertEqual(response.products[1].checkoutRoute, .web)
+        XCTAssertEqual(response.products[2].checkoutRoute, .web, "absent checkout_route must default to .web")
+        XCTAssertEqual(response.products[3].checkoutRoute, .web, "unrecognized checkout_route must fall back to .web")
+    }
+
     func testProductCatalogResponseWithoutConfig() throws {
         let json = """
         {

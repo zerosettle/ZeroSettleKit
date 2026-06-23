@@ -1685,6 +1685,26 @@ public final class ZeroSettle: ObservableObject {
         // Throws userNotIdentified when neither is present.
         let effectiveUserId = try userId ?? requireIdentifiedUserId()
 
+        // Per-user routing directive from the backend. `checkout_route` is
+        // ORTHOGONAL to `web_price`: a StoreKit-only product (no Stripe mapping)
+        // returns `checkout_route == .web` WITH `web_price == nil`, and a
+        // `checkout_routing` experiment can route a cohort OFF web checkout with
+        // `checkout_route == .store`. In both cases attempting web checkout
+        // would fail (a 403 for the disabled cohort, or no price to charge), so
+        // the rule is: use WEB only when `checkout_route == .web` AND a web
+        // price exists; otherwise route to native StoreKit and return a
+        // CheckoutTransaction synthesized from the StoreKit result. Checked
+        // BEFORE the `isWebCheckoutEnabled` gate so a store-routed user in a
+        // web-disabled jurisdiction still gets StoreKit rather than the thrown
+        // jurisdiction error.
+        if let routedProduct = product(for: productId) {
+            let useWeb = routedProduct.checkoutRoute == .web && routedProduct.webPrice != nil
+            if !useWeb {
+                ZSLogger.info("Checkout routing: product=\(productId) routed to StoreKit (checkout_route=\(routedProduct.checkoutRoute.rawValue), webPrice=\(routedProduct.webPrice == nil ? "nil" : "set"), storeKitAvailable=\(routedProduct.storeKitAvailable))", category: .checkout)
+                return try await purchaseRoutedToStoreKit(productId: productId, userId: effectiveUserId)
+            }
+        }
+
         // Per-call override (e.g. server-driven `Offer.checkoutPresentation`)
         // beats the global setting. Falls back to the global type when nil.
         let effectiveType = presentation ?? checkoutType
@@ -1968,6 +1988,68 @@ public final class ZeroSettle: ObservableObject {
             case .unknown:
                 throw ZeroSettleError.checkoutFailed(reason: .other("Unknown StoreKit error"))
             }
+        }
+    }
+
+    /// Runs a `purchase()` that the backend routed to native StoreKit (the
+    /// user's `checkout_routing` cohort is web-checkout-OFF) and returns a
+    /// ``CheckoutTransaction`` so `purchase()`'s contract is unchanged.
+    ///
+    /// Reuses ``purchaseViaStoreKit(productId:userId:)`` so this path inherits
+    /// appAccountToken derivation, backend sync (via the StoreKit manager's
+    /// verified-transaction handler), and the
+    /// `StoreKitPurchaseError → ZeroSettleError` mapping. It then mirrors the
+    /// web path's caller-facing side effects — the `didBegin`/`didComplete`/
+    /// `didCancel`/`didFail` delegate signals, `pendingCheckout` bookkeeping,
+    /// offer completion, and a post-purchase entitlement refresh — so a
+    /// store-routed purchase is observationally identical to a web one from the
+    /// host app's perspective.
+    ///
+    /// No second backend sync is issued here: `purchaseViaStoreKit` already
+    /// synced the transaction through the StoreKit manager.
+    private func purchaseRoutedToStoreKit(
+        productId: String,
+        userId: String
+    ) async throws -> CheckoutTransaction {
+        // Mirror the web path's pre-purchase bookkeeping: arm the offer state
+        // machine if this purchase is offer-bound (idempotent no-op otherwise).
+        // `purchaseViaStoreKit` handles `setActiveUserId` itself.
+        armOfferForCheckoutIfApplicable(productId: productId)
+
+        pendingCheckout = true
+        delegate?.zeroSettleCheckoutDidBegin(productId: productId)
+
+        do {
+            let skTransaction = try await purchaseViaStoreKit(productId: productId, userId: userId)
+            pendingCheckout = false
+
+            // Synthesize a CheckoutTransaction from the StoreKit result. The
+            // StoreKit sync response carries no ZeroSettle transaction id, so we
+            // use the StoreKit transaction id — a pragmatic, stable identifier
+            // for this purchase. Source is `.storeKit` (this is a native
+            // purchase, not web checkout).
+            let transaction = CheckoutTransaction(
+                id: String(skTransaction.id),
+                productId: productId,
+                status: .completed,
+                source: .storeKit,
+                purchasedAt: skTransaction.purchaseDate,
+                expiresAt: skTransaction.expirationDate
+            )
+
+            delegate?.zeroSettleCheckoutDidComplete(transaction: transaction)
+            await refreshEntitlementsAfterCheckout(transaction: transaction)
+            await applyOfferCheckoutCompletionIfApplicable(productId: productId, transactionId: transaction.id)
+            return transaction
+        } catch ZeroSettleError.cancelled {
+            pendingCheckout = false
+            delegate?.zeroSettleCheckoutDidCancel(productId: productId)
+            throw ZeroSettleError.cancelled
+        } catch {
+            pendingCheckout = false
+            ZSLogger.error("StoreKit-routed checkout failed for \(productId): \(error)", category: .checkout)
+            delegate?.zeroSettleCheckoutDidFail(productId: productId, error: error)
+            throw error
         }
     }
 

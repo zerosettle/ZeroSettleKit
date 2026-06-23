@@ -36,6 +36,19 @@ public struct ZSProduct: Identifiable, Sendable {
         case nonConsumable = "non_consumable"
     }
 
+    /// Where the backend wants this user's purchase to be routed.
+    ///
+    /// Set by a `checkout_routing` experiment: a cohort assigned a
+    /// web-checkout-OFF variant is routed to ``store`` (native StoreKit) instead
+    /// of web checkout. ``web`` is the default for control, anonymous, or
+    /// no-experiment users. This is the *routing* directive — distinct from
+    /// ``ZSProduct/webPrice`` availability, which can be `nil` for unrelated
+    /// reasons (e.g. no Stripe mapping) while the route is still ``web``.
+    public enum CheckoutRoute: String, Sendable, Codable {
+        case web
+        case store
+    }
+
     // MARK: - Properties
 
     /// Canonical ZeroSettle product identifier. Not necessarily a store SKU —
@@ -95,6 +108,20 @@ public struct ZSProduct: Identifiable, Sendable {
     /// (trial-eligible subscription with a user id). Additive; the existing
     /// `freeTrialDuration`/`isTrialEligible` fields are unchanged.
     public let trial: ZSTrialFacts?
+
+    /// The backend's routing directive for this user + product. Defaults to
+    /// ``CheckoutRoute/web`` when the backend omits the field (older servers).
+    /// ``CheckoutRoute/store`` means a `checkout_routing` experiment assigned
+    /// this user a web-checkout-OFF variant.
+    ///
+    /// This is ORTHOGONAL to ``webPrice``: ``CheckoutRoute/web`` does NOT imply
+    /// a web price exists — a StoreKit-only product (no Stripe mapping) carries
+    /// ``CheckoutRoute/web`` with ``webPrice`` `nil`. So
+    /// ``ZeroSettle/purchase(productId:userId:presentation:)`` uses web checkout
+    /// only when this is ``CheckoutRoute/web`` AND ``webPrice`` is non-nil;
+    /// otherwise it routes to native StoreKit (web checkout would otherwise fail
+    /// — a 403 for the disabled cohort, or no price to charge).
+    public let checkoutRoute: CheckoutRoute
 
     /// The underlying StoreKit product (populated after reconciliation)
     internal var _storeKitProduct: StoreKit.Product?
@@ -210,7 +237,8 @@ public struct ZSProduct: Identifiable, Sendable {
         subscriptionGroupId: Int? = nil,
         freeTrialDuration: String? = nil,
         isTrialEligible: Bool? = nil,
-        trial: ZSTrialFacts? = nil
+        trial: ZSTrialFacts? = nil,
+        checkoutRoute: CheckoutRoute = .web
     ) {
         self.id = id
         self.storeKitProductId = storeKitProductId
@@ -226,6 +254,7 @@ public struct ZSProduct: Identifiable, Sendable {
         self.freeTrialDuration = freeTrialDuration
         self.isTrialEligible = isTrialEligible
         self.trial = trial
+        self.checkoutRoute = checkoutRoute
         self._storeKitProduct = nil
     }
 }
@@ -248,6 +277,11 @@ extension ZSProduct: Codable {
         case freeTrialDuration
         case isTrialEligible
         case trial = "trial"
+        // The shared decoder uses `.convertFromSnakeCase`, which rewrites the
+        // wire key `checkout_route` to `checkoutRoute` BEFORE matching CodingKey
+        // raw values — so the raw value here must be the post-conversion
+        // camelCase form, matching `storeKitProductId`/`syncedToAsc` above.
+        case checkoutRoute = "checkoutRoute"
     }
 
     public init(from decoder: Decoder) throws {
@@ -266,6 +300,10 @@ extension ZSProduct: Codable {
         freeTrialDuration = try container.decodeIfPresent(String.self, forKey: .freeTrialDuration)
         isTrialEligible = try container.decodeIfPresent(Bool.self, forKey: .isTrialEligible)
         trial = try? container.decodeIfPresent(ZSTrialFacts.self, forKey: .trial)
+        // Resilient: an unrecognized route value (or an absent field on older
+        // backends) falls back to `.web` so the routing-disabled cohort is the
+        // only path that opts out of web checkout. Never throws on this field.
+        checkoutRoute = (try? container.decodeIfPresent(CheckoutRoute.self, forKey: .checkoutRoute)) ?? .web
         _storeKitProduct = nil
     }
 
@@ -285,6 +323,7 @@ extension ZSProduct: Codable {
         try container.encodeIfPresent(freeTrialDuration, forKey: .freeTrialDuration)
         try container.encodeIfPresent(isTrialEligible, forKey: .isTrialEligible)
         try container.encodeIfPresent(trial, forKey: .trial)
+        try container.encode(checkoutRoute, forKey: .checkoutRoute)
     }
 }
 
@@ -306,7 +345,8 @@ extension ZSProduct: Equatable {
         lhs.subscriptionGroupId == rhs.subscriptionGroupId &&
         lhs.freeTrialDuration == rhs.freeTrialDuration &&
         lhs.isTrialEligible == rhs.isTrialEligible &&
-        lhs.trial == rhs.trial
+        lhs.trial == rhs.trial &&
+        lhs.checkoutRoute == rhs.checkoutRoute
     }
 }
 

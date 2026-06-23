@@ -62,6 +62,17 @@ internal final class Backend: @unchecked Sendable {
         if let userId {
             queryItems.append(URLQueryItem(name: "user_id", value: userId))
         }
+        // True App Store storefront — same source the checkout body uses (see
+        // initiateCheckout's `storefront`). Sent so geo-targeted experiments
+        // (pricing / checkout_routing / trial_mode) resolve the SAME variant at
+        // DISPLAY here as they do at CHARGE in checkout — otherwise display and
+        // charge can disagree. The value is StoreKit's storefront country code
+        // (ISO 3166-1 alpha-3, e.g. "USA"); the backend's geo gate normalizes
+        // it. nil (e.g. Simulator with no App Store login) → param omitted, and
+        // geo experiments fall back to baseline both here and at checkout.
+        if let storefrontCode = await Storefront.current?.countryCode {
+            queryItems.append(URLQueryItem(name: "storefront", value: storefrontCode))
+        }
         // Demo-mode preview: when the dev has flipped ZSOfferManager.demoMode,
         // ask the server to surface the dashboard-configured campaign of the
         // chosen flow (migration or upgrade) regardless of the user's real
