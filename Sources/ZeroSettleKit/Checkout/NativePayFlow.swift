@@ -117,6 +117,107 @@ extension NativePay {
         }
         return secret
     }
+
+    /// The charge-shape the user authorized on the Apple Pay sheet. Used to
+    /// detect a price/trial change after a 410 re-initiate so we never confirm
+    /// a different amount than the one the user approved.
+    ///
+    /// `amount` is the charged amount in cents; for a free-trial it's the
+    /// trial-time charge (0). `isTrial` distinguishes a $0-now-charge-later
+    /// trial from a $0 actual price so a trial→non-trial flip (or vice versa)
+    /// is treated as a mismatch even when both nominal amounts are 0.
+    struct AuthorizedCharge: Equatable, Sendable {
+        let transactionId: String
+        let amount: Int
+        let isTrial: Bool
+
+        init(transactionId: String, amount: Int, isTrial: Bool) {
+            self.transactionId = transactionId
+            self.amount = amount
+            self.isTrial = isTrial
+        }
+
+        /// Derive the authorized charge-shape from a `CheckoutResponse`.
+        init(response: CheckoutResponse) {
+            self.transactionId = response.transactionId
+            self.isTrial = response.trialEnd != nil
+            self.amount = response.amount
+        }
+    }
+
+    /// Outcome of a recovery-capable client-secret resolution: the secret to
+    /// confirm plus the transaction id it belongs to (which changes when a 410
+    /// recovery re-initiated a fresh config). The caller updates its
+    /// `currentResponse`/verification target from `effectiveTransactionId`.
+    struct ResolvedSecret: Sendable {
+        let clientSecret: String
+        let effectiveTransactionId: String
+    }
+
+    /// Resolve the client_secret with single-retry recovery from a superseded /
+    /// expired checkout config (HTTP 410 → ``ZeroSettleError/checkoutConfigExpired``).
+    ///
+    /// Always finalizes (never trusts a cached legacy `client_secret`) so the
+    /// server-side freshness check runs: a config superseded by a dashboard QA
+    /// variant override is SUPERSEDED on the backend and 410s at `/finalize/`,
+    /// rather than confirming a stale secret. This closes the legacy-cached
+    /// mischarge vector (issue #2). On a 410, it re-initiates the checkout ONCE
+    /// to pick up the now-current variant and retries finalize against the fresh
+    /// transaction (issue #1).
+    ///
+    /// Loop safety: the retry is a single straight-line step — no recursion, no
+    /// loop — so a second 410 (or any error) on the re-initiated config
+    /// propagates as ``PaymentError/checkoutConfigExpired`` instead of looping.
+    ///
+    /// Amount safety: by the time this runs the user has already authorized
+    /// `authorized.amount` on the Apple Pay sheet. A TTL-only expiry re-resolves
+    /// the same price (fine), but a variant override that *changes* the price or
+    /// trial shape must NOT be silently confirmed at the new amount. If the
+    /// re-initiated charge-shape differs from `authorized`, we throw
+    /// ``PaymentError/checkoutConfigExpired`` so the next `pay()` re-presents the
+    /// sheet at the correct price.
+    ///
+    /// - Parameters:
+    ///   - authorized: The charge-shape the user approved on the Apple Pay sheet.
+    ///   - finalize: Materializes the Stripe intent for a transaction id
+    ///       (wraps `Backend.finalizePaymentIntent`). May throw
+    ///       `ZeroSettleError.checkoutConfigExpired` on a 410.
+    ///   - reinitiate: Invalidates the cached config and creates a fresh one,
+    ///       returning the new authorized charge-shape. Called at most once.
+    /// - Returns: The secret to confirm plus the transaction id it belongs to.
+    static func resolveClientSecretWithRecovery(
+        authorized: AuthorizedCharge,
+        finalize: @Sendable (String) async throws -> String,
+        reinitiate: @Sendable () async throws -> AuthorizedCharge
+    ) async throws -> ResolvedSecret {
+        // Each finalize attempt reuses the primitive resolver (cached: nil
+        // forces finalize) so the seti_→trial and 410→checkoutConfigExpired
+        // mapping lives in exactly one place.
+        do {
+            let secret = try await resolveClientSecret(
+                cached: nil, transactionId: authorized.transactionId, finalize: finalize
+            )
+            return ResolvedSecret(clientSecret: secret, effectiveTransactionId: authorized.transactionId)
+        } catch PaymentError.checkoutConfigExpired {
+            // Single recovery attempt — re-resolve the now-current variant.
+            let fresh = try await reinitiate()
+
+            // Amount/trial guard: the user authorized `authorized`. If the fresh
+            // config charges differently (a price/trial-changing override),
+            // refuse to confirm and force a fresh sheet.
+            guard fresh.amount == authorized.amount, fresh.isTrial == authorized.isTrial else {
+                throw PaymentError.checkoutConfigExpired
+            }
+
+            // Retry finalize ONCE against the fresh transaction. A second 410
+            // surfaces as checkoutConfigExpired from the primitive and is NOT
+            // retried — straight-line, so recovery can never loop.
+            let secret = try await resolveClientSecret(
+                cached: nil, transactionId: fresh.transactionId, finalize: finalize
+            )
+            return ResolvedSecret(clientSecret: secret, effectiveTransactionId: fresh.transactionId)
+        }
+    }
 }
 
 // MARK: - NativePay.Flow
@@ -130,6 +231,17 @@ extension NativePay {
         private var paymentContinuation: CheckedContinuation<NativePay.Result, Error>?
         private var currentResponse: CheckoutResponse?
         private var apiClient: STPAPIClient?
+        // Captured at pay() time so the finalize delegate can re-initiate a
+        // fresh checkout config on a 410 (superseded/expired) without plumbing
+        // them through the STPApplePayContext callback.
+        private var currentProductId: String?
+        private var currentUserId: String?
+        private var currentPublishableKey: String = ""
+        // The transaction id whose intent we actually confirmed, set when the
+        // client_secret resolves. Differs from the original when a 410 recovery
+        // re-initiated a fresh config; `didCompleteWith` verifies THIS id so
+        // post-pay verification targets the transaction that was charged.
+        private var verificationTransactionId: String?
 
         init(backend: Backend) {
             self.backend = backend
@@ -169,7 +281,8 @@ extension NativePay {
             // 1. Initiate checkout — use cached response if available (from preloading)
             let pk = ZeroSettle.shared.currentConfig?.publishableKey ?? ""
             let response: CheckoutResponse
-            if let cached = await CheckoutResponseCache.shared.consume(productId: productId, userId: userId, publishableKey: pk) {
+            let fingerprint = ZeroSettle.shared.checkoutVariantFingerprint(for: productId)
+            if let cached = await CheckoutResponseCache.shared.consume(productId: productId, userId: userId, publishableKey: pk, variantFingerprint: fingerprint) {
                 response = cached
             } else {
                 // interactive: pay() runs in direct response to the user's
@@ -180,6 +293,9 @@ extension NativePay {
             }
 
             self.currentResponse = response
+            self.currentProductId = productId
+            self.currentUserId = userId
+            self.currentPublishableKey = pk
 
             // 2. Configure a dedicated Stripe API client
             let client = STPAPIClient()
@@ -256,6 +372,35 @@ extension NativePay {
             }
         }
 
+        // MARK: - 410 recovery
+
+        /// Re-initiate the checkout config after a 410 (superseded/expired) to
+        /// pick up the now-current variant. Invalidates the cached config first
+        /// so a stale entry can't be re-served, then creates a fresh one and
+        /// promotes it to `currentResponse` (so post-pay verification targets
+        /// the new transaction). Returns the fresh authorized charge-shape for
+        /// the amount guard. Called at most once per pay() (see
+        /// ``NativePay/resolveClientSecretWithRecovery(authorized:finalize:reinitiate:)``).
+        private func reinitiateAfterExpiry() async throws -> NativePay.AuthorizedCharge {
+            guard let productId = currentProductId else {
+                // No captured product context — can't recover. Surface as expiry.
+                throw NativePay.PaymentError.checkoutConfigExpired
+            }
+            let userId = currentUserId
+            let fingerprint = ZeroSettle.shared.checkoutVariantFingerprint(for: productId)
+            await CheckoutResponseCache.shared.invalidate(
+                productId: productId, userId: userId,
+                publishableKey: currentPublishableKey,
+                variantFingerprint: fingerprint
+            )
+            ZSLogger.info("[NativePay] checkout config expired (410) — re-initiating once for \(productId)", category: .checkout)
+            let fresh = try await backend.initiateCheckout(
+                productId: productId, userId: userId, interactive: true
+            )
+            self.currentResponse = fresh
+            return NativePay.AuthorizedCharge(response: fresh)
+        }
+
         // MARK: - Helpers
 
         private static func calendarUnit(from interval: String) -> NSCalendar.Unit {
@@ -320,21 +465,31 @@ extension NativePay.Flow: ApplePayContextDelegate {
                 completion(nil, NativePay.PaymentError.missingClientSecret)
                 return
             }
-            // Deferred mode: finalize on user-tap to materialize the Stripe
-            // Intent server-side. Legacy fall-through hits the cached branch
-            // inside resolveClientSecret and short-circuits without a network
-            // call. The closure captures `backend` so the resolver itself
-            // stays a pure function of its inputs.
-            let txnId = response.transactionId
+            // Always finalize on user-tap — never confirm a cached legacy
+            // `client_secret` directly. The /finalize/ round-trip is the
+            // freshness check: a config superseded by a dashboard variant
+            // override is SUPERSEDED server-side and 410s here instead of
+            // confirming a stale price (issue #2). For a non-superseded legacy
+            // txn finalize is idempotent and returns the same secret. On a 410,
+            // resolveClientSecretWithRecovery re-initiates ONCE and retries
+            // (issue #1); the re-initiate promotes the fresh response to
+            // `currentResponse` so didCompleteWith verifies the right txn.
+            let authorized = NativePay.AuthorizedCharge(response: response)
             do {
-                let clientSecret = try await NativePay.resolveClientSecret(
-                    cached: response.clientSecret,
-                    transactionId: txnId,
+                let resolved = try await NativePay.resolveClientSecretWithRecovery(
+                    authorized: authorized,
                     finalize: { @Sendable [backend] id in
                         try await backend.finalizePaymentIntent(transactionId: id)
+                    },
+                    reinitiate: { @Sendable [weak self] in
+                        guard let self else { throw NativePay.PaymentError.checkoutConfigExpired }
+                        return try await self.reinitiateAfterExpiry()
                     }
                 )
-                completion(clientSecret, nil)
+                // Record the txn id the resolved secret belongs to (the fresh
+                // one after a 410 recovery) so didCompleteWith verifies it.
+                self.verificationTransactionId = resolved.effectiveTransactionId
+                completion(resolved.clientSecret, nil)
             } catch {
                 completion(nil, error)
             }
@@ -349,7 +504,10 @@ extension NativePay.Flow: ApplePayContextDelegate {
         MainActor.assumeIsolated {
             switch status {
             case .success:
-                guard let transactionId = currentResponse?.transactionId else {
+                // Prefer the resolved verification id (the fresh txn after a 410
+                // recovery); fall back to the current response for the common
+                // no-recovery path. Both are the same when no recovery occurred.
+                guard let transactionId = verificationTransactionId ?? currentResponse?.transactionId else {
                     paymentContinuation?.resume(throwing: NativePay.PaymentError.missingTransactionId)
                     paymentContinuation = nil
                     return

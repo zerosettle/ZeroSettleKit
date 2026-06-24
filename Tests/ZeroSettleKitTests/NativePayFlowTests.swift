@@ -173,6 +173,208 @@ final class NativePayFlowTests: XCTestCase {
             XCTFail("Expected FakeNetworkError, got \(type(of: error)): \(error)")
         }
     }
+
+    // MARK: - resolveClientSecretWithRecovery: happy path (no 410)
+
+    /// First finalize succeeds with a PaymentIntent secret → no re-initiate.
+    /// This is the common path (TTL not expired, config not superseded). Verifies
+    /// recovery is NOT triggered and the effective txn id is the original one.
+    func testRecovery_FinalizeSucceeds_NoReinitiate() async throws {
+        let recorder = RecoveryRecorder()
+        let result = try await NativePay.resolveClientSecretWithRecovery(
+            authorized: .init(transactionId: "txn_1", amount: 499, isTrial: false),
+            finalize: { id in
+                recorder.finalizeCalls += 1
+                recorder.lastFinalizeTxn = id
+                return "pi_secret_ok"
+            },
+            reinitiate: {
+                recorder.reinitiateCalls += 1
+                return .init(transactionId: "txn_should_not_happen", amount: 499, isTrial: false)
+            }
+        )
+        XCTAssertEqual(result.clientSecret, "pi_secret_ok")
+        XCTAssertEqual(result.effectiveTransactionId, "txn_1")
+        XCTAssertEqual(recorder.finalizeCalls, 1)
+        XCTAssertEqual(recorder.reinitiateCalls, 0, "No 410 → must not re-initiate")
+    }
+
+    /// A SetupIntent secret on the first finalize → trialViaApplePayNotSupported,
+    /// same as the legacy resolver. No re-initiate.
+    func testRecovery_FinalizeReturnsSetupIntent_ThrowsTrialNotSupported() async {
+        let recorder = RecoveryRecorder()
+        do {
+            _ = try await NativePay.resolveClientSecretWithRecovery(
+                authorized: .init(transactionId: "txn_1", amount: 0, isTrial: true),
+                finalize: { _ in
+                    recorder.finalizeCalls += 1
+                    return "seti_secret_trial"
+                },
+                reinitiate: { recorder.reinitiateCalls += 1; return .init(transactionId: "x", amount: 0, isTrial: true) }
+            )
+            XCTFail("Expected trialViaApplePayNotSupported")
+        } catch NativePay.PaymentError.trialViaApplePayNotSupported {
+            // expected
+        } catch {
+            XCTFail("Expected .trialViaApplePayNotSupported, got \(error)")
+        }
+        XCTAssertEqual(recorder.reinitiateCalls, 0)
+    }
+
+    // MARK: - resolveClientSecretWithRecovery: 410 → single retry
+
+    /// 410 on first finalize → re-initiate ONCE → finalize the fresh txn →
+    /// success. Verifies: re-initiate fires exactly once, the retried finalize
+    /// targets the FRESH txn id, and the result reports the fresh txn id (so the
+    /// caller verifies the right transaction post-pay).
+    func testRecovery_FirstFinalize410_ReinitiatesOnceAndRetries() async throws {
+        let recorder = RecoveryRecorder()
+        let result = try await NativePay.resolveClientSecretWithRecovery(
+            authorized: .init(transactionId: "txn_old", amount: 499, isTrial: false),
+            finalize: { id in
+                recorder.finalizeCalls += 1
+                recorder.lastFinalizeTxn = id
+                if id == "txn_old" { throw ZeroSettleError.checkoutConfigExpired }
+                return "pi_secret_fresh"
+            },
+            reinitiate: {
+                recorder.reinitiateCalls += 1
+                return .init(transactionId: "txn_new", amount: 499, isTrial: false)
+            }
+        )
+        XCTAssertEqual(result.clientSecret, "pi_secret_fresh")
+        XCTAssertEqual(result.effectiveTransactionId, "txn_new")
+        XCTAssertEqual(recorder.reinitiateCalls, 1, "Must re-initiate exactly once")
+        XCTAssertEqual(recorder.finalizeCalls, 2, "finalize: once on old (410), once on fresh")
+        XCTAssertEqual(recorder.lastFinalizeTxn, "txn_new")
+    }
+
+    /// A second 410 on the RE-INITIATED config must NOT loop — it maps to
+    /// checkoutConfigExpired and propagates. Guards the single-retry contract.
+    func testRecovery_SecondFinalize410_DoesNotLoopAndThrows() async {
+        let recorder = RecoveryRecorder()
+        do {
+            _ = try await NativePay.resolveClientSecretWithRecovery(
+                authorized: .init(transactionId: "txn_old", amount: 499, isTrial: false),
+                finalize: { _ in
+                    recorder.finalizeCalls += 1
+                    throw ZeroSettleError.checkoutConfigExpired  // both old AND fresh 410
+                },
+                reinitiate: {
+                    recorder.reinitiateCalls += 1
+                    return .init(transactionId: "txn_new", amount: 499, isTrial: false)
+                }
+            )
+            XCTFail("Expected checkoutConfigExpired")
+        } catch NativePay.PaymentError.checkoutConfigExpired {
+            // expected — no loop
+        } catch {
+            XCTFail("Expected .checkoutConfigExpired, got \(error)")
+        }
+        XCTAssertEqual(recorder.reinitiateCalls, 1, "Re-initiate exactly once, then give up")
+        XCTAssertEqual(recorder.finalizeCalls, 2, "finalize twice total (old + fresh), never a third")
+    }
+
+    // MARK: - resolveClientSecretWithRecovery: amount guard
+
+    /// 410 → re-initiate resolves a DIFFERENT price (a variant override that
+    /// changed the amount). The user authorized the old amount on the Apple Pay
+    /// sheet, so confirming the new amount would mischarge. Must abort with
+    /// checkoutConfigExpired WITHOUT finalizing the fresh txn.
+    func testRecovery_ReinitiateChangesAmount_AbortsBeforeFinalize() async {
+        let recorder = RecoveryRecorder()
+        do {
+            _ = try await NativePay.resolveClientSecretWithRecovery(
+                authorized: .init(transactionId: "txn_old", amount: 499, isTrial: false),
+                finalize: { id in
+                    recorder.finalizeCalls += 1
+                    if id == "txn_old" { throw ZeroSettleError.checkoutConfigExpired }
+                    return "pi_secret_DIFFERENT_PRICE"  // must never reach here
+                },
+                reinitiate: {
+                    recorder.reinitiateCalls += 1
+                    return .init(transactionId: "txn_new", amount: 399, isTrial: false)  // price changed!
+                }
+            )
+            XCTFail("Expected checkoutConfigExpired on amount mismatch")
+        } catch NativePay.PaymentError.checkoutConfigExpired {
+            // expected
+        } catch {
+            XCTFail("Expected .checkoutConfigExpired, got \(error)")
+        }
+        XCTAssertEqual(recorder.reinitiateCalls, 1)
+        XCTAssertEqual(recorder.finalizeCalls, 1, "Must NOT finalize the fresh (differently-priced) txn")
+    }
+
+    /// 410 → re-initiate keeps the same amount but flips trial→non-trial (or
+    /// vice versa). The Apple Pay sheet was built for a trial; charging now would
+    /// differ from what the user saw. Must abort even though `amount` matches.
+    func testRecovery_ReinitiateFlipsTrialShape_Aborts() async {
+        let recorder = RecoveryRecorder()
+        do {
+            _ = try await NativePay.resolveClientSecretWithRecovery(
+                authorized: .init(transactionId: "txn_old", amount: 0, isTrial: true),
+                finalize: { id in
+                    recorder.finalizeCalls += 1
+                    if id == "txn_old" { throw ZeroSettleError.checkoutConfigExpired }
+                    return "pi_secret_x"
+                },
+                reinitiate: {
+                    recorder.reinitiateCalls += 1
+                    return .init(transactionId: "txn_new", amount: 0, isTrial: false)  // trial → charge-now
+                }
+            )
+            XCTFail("Expected checkoutConfigExpired on trial-shape flip")
+        } catch NativePay.PaymentError.checkoutConfigExpired {
+            // expected
+        } catch {
+            XCTFail("Expected .checkoutConfigExpired, got \(error)")
+        }
+        XCTAssertEqual(recorder.finalizeCalls, 1, "Must NOT finalize the fresh txn when trial shape flips")
+    }
+
+    /// AuthorizedCharge derives its shape from a CheckoutResponse: `isTrial` is
+    /// driven by `trialEnd != nil`, `amount` from `response.amount`.
+    func testAuthorizedCharge_FromResponse_DerivesTrialFromTrialEnd() {
+        let trial = makeResponse(amount: 0, trialEnd: 1_900_000_000)
+        let charge = NativePay.AuthorizedCharge(response: trial)
+        XCTAssertTrue(charge.isTrial)
+        XCTAssertEqual(charge.amount, 0)
+        XCTAssertEqual(charge.transactionId, trial.transactionId)
+
+        let nonTrial = makeResponse(amount: 499, trialEnd: nil)
+        XCTAssertFalse(NativePay.AuthorizedCharge(response: nonTrial).isTrial)
+    }
+
+    // MARK: - Helpers
+
+    private func makeResponse(amount: Int, trialEnd: Int?) -> CheckoutResponse {
+        CheckoutResponse(
+            clientSecret: nil,
+            transactionId: "txn_resp_\(amount)",
+            amount: amount,
+            currency: "USD",
+            productName: "P",
+            originalAmount: nil,
+            callbackUrl: "https://e.com/cb",
+            publishableKey: "pk",
+            checkoutUrl: "https://e.com/co",
+            stripeAccount: nil,
+            merchantCountry: nil,
+            isSubscription: trialEnd != nil,
+            subscriptionInterval: trialEnd != nil ? "month" : nil,
+            trialEnd: trialEnd,
+            pendingAmount: trialEnd != nil ? amount : nil,
+            deferredMode: true
+        )
+    }
+}
+
+/// Reference-type spy for the recovery resolver's `@Sendable` closures.
+private final class RecoveryRecorder: @unchecked Sendable {
+    var finalizeCalls = 0
+    var reinitiateCalls = 0
+    var lastFinalizeTxn: String?
 }
 
 /// Reference-type spy for `resolveClientSecret`'s now-`@Sendable` `finalize`

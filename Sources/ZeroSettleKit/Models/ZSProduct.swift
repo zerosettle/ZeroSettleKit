@@ -143,6 +143,28 @@ public struct ZSProduct: Identifiable, Sendable {
         !(checkoutRoute == .web && webPrice != nil)
     }
 
+    /// Fingerprint of the variant-sensitive fields that determine what a
+    /// checkout will charge. Folded into ``CheckoutResponseCache``'s key so a
+    /// dashboard variant override (which changes ``webPrice``, ``checkoutRoute``,
+    /// or the ``trial`` shape on the next ``ZeroSettle/fetchProducts(userId:)``)
+    /// busts any cached `CheckoutResponse` immediately instead of serving the
+    /// stale price/route/trial for up to the 30-min TTL.
+    ///
+    /// Built from explicit scalar fields — NOT a Codable hash — so the
+    /// non-experiment case stays byte-stable across fetches (a volatile field
+    /// sneaking into `ZSTrialFacts` must not silently bust the happy-path
+    /// cache). A product with no variant has stable inputs → stable fingerprint.
+    internal var checkoutVariantFingerprint: String {
+        let priceComponent = webPrice.map { "\($0.amountCents):\($0.currencyCode)" } ?? "noprice"
+        let trialComponent: String
+        if let trial {
+            trialComponent = "\(trial.mode.rawValue):\(trial.upfrontAmountCents):\(trial.holdAmountCents)"
+        } else {
+            trialComponent = "notrial"
+        }
+        return "\(checkoutRoute.rawValue)|\(priceComponent)|\(trialComponent)"
+    }
+
     /// StoreKit price - prefers on-device fetch, falls back to backend price for display
     public var storeKitPrice: Price? {
         if let skProduct = _storeKitProduct {

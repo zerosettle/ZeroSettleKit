@@ -97,8 +97,10 @@ extension CheckoutSheet where Header == EmptyView {
 
         let pk = config.publishableKey
 
+        let fingerprint = await ZeroSettle.shared.checkoutVariantFingerprint(for: productId)
         let response = await CheckoutResponseCache.shared.fetchOrJoin(
-            productId: productId, userId: userId, publishableKey: pk
+            productId: productId, userId: userId, publishableKey: pk,
+            variantFingerprint: fingerprint
         ) {
             let backend = Backend(baseURL: baseURL, publishableKey: pk)
             do {
@@ -255,6 +257,7 @@ extension CheckoutSheet where Header == EmptyView {
                     productId: result.productId,
                     userId: userId,
                     publishableKey: pk,
+                    variantFingerprint: ZeroSettle.shared.checkoutVariantFingerprint(for: result.productId),
                     response: response
                 )
 

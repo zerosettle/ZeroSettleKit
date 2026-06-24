@@ -967,7 +967,8 @@ public final class ZSMigrationManager: ObservableObject {
         let checkout = await CheckoutResponseCache.shared.fetchOrJoin(
             productId: productId,
             userId: userId,
-            publishableKey: publishableKey
+            publishableKey: publishableKey,
+            variantFingerprint: ZeroSettle.shared.checkoutVariantFingerprint(for: productId)
         ) { [userId, offerData] in
             guard let baseURL else { return nil }
             let backend = Backend(baseURL: baseURL, publishableKey: publishableKey)

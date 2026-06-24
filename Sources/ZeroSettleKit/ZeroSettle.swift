@@ -606,6 +606,17 @@ public final class ZeroSettle: ObservableObject {
         products.first(where: { $0.id == id })
     }
 
+    /// Variant fingerprint for the given product id, used to key
+    /// ``CheckoutResponseCache`` so a dashboard variant override busts stale
+    /// cached configs immediately (see ``ZSProduct/checkoutVariantFingerprint``).
+    ///
+    /// Falls back to a deterministic sentinel when the catalog hasn't loaded
+    /// the product yet — an entry cached under the sentinel correctly busts
+    /// once the real catalog arrives with a concrete fingerprint.
+    internal func checkoutVariantFingerprint(for productId: String) -> String {
+        product(for: productId)?.checkoutVariantFingerprint ?? "nocatalog"
+    }
+
     /// All currently active entitlements (any source).
     ///
     /// Use this for most app logic: feature gating, billing provider detection,

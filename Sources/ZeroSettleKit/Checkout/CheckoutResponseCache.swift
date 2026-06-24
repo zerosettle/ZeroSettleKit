@@ -32,17 +32,22 @@ internal actor CheckoutResponseCache {
     fileprivate let ttl: TimeInterval = 1800 // 30 minutes
 
     /// Cache key includes the publishable key so entries from one environment
-    /// (sandbox vs live) are never served after an environment switch.
-    private func cacheKey(productId: String, userId: String?, publishableKey: String) -> String {
-        "\(publishableKey):\(productId):\(userId ?? "")"
+    /// (sandbox vs live) are never served after an environment switch, and the
+    /// resolved variant fingerprint so a dashboard variant override (which
+    /// changes the product's price/route/trial on the next catalog fetch) busts
+    /// the entry immediately instead of serving the stale config for up to the
+    /// 30-min TTL. The fingerprint is required (no default) so a forgotten call
+    /// site fails to compile rather than silently degrading to a cache miss.
+    private func cacheKey(productId: String, userId: String?, publishableKey: String, variantFingerprint: String) -> String {
+        "\(publishableKey):\(productId):\(userId ?? ""):\(variantFingerprint)"
     }
 
     // MARK: - Read
 
     /// Non-destructive read. Use for WebView preloading where you need the URL
     /// but don't want to consume the entry.
-    func get(productId: String, userId: String?, publishableKey: String = "") -> CheckoutResponse? {
-        let key = cacheKey(productId: productId, userId: userId, publishableKey: publishableKey)
+    func get(productId: String, userId: String?, publishableKey: String = "", variantFingerprint: String) -> CheckoutResponse? {
+        let key = cacheKey(productId: productId, userId: userId, publishableKey: publishableKey, variantFingerprint: variantFingerprint)
         guard let entry = entries[key],
               Date().timeIntervalSince(entry.timestamp) < ttl else {
             entries.removeValue(forKey: key)
@@ -52,8 +57,8 @@ internal actor CheckoutResponseCache {
     }
 
     /// Convenience accessor for callers that only need the checkout URL and transaction ID.
-    func getURLAndTransactionId(productId: String, userId: String?, publishableKey: String = "") -> (checkoutURL: URL, transactionId: String)? {
-        guard let response = get(productId: productId, userId: userId, publishableKey: publishableKey),
+    func getURLAndTransactionId(productId: String, userId: String?, publishableKey: String = "", variantFingerprint: String) -> (checkoutURL: URL, transactionId: String)? {
+        guard let response = get(productId: productId, userId: userId, publishableKey: publishableKey, variantFingerprint: variantFingerprint),
               let url = URL(string: response.checkoutUrl) else {
             return nil
         }
@@ -70,9 +75,10 @@ internal actor CheckoutResponseCache {
         productId: String,
         userId: String?,
         publishableKey: String = "",
+        variantFingerprint: String,
         loader: @Sendable @escaping () async -> CheckoutResponse?
     ) async -> CheckoutResponse? {
-        let key = cacheKey(productId: productId, userId: userId, publishableKey: publishableKey)
+        let key = cacheKey(productId: productId, userId: userId, publishableKey: publishableKey, variantFingerprint: variantFingerprint)
 
         // 1. Cache hit
         if let entry = entries[key], Date().timeIntervalSince(entry.timestamp) < ttl {
@@ -104,8 +110,8 @@ internal actor CheckoutResponseCache {
 
     /// Destructive read: returns the cached response and removes it from the cache.
     /// Use at presentation time so subsequent views get a fresh server call.
-    func consume(productId: String, userId: String?, publishableKey: String = "") -> CheckoutResponse? {
-        let key = cacheKey(productId: productId, userId: userId, publishableKey: publishableKey)
+    func consume(productId: String, userId: String?, publishableKey: String = "", variantFingerprint: String) -> CheckoutResponse? {
+        let key = cacheKey(productId: productId, userId: userId, publishableKey: publishableKey, variantFingerprint: variantFingerprint)
         guard let entry = entries.removeValue(forKey: key),
               Date().timeIntervalSince(entry.timestamp) < ttl else {
             return nil
@@ -115,15 +121,15 @@ internal actor CheckoutResponseCache {
 
     // MARK: - Write
 
-    func set(productId: String, userId: String?, publishableKey: String = "", response: CheckoutResponse) {
-        let key = cacheKey(productId: productId, userId: userId, publishableKey: publishableKey)
+    func set(productId: String, userId: String?, publishableKey: String = "", variantFingerprint: String, response: CheckoutResponse) {
+        let key = cacheKey(productId: productId, userId: userId, publishableKey: publishableKey, variantFingerprint: variantFingerprint)
         entries[key] = Entry(response: response, timestamp: Date())
     }
 
     // MARK: - Invalidate
 
-    func invalidate(productId: String, userId: String?, publishableKey: String = "") {
-        entries.removeValue(forKey: cacheKey(productId: productId, userId: userId, publishableKey: publishableKey))
+    func invalidate(productId: String, userId: String?, publishableKey: String = "", variantFingerprint: String) {
+        entries.removeValue(forKey: cacheKey(productId: productId, userId: userId, publishableKey: publishableKey, variantFingerprint: variantFingerprint))
     }
 
     /// Remove all cached entries. Called on SDK reconfiguration to prevent

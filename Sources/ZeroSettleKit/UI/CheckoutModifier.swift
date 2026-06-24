@@ -88,7 +88,8 @@ internal func handleCheckoutSuccess(
         await CheckoutResponseCache.shared.invalidate(
             productId: product.id,
             userId: userId,
-            publishableKey: ZeroSettle.shared.currentConfig?.publishableKey ?? ""
+            publishableKey: ZeroSettle.shared.currentConfig?.publishableKey ?? "",
+            variantFingerprint: product.checkoutVariantFingerprint
         )
     }
     pool.reset(for: product.id)
@@ -477,7 +478,7 @@ internal struct CheckoutSheetModifier<Header: View>: ViewModifier {
         guard checkoutType == .webView || checkoutType == .nativePay else { return }
 
         let pk = ZeroSettle.shared.currentConfig?.publishableKey ?? ""
-        if let result = await CheckoutResponseCache.shared.getURLAndTransactionId(productId: product.id, userId: effectiveUserId, publishableKey: pk) {
+        if let result = await CheckoutResponseCache.shared.getURLAndTransactionId(productId: product.id, userId: effectiveUserId, publishableKey: pk, variantFingerprint: product.checkoutVariantFingerprint) {
             preloadedURL = result.checkoutURL
             preloadedTransactionId = result.transactionId
             let preloader = pool.preloader(for: product.id)

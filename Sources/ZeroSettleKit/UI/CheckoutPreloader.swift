@@ -536,7 +536,8 @@ internal final class CheckoutPreloaderPool: ObservableObject {
         var entries: [(productId: String, url: URL)] = []
         for product in products {
             if let result = await CheckoutResponseCache.shared.getURLAndTransactionId(
-                productId: product.id, userId: userId, publishableKey: pk
+                productId: product.id, userId: userId, publishableKey: pk,
+                variantFingerprint: product.checkoutVariantFingerprint
             ) {
                 entries.append((product.id, result.checkoutURL))
             }
