@@ -486,7 +486,21 @@ internal final class StoreKitManager {
         }
     }
 
-    private func handleVerifiedTransaction(_ transaction: SKTransaction, jwsRepresentation: String) async {
+    /// Syncs one verified transaction to the backend.
+    ///
+    /// - Parameter finishOnSuccess: `true` for transactions the SDK observed
+    ///   through `Transaction.updates` — the SDK owns finishing those. `false`
+    ///   when the host app purchased and finished the transaction itself and is
+    ///   reporting it after the fact via
+    ///   ``ZeroSettle/recordStoreKitPurchase(_:)``; calling `finish()` again
+    ///   would be harmless but claims an ownership the SDK doesn't have.
+    /// - Returns: `true` if the backend accepted the sync.
+    @discardableResult
+    private func handleVerifiedTransaction(
+        _ transaction: SKTransaction,
+        jwsRepresentation: String,
+        finishOnSuccess: Bool = true
+    ) async -> Bool {
         ZSLogger.info("StoreKit transaction received: \(transaction.productID) (id: \(transaction.id))", category: .entitlements)
 
         // If no userId is set, leave the transaction unfinished and return.
@@ -509,7 +523,7 @@ internal final class StoreKitManager {
                 "The transaction is left unfinished so StoreKit will redeliver it once you identify the user.",
                 category: .entitlements
             )
-            return
+            return false
         }
 
         // appAccountToken sanity check: warn if the JWS-signed token doesn't
@@ -550,6 +564,7 @@ internal final class StoreKitManager {
         let snapshot = renewalSnapshot(for: transaction.productID)
 
         // Forward JWS to ZeroSettle backend for server-side verification
+        var synced = true
         do {
             let response = try await backend.syncStoreKitTransaction(
                 jwsRepresentation: jwsRepresentation,
@@ -581,8 +596,11 @@ internal final class StoreKitManager {
             }
 
             // Sync succeeded — dequeue any previous retry entry, then finish
+            // (unless the host app already owns this transaction's lifecycle).
             await syncQueue.dequeue(transaction.id)
-            await transaction.finish()
+            if finishOnSuccess {
+                await transaction.finish()
+            }
 
             ZSLogger.info("StoreKit transaction synced: \(transaction.productID)", category: .entitlements)
             delegate?.storeKitDidSyncTransaction(
@@ -608,6 +626,7 @@ internal final class StoreKitManager {
             ))
 
             delegate?.storeKitSyncFailed(error: error)
+            synced = false
         }
 
         // Refresh published entitlements from both local StoreKit and backend.
@@ -617,6 +636,30 @@ internal final class StoreKitManager {
         // state. Replaces a prior lossy merge that dropped backend-returned
         // storekit entitlements, causing premium UI to flash on then off.
         await ZeroSettle.shared.refreshEntitlementsAndPublish()
+
+        return synced
+    }
+
+    // MARK: - Host-App Purchases
+
+    /// Reports a StoreKit transaction the **host app** purchased itself.
+    ///
+    /// `Transaction.updates` never redelivers a transaction StoreKit already
+    /// returned from `Product.purchase()`, so an app that runs its own purchase
+    /// flow is invisible to the listener until the next `identify(_:)` sweeps
+    /// `Transaction.currentEntitlements`. This closes that window.
+    ///
+    /// The transaction is not finished here — the caller already owns it.
+    @discardableResult
+    func recordHostAppPurchase(
+        _ transaction: SKTransaction,
+        jwsRepresentation: String
+    ) async -> Bool {
+        await handleVerifiedTransaction(
+            transaction,
+            jwsRepresentation: jwsRepresentation,
+            finishOnSuccess: false
+        )
     }
 
     private func entitlementFromTransaction(

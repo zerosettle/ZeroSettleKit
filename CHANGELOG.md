@@ -1,5 +1,66 @@
 # Changelog
 
+## Unreleased
+
+Observer-mode support, plus two long-standing correctness fixes.
+
+### `recordStoreKitPurchase(_:)`
+
+New public API for apps that run their own `Product.purchase()` and use
+ZeroSettle to track the result rather than to sell.
+
+`Transaction.updates` does not redeliver a transaction StoreKit already
+returned from `Product.purchase()`, so the SDK's listener never saw those
+purchases. They were not lost — the next `identify(_:)` sweeps
+`Transaction.currentEntitlements` and picks them up — but that could be a whole
+app launch away, and there was no way to close the gap.
+
+```swift
+let result = try await product.purchase(options: options)
+if case .success(.verified(let transaction)) = result {
+    await transaction.finish()
+    unlock()
+    dismiss()
+    Task { await ZeroSettle.shared.recordStoreKitPurchase(result) }
+}
+```
+
+Three overloads: `Product.PurchaseResult`, `VerificationResult<Transaction>`,
+and `productId:` (which resolves `Transaction.latest(for:)`). All are
+non-throwing and return `Bool` — a failed report is queued by the same
+persistent retry queue that backs the listener, and the return value is for
+logging, never for gating access. The transaction is **not** finished for you;
+an app on this path already owns that.
+
+### `ZeroSettleError` is now `Equatable`
+
+`error == .cancelled` is what adopters keep writing — two samples in our own
+docs did — and it did not compile. Synthesis is impossible because several
+cases carry an `any Error`; those compare by case identity, while cases with
+value-typed payloads compare their payloads. `CheckoutFailureReason` is
+`Equatable` too.
+
+`isCancellation(_:)` remains the right tool for cancellations: it also catches
+`CancellationError` and StoreKit's `userCancelled`, which `== .cancelled`
+cannot see.
+
+### `objectWillChange` now fires on every observable mutation
+
+`ZeroSettle` is both `@Observable` and `ObservableObject`, and the macro does
+not publish to `objectWillChange`. Only `entitlements` and `pendingClaims` were
+sending manually, so any view reading `ZeroSettle.shared` through
+`@ObservedObject` / `@StateObject` silently missed changes to `products`,
+`pendingCheckout`, `isConfigured`, `currentOffer`, and the entitlements reset
+inside `identify(_:)`.
+
+A product list bound that way never re-rendered when the catalog loaded, and a
+spinner bound to `pendingCheckout` never moved. The 16 `pendingCheckout`
+assignment sites now route through one mutator so a new one cannot silently
+forget.
+
+`@Observable` tracking — reading `ZeroSettle.shared` directly in a SwiftUI
+`body` — was never affected and remains the recommended style.
+
 ## 1.5.0 — 2026-06-01
 
 On-screen offer-impression tracking:

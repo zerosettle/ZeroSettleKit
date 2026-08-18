@@ -45,7 +45,7 @@ public struct APIErrorDetail: Error, LocalizedError, Sendable {
 ///
 /// Use this to distinguish between card declines, server errors, and network issues
 /// when handling ``ZeroSettleError/checkoutFailed(reason:)``.
-public enum CheckoutFailureReason: Sendable {
+public enum CheckoutFailureReason: Sendable, Equatable {
     /// The requested product was not found on the server.
     case productNotFound
     /// The merchant has not completed Stripe onboarding.
@@ -79,7 +79,7 @@ public enum CheckoutFailureReason: Sendable {
 ///     }
 /// }
 /// ```
-public enum ZeroSettleError: Error, LocalizedError {
+public enum ZeroSettleError: Error, LocalizedError, Equatable {
     /// The SDK has not been configured. Call ``ZeroSettle/configure(_:)`` first.
     case notConfigured
 
@@ -177,6 +177,54 @@ public enum ZeroSettleError: Error, LocalizedError {
     /// This is a hard failure, not a cancellation —
     /// ``ZeroSettleError/isCancellation(_:)`` returns `false`.
     case applePaySetupRequired(autoPresentedSetup: Bool)
+
+    /// Compares two errors by **case identity and value-typed payloads**.
+    ///
+    /// Synthesis is impossible here — ``storeKitVerificationFailed(underlyingError:)``
+    /// and friends carry an `any Error`, which is not `Equatable`. Those cases
+    /// compare equal when the case matches, ignoring the underlying error, so
+    /// `error == .storeKitVerificationFailed(underlyingError: someError)` is a
+    /// case test rather than a payload test. Cases whose payloads *are*
+    /// comparable (`productNotFound`, `checkoutFailed`, `applePaySetupRequired`,
+    /// …) compare their payloads too.
+    ///
+    /// For cancellations prefer ``isCancellation(_:)`` — it also catches
+    /// `CancellationError` and StoreKit's own cancel, which `== .cancelled`
+    /// cannot.
+    public static func == (lhs: ZeroSettleError, rhs: ZeroSettleError) -> Bool {
+        switch (lhs, rhs) {
+        case (.notConfigured, .notConfigured),
+             (.invalidPublishableKey, .invalidPublishableKey),
+             (.checkoutConfigExpired, .checkoutConfigExpired),
+             (.invalidCallbackURL, .invalidCallbackURL),
+             (.cancelled, .cancelled),
+             (.purchasePending, .purchasePending),
+             (.invalidUserId, .invalidUserId),
+             (.userNotIdentified, .userNotIdentified),
+             (.checkoutNotStarted, .checkoutNotStarted),
+             (.applePayUnavailable, .applePayUnavailable):
+            return true
+        case let (.productNotFound(l), .productNotFound(r)):
+            return l == r
+        case let (.checkoutFailed(l), .checkoutFailed(r)):
+            return l == r
+        case let (.transactionVerificationFailed(l), .transactionVerificationFailed(r)):
+            return l == r
+        case let (.webCheckoutDisabledForJurisdiction(l), .webCheckoutDisabledForJurisdiction(r)):
+            return l == r
+        case let (.userIdRequired(l), .userIdRequired(r)):
+            return l == r
+        case let (.applePaySetupRequired(l), .applePaySetupRequired(r)):
+            return l == r
+        // Payload is `any Error` (or contains one) — compare case identity only.
+        case (.apiError, .apiError),
+             (.restoreEntitlementsFailed, .restoreEntitlementsFailed),
+             (.storeKitVerificationFailed, .storeKitVerificationFailed):
+            return true
+        default:
+            return false
+        }
+    }
 
     /// Returns `true` if the error represents a user-initiated cancellation,
     /// regardless of which layer threw it (ZeroSettleKit, StoreKit, or Swift concurrency).
@@ -437,7 +485,10 @@ public final class ZeroSettle: ObservableObject {
     /// to auto-resolve what to report.
     public private(set) var currentOffer: ResolvedOffer?
 
-    internal func setCurrentOffer(_ offer: ResolvedOffer?) { currentOffer = offer }
+    internal func setCurrentOffer(_ offer: ResolvedOffer?) {
+        objectWillChange.send()
+        currentOffer = offer
+    }
 
     #if DEBUG
     internal func setCurrentOfferForTesting(_ offer: ResolvedOffer?) { currentOffer = offer }
@@ -844,6 +895,7 @@ public final class ZeroSettle: ObservableObject {
 
         // Bootstrap state
         isBootstrapped = false
+        objectWillChange.send()
         entitlements = []
         entitlementContinuation?.yield([])
         delegate?.zeroSettleEntitlementsDidUpdate([])
@@ -1075,6 +1127,33 @@ public final class ZeroSettle: ObservableObject {
         delegate?.zeroSettleEntitlementsDidUpdate(newEntitlements)
     }
 
+    /// Set `pendingCheckout` and notify `ObservableObject` consumers.
+    ///
+    /// The `@Observable` macro does not publish to `objectWillChange`, so a bare
+    /// `pendingCheckout = true` updates `withObservationTracking` consumers and
+    /// silently skips every `@ObservedObject` / `@StateObject` view. Funnelling
+    /// the ~15 assignment sites through one mutator is what keeps the two
+    /// observation styles in agreement.
+    private func setPendingCheckout(_ value: Bool) {
+        guard pendingCheckout != value else { return }
+        objectWillChange.send()
+        pendingCheckout = value
+    }
+
+    /// Set `products` and notify `ObservableObject` consumers. See
+    /// ``setPendingCheckout(_:)`` for why this exists.
+    private func setProducts(_ value: [ZSProduct]) {
+        objectWillChange.send()
+        products = value
+    }
+
+    /// Set `isConfigured` and notify `ObservableObject` consumers.
+    private func setIsConfigured(_ value: Bool) {
+        guard isConfigured != value else { return }
+        objectWillChange.send()
+        isConfigured = value
+    }
+
     /// Add a pending claim if not already present (matched by productId + OTID).
     /// Internal — populated by StoreKitManager when sync detects a cross-user conflict.
     internal func addPendingClaim(_ claim: PendingClaim) {
@@ -1232,7 +1311,7 @@ public final class ZeroSettle: ObservableObject {
         // RevenueCat-integrated apps benefit from local UI updates.
         subscriptionMonitor.start()
 
-        isConfigured = true
+        setIsConfigured(true)
 
         let mode = config.publishableKey.hasPrefix("zs_pk_test_") ? "sandbox" : "live"
         ZSLogger.info("ZeroSettle configured (mode=\(mode))", category: .general)
@@ -1644,7 +1723,7 @@ public final class ZeroSettle: ObservableObject {
                 }
             }
 
-            self.products = products
+            setProducts(products)
             return ProductCatalog(products: products, config: catalog.config)
         } catch {
             ZSLogger.error("Failed to fetch products: \(error)", category: .general)
@@ -1744,7 +1823,7 @@ public final class ZeroSettle: ObservableObject {
         }
 
         // Signal checkout started BEFORE opening browser
-        pendingCheckout = true
+        setPendingCheckout(true)
         delegate?.zeroSettleCheckoutDidBegin(productId: productId)
 
         // Native Pay: use STPApplePayContext when trait is enabled + device supports it
@@ -1758,7 +1837,7 @@ public final class ZeroSettle: ObservableObject {
                         userId: effectiveUserId,
                         merchantId: merchantId
                     )
-                    pendingCheckout = false
+                    setPendingCheckout(false)
                     switch result {
                     case .success(let transaction):
                         delegate?.zeroSettleCheckoutDidComplete(transaction: transaction)
@@ -1770,10 +1849,10 @@ public final class ZeroSettle: ObservableObject {
                         throw ZeroSettleError.cancelled
                     }
                 } catch let error as ZeroSettleError {
-                    pendingCheckout = false
+                    setPendingCheckout(false)
                     throw error
                 } catch {
-                    pendingCheckout = false
+                    setPendingCheckout(false)
                     ZSLogger.error("Native Apple Pay failed for \(productId): \(error)", category: .checkout)
                     delegate?.zeroSettleCheckoutDidFail(productId: productId, error: error)
                     throw ZeroSettleError.checkoutFailed(reason: .other(error.localizedDescription))
@@ -1843,7 +1922,7 @@ public final class ZeroSettle: ObservableObject {
                         maxAttempts: 1
                     )
                     ZSLogger.info("Transaction \(transactionId) confirmed via backend verification", category: .checkout)
-                    pendingCheckout = false
+                    setPendingCheckout(false)
                     delegate?.zeroSettleCheckoutDidComplete(transaction: transaction)
                     await refreshEntitlementsAfterCheckout(transaction: transaction)
                     await applyOfferCheckoutCompletionIfApplicable(productId: productId, transactionId: transaction.id)
@@ -1854,14 +1933,14 @@ public final class ZeroSettle: ObservableObject {
             }
 
             // User truly abandoned — no callback and transaction not completed.
-            pendingCheckout = false
+            setPendingCheckout(false)
             delegate?.zeroSettleCheckoutDidCancel(productId: productId)
             throw ZeroSettleError.cancelled
         } catch let error as ZeroSettleError {
-            pendingCheckout = false
+            setPendingCheckout(false)
             throw error
         } catch {
-            pendingCheckout = false
+            setPendingCheckout(false)
             ZSLogger.error("Checkout failed for \(productId): \(error)", category: .checkout)
             delegate?.zeroSettleCheckoutDidFail(productId: productId, error: error)
 
@@ -1918,7 +1997,7 @@ public final class ZeroSettle: ObservableObject {
             )
         }
 
-        pendingCheckout = true
+        setPendingCheckout(true)
         delegate?.zeroSettleCheckoutDidBegin(productId: productId)
 
         do {
@@ -1932,10 +2011,10 @@ public final class ZeroSettle: ObservableObject {
                     }
                 )
             }
-            pendingCheckout = false
+            setPendingCheckout(false)
             return transaction
         } catch {
-            pendingCheckout = false
+            setPendingCheckout(false)
             if case ZeroSettleError.cancelled = error {
                 delegate?.zeroSettleCheckoutDidCancel(productId: productId)
             } else {
@@ -2024,12 +2103,12 @@ public final class ZeroSettle: ObservableObject {
         // `purchaseViaStoreKit` handles `setActiveUserId` itself.
         armOfferForCheckoutIfApplicable(productId: productId)
 
-        pendingCheckout = true
+        setPendingCheckout(true)
         delegate?.zeroSettleCheckoutDidBegin(productId: productId)
 
         do {
             let skTransaction = try await purchaseViaStoreKit(productId: productId, userId: userId)
-            pendingCheckout = false
+            setPendingCheckout(false)
 
             // Synthesize a CheckoutTransaction from the StoreKit result. The
             // StoreKit sync response carries no ZeroSettle transaction id, so we
@@ -2050,11 +2129,11 @@ public final class ZeroSettle: ObservableObject {
             await applyOfferCheckoutCompletionIfApplicable(productId: productId, transactionId: transaction.id)
             return transaction
         } catch ZeroSettleError.cancelled {
-            pendingCheckout = false
+            setPendingCheckout(false)
             delegate?.zeroSettleCheckoutDidCancel(productId: productId)
             throw ZeroSettleError.cancelled
         } catch {
-            pendingCheckout = false
+            setPendingCheckout(false)
             ZSLogger.error("StoreKit-routed checkout failed for \(productId): \(error)", category: .checkout)
             delegate?.zeroSettleCheckoutDidFail(productId: productId, error: error)
             throw error
@@ -2091,6 +2170,112 @@ public final class ZeroSettle: ObservableObject {
             ZSLogger.error("Failed to track migration conversion: \(error)", category: .migration)
             throw Backend.wrapError(error)
         }
+    }
+
+    // MARK: - Host-App StoreKit Purchases
+
+    /// Reports a StoreKit purchase **your app** made with `Product.purchase()`.
+    ///
+    /// Use this when ZeroSettle is an observer rather than the seller: your app
+    /// owns the paywall and the StoreKit call, and ZeroSettle is tracking the
+    /// revenue, trials, and entitlements that result.
+    ///
+    /// It exists because `Transaction.updates` does **not** redeliver a
+    /// transaction StoreKit already returned from `Product.purchase()`. The
+    /// SDK's listener therefore never sees your own purchases. They are not
+    /// lost — the next ``identify(_:)`` syncs `Transaction.currentEntitlements`
+    /// and picks them up — but that can be a whole app launch away. This
+    /// reports the purchase now.
+    ///
+    /// Errors are swallowed and logged. A failed report is retried by the same
+    /// persistent queue that backs the listener, and the return value is for
+    /// callers who want to log the outcome — never for gating access.
+    ///
+    /// - Important: Call this **off the purchase's critical path** — after you
+    ///   have finished the transaction, unlocked the feature, and dismissed the
+    ///   paywall. It performs a network round trip, and nothing a customer sees
+    ///   should wait on analytics.
+    ///
+    /// - Important: The transaction is not finished for you. Your app already
+    ///   owns that, and double-finishing is not this API's job.
+    ///
+    /// ```swift
+    /// let result = try await product.purchase(options: options)
+    /// if case .success(.verified(let transaction)) = result {
+    ///     await transaction.finish()
+    ///     unlock()
+    ///     dismiss()
+    ///     Task { await ZeroSettle.shared.recordStoreKitPurchase(result) }
+    /// }
+    /// ```
+    ///
+    /// - Parameter result: The value returned by `Product.purchase()`.
+    /// - Returns: `true` if the backend accepted the transaction. `false` for a
+    ///   cancelled, pending, or unverified purchase, when the SDK is not
+    ///   configured, when no user has been identified, or when the report
+    ///   failed and was queued for retry.
+    @discardableResult
+    public func recordStoreKitPurchase(
+        _ result: StoreKit.Product.PurchaseResult
+    ) async -> Bool {
+        guard case .success(let verification) = result else {
+            // Cancelled or pending — there is no transaction to report.
+            return false
+        }
+        return await recordStoreKitPurchase(verification)
+    }
+
+    /// Reports a verified StoreKit transaction your app purchased itself.
+    ///
+    /// The `VerificationResult` overload of
+    /// ``recordStoreKitPurchase(_:)-(Product.PurchaseResult)``, for callers
+    /// holding the verification rather than the whole purchase result. The JWS
+    /// representation lives on the `VerificationResult`, which is why a bare
+    /// `StoreKit.Transaction` is not accepted here — see
+    /// ``recordStoreKitPurchase(productId:)`` for that case.
+    @discardableResult
+    public func recordStoreKitPurchase(
+        _ verification: StoreKit.VerificationResult<StoreKit.Transaction>
+    ) async -> Bool {
+        guard case .verified(let transaction) = verification else {
+            ZSLogger.error(
+                "recordStoreKitPurchase: transaction failed Apple's verification — not reported",
+                category: .entitlements
+            )
+            return false
+        }
+        guard let storeKitManager else {
+            ZSLogger.debug(
+                "recordStoreKitPurchase: StoreKit sync is off (syncStoreKitTransactions: false) — dropping",
+                category: .entitlements
+            )
+            return false
+        }
+        return await storeKitManager.recordHostAppPurchase(
+            transaction,
+            jwsRepresentation: verification.jwsRepresentation
+        )
+    }
+
+    /// Reports the most recent StoreKit transaction for a product.
+    ///
+    /// For callers who no longer hold the purchase result — a restore path, or
+    /// a report issued from a different layer than the one that bought.
+    /// Resolves `Transaction.latest(for:)`, which includes transactions your app
+    /// has already finished.
+    ///
+    /// - Returns: `false` when there is no transaction for that product, or for
+    ///   any of the reasons listed on ``recordStoreKitPurchase(_:)-(Product.PurchaseResult)``.
+    @discardableResult
+    public func recordStoreKitPurchase(productId: String) async -> Bool {
+        guard let latest = await StoreKit.Transaction.latest(for: productId) else {
+            ZSLogger.debug(
+                "recordStoreKitPurchase: no StoreKit transaction for product=\(productId)",
+                category: .entitlements
+            )
+            return false
+        }
+        return await recordStoreKitPurchase(latest)
     }
 
     // MARK: - Funnel Analytics
@@ -2887,7 +3072,7 @@ public final class ZeroSettle: ObservableObject {
     /// fires delegate callbacks, refreshes entitlements, and — if `purchase()` is
     /// awaiting — resumes its continuation with the result.
     private func processCheckoutCallback(_ callback: CheckoutCallback) async {
-        pendingCheckout = false
+        setPendingCheckout(false)
 
         guard callback.success else {
             ZSLogger.info("Checkout cancelled for product: \(callback.productId)", category: .checkout)
