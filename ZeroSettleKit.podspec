@@ -24,6 +24,15 @@ Pod::Spec.new do |s|
     'Sources/ZeroSettleKit/**/*.swift'
   ]
 
+  # Apple requires the privacy manifest at the root of a bundle. SPM gets this
+  # from the `resources:` declaration in Package.swift; CocoaPods needs its own,
+  # or pod consumers — which today means every Flutter adopter — install 1.6.0
+  # without the manifest and are back to declaring our UserDefaults use on our
+  # behalf.
+  s.resource_bundles = {
+    'ZeroSettleKit' => ['Sources/ZeroSettleKit/PrivacyInfo.xcprivacy']
+  }
+
   s.frameworks = 'Foundation', 'UIKit', 'SwiftUI', 'StoreKit',
                  'WebKit', 'SafariServices', 'Combine', 'PassKit'
 
