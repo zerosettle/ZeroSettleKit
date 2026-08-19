@@ -5,8 +5,15 @@
 Additive minor. No breaking changes, and `Configuration` is untouched — no new
 fields, no changed defaults — so this is a drop-in upgrade from 1.5.x.
 
-(1.6.0 also carries the cancel-flow UI work; the sections below are the
-observer-mode half of the release.)
+Cut deliberately **without** the in-flight cancel-flow UI work, which stays
+unreleased and moves to 1.7.0. This branch is 1.5.2 + the experiments work +
+the observer-mode changes below.
+
+> **TODO before tagging:** the experiments work (`checkout_route` routing,
+> storefront on products fetch, 410 re-init recovery, variant-aware cache key —
+> commits d36c6bd, c8bcea3, 78b7815) is in this release and has no notes here.
+> Whoever owns it should add a section; it adds public surface of its own, which
+> is part of why this is a minor rather than a patch.
 
 ### `recordStoreKitPurchase(_:)`
 
