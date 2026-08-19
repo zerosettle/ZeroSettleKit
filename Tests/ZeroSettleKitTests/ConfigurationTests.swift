@@ -7,7 +7,7 @@ import XCTest
 
 final class ConfigurationTests: XCTestCase {
     func testSdkVersionIsExposed() {
-        XCTAssertEqual(Configuration.sdkVersion, "1.5.2")
+        XCTAssertEqual(Configuration.sdkVersion, "1.6.0")
     }
 
     func testSdkVersionParseable() {
