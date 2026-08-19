@@ -2174,18 +2174,35 @@ public final class ZeroSettle: ObservableObject {
 
     // MARK: - Host-App StoreKit Purchases
 
-    /// Reports a StoreKit purchase **your app** made with `Product.purchase()`.
+    /// Reports a StoreKit purchase **your app** made by calling StoreKit's
+    /// `Product.purchase()` directly.
     ///
-    /// Use this when ZeroSettle is an observer rather than the seller: your app
-    /// owns the paywall and the StoreKit call, and ZeroSettle is tracking the
-    /// revenue, trials, and entitlements that result.
+    /// ## Most apps never need this
     ///
-    /// It exists because `Transaction.updates` does **not** redeliver a
-    /// transaction StoreKit already returned from `Product.purchase()`. The
-    /// SDK's listener therefore never sees your own purchases. They are not
-    /// lost — the next ``identify(_:)`` syncs `Transaction.currentEntitlements`
-    /// and picks them up — but that can be a whole app launch away. This
-    /// reports the purchase now.
+    /// You do **not** need to call it if:
+    ///
+    /// - You buy through the SDK — ``purchase(productId:userId:presentation:)``,
+    ///   ``purchaseViaStoreKit(productId:userId:)``, or the `.checkoutSheet`
+    ///   modifier. The SDK made the purchase and has already synced it.
+    /// - The event is a renewal, refund, revocation, expiry, or a purchase made
+    ///   on another device. Those arrive through the SDK's `Transaction.updates`
+    ///   listener and the launch-time subscription reconcile, with no help.
+    /// - You are content for your own purchase to appear on the dashboard at
+    ///   the next ``identify(_:)`` — typically the next app launch — rather
+    ///   than within seconds of the sale.
+    ///
+    /// ## When you do
+    ///
+    /// Exactly one situation: your app owns the paywall and calls StoreKit's
+    /// `Product.purchase()` itself, **and** you want that purchase reported
+    /// immediately rather than at the next launch.
+    ///
+    /// The gap is Apple's, not the SDK's: `Transaction.updates` does not
+    /// redeliver a transaction StoreKit already handed back from
+    /// `Product.purchase()`, so no listener — ours or anyone else's — can see
+    /// it. Nothing is lost either way; ``identify(_:)`` sweeps
+    /// `Transaction.currentEntitlements` and picks it up. This just closes the
+    /// window.
     ///
     /// Errors are swallowed and logged. A failed report is retried by the same
     /// persistent queue that backs the listener, and the return value is for
@@ -2227,11 +2244,13 @@ public final class ZeroSettle: ObservableObject {
 
     /// Reports a verified StoreKit transaction your app purchased itself.
     ///
-    /// The `VerificationResult` overload of
-    /// ``recordStoreKitPurchase(_:)-(Product.PurchaseResult)``, for callers
-    /// holding the verification rather than the whole purchase result. The JWS
-    /// representation lives on the `VerificationResult`, which is why a bare
-    /// `StoreKit.Transaction` is not accepted here — see
+    /// The `VerificationResult` overload, for callers holding the verification
+    /// rather than the whole purchase result. Optional in the same way — see
+    /// ``recordStoreKitPurchase(_:)-(Product.PurchaseResult)`` for when this
+    /// family is and isn't needed.
+    ///
+    /// The JWS representation lives on the `VerificationResult`, which is why a
+    /// bare `StoreKit.Transaction` is not accepted here — see
     /// ``recordStoreKitPurchase(productId:)`` for that case.
     @discardableResult
     public func recordStoreKitPurchase(
@@ -2262,7 +2281,8 @@ public final class ZeroSettle: ObservableObject {
     /// For callers who no longer hold the purchase result — a restore path, or
     /// a report issued from a different layer than the one that bought.
     /// Resolves `Transaction.latest(for:)`, which includes transactions your app
-    /// has already finished.
+    /// has already finished. Optional in the same way as the rest of this
+    /// family — see ``recordStoreKitPurchase(_:)-(Product.PurchaseResult)``.
     ///
     /// - Returns: `false` when there is no transaction for that product, or for
     ///   any of the reasons listed on ``recordStoreKitPurchase(_:)-(Product.PurchaseResult)``.

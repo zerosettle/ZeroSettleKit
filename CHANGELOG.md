@@ -1,13 +1,25 @@
 # Changelog
 
-## Unreleased
+## 1.6.0 — unreleased
 
-Observer-mode support, plus two long-standing correctness fixes.
+Additive minor. No breaking changes, and `Configuration` is untouched — no new
+fields, no changed defaults — so this is a drop-in upgrade from 1.5.x.
+
+(1.6.0 also carries the cancel-flow UI work; the sections below are the
+observer-mode half of the release.)
 
 ### `recordStoreKitPurchase(_:)`
 
 New public API for apps that run their own `Product.purchase()` and use
 ZeroSettle to track the result rather than to sell.
+
+**Optional.** You do not need it if you buy through the SDK (`purchase`,
+`purchaseViaStoreKit`, `.checkoutSheet`) — those already sync. Nor for
+renewals, refunds, revocations, or purchases made on another device, which
+arrive through the `Transaction.updates` listener and the launch reconcile. Nor
+at all, if you are content for your own purchase to show up at the next
+`identify(_:)` instead of within seconds. It closes exactly one window: an app
+that owns its paywall and wants its own sale reported immediately.
 
 `Transaction.updates` does not redeliver a transaction StoreKit already
 returned from `Product.purchase()`, so the SDK's listener never saw those
@@ -83,6 +95,11 @@ forget.
 
 `@Observable` tracking — reading `ZeroSettle.shared` directly in a SwiftUI
 `body` — was never affected and remains the recommended style.
+
+This is the one behavioural change in the release. It is a fix, but it is
+visible: an `ObservableObject` consumer starts receiving updates it was
+previously missing, so a view that appeared static may now re-render where it
+did not before.
 
 ## 1.5.0 — 2026-06-01
 
