@@ -49,6 +49,13 @@ let package = Package(
                 ),
             ],
             path: "Sources/ZeroSettleKit",
+            // Apple requires third-party SDKs to ship their own privacy
+            // manifest. `.copy` rather than `.process` so it lands at the
+            // resource bundle's root, which is where the App Store tooling
+            // looks for it.
+            resources: [
+                .copy("PrivacyInfo.xcprivacy"),
+            ],
             swiftSettings: [
                 .define("DEBUG", .when(configuration: .debug)),
             ]

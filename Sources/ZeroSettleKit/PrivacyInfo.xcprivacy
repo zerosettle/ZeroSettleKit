@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  ZeroSettleKit's privacy manifest.
+
+	  Apple requires third-party SDKs to declare their own required-reason API
+	  use and data collection. Without this file every adopter either guesses on
+	  our behalf — they cannot see inside the binary — or ships without the
+	  declaration and collects ITMS-91053 on upload.
+
+	  Keep this in sync with the code. The two things that would invalidate it:
+	  adopting a new required-reason API, or sending a new category of data to
+	  api.zerosettle.io.
+	-->
+
+	<!--
+	  ZeroSettle does not track. Nothing here is used to link a person to data
+	  from other companies' apps or websites, and nothing is shared with a data
+	  broker. Purchases are attributed only to the app-supplied user id, within
+	  the adopting app's own tenant.
+	-->
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array>
+		<!--
+		  The identifier the adopting app passes to `identify(.user(id:))`, or
+		  the SDK-generated UUID under `Identity.anonymous`. Every other record
+		  below is keyed by it, which is what makes them all "linked".
+		-->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeUserID</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+				<string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
+			</array>
+		</dict>
+
+		<!--
+		  Transactions, entitlements, renewals, refunds, and trial state — both
+		  web checkout and, when `syncStoreKitTransactions` is enabled, the
+		  Apple-signed StoreKit transactions the app makes itself.
+		-->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypePurchaseHistory</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+				<string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
+			</array>
+		</dict>
+
+		<!--
+		  Optional. Only collected when the adopting app supplies them, via
+		  `identify(.user(id:name:email:))` or `setCustomer(name:email:)`. They
+		  populate the Stripe customer record and the receipt email. An adopter
+		  that never passes them sends neither.
+		-->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeName</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeEmailAddress</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+
+		<!--
+		  The device's iOS version and App Store storefront country, sent with
+		  checkout requests. Both feed jurisdiction and external-purchase-regime
+		  detection — Japan's MSCA regime requires iOS 26.4+, and the storefront
+		  decides which compliance rules apply. Neither is a device identifier.
+		-->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeOtherDiagnosticData</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+	</array>
+
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<!--
+		  The only required-reason API the SDK touches. `UserDefaults.standard`
+		  exclusively — never an App Group suite — for the anonymous session
+		  UUID, the StoreKit sync retry queue, offer-dismissal state, and Apple
+		  Pay availability caching. CA92.1 is the app-scoped reason: read and
+		  write information accessible only to this app. If a shared App Group
+		  suite is ever adopted, this becomes 1C8F.1 and must be updated.
+		-->
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>CA92.1</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

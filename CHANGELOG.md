@@ -44,6 +44,29 @@ value-typed payloads compare their payloads. `CheckoutFailureReason` is
 `CancellationError` and StoreKit's `userCancelled`, which `== .cancelled`
 cannot see.
 
+### Privacy manifest
+
+`Sources/ZeroSettleKit/PrivacyInfo.xcprivacy`, declared as a `.copy` resource so
+it lands at the root of the SDK's resource bundle.
+
+Apple expects third-party SDKs to declare their own required-reason API use and
+data collection. Without it, adopters either guessed on our behalf — they cannot
+see inside the binary — or shipped without the declaration and collected
+ITMS-91053 on upload. RevenueCat has shipped one for a while; we were the odd
+one out in the same app.
+
+Declares `NSPrivacyAccessedAPICategoryUserDefaults` with reason `CA92.1` (the
+app-scoped reason — the SDK uses `UserDefaults.standard` exclusively, never an
+App Group suite), `NSPrivacyTracking` false with no tracking domains, and four
+collected data types: user id, purchase history, and the optional name/email
+from `identify(.user(id:name:email:))` / `setCustomer(name:email:)`, plus the
+iOS version and App Store storefront that feed jurisdiction detection.
+
+Audited for the rest of the required-reason surface at the same time — no file
+timestamps, disk space, boot time, active keyboards, IDFA, or Keychain. If any
+of those arrive, or a shared App Group suite does, this file has to change with
+them.
+
 ### `objectWillChange` now fires on every observable mutation
 
 `ZeroSettle` is both `@Observable` and `ObservableObject`, and the macro does
