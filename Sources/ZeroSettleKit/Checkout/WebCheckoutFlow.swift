@@ -269,6 +269,16 @@ internal final class WebCheckoutFlow: NSObject {
         safari.dismissButtonStyle = .close
         safari.applyZSPageSheetPresentation()
 
+        // BOTH delegate paths must be wired. `safariViewControllerDidFinish`
+        // fires only when the user taps the close button — an interactive
+        // swipe-down on the page sheet routes through
+        // `presentationControllerDidDismiss` instead. Without this, a swipe
+        // leaves `inlineCheckoutContinuation` suspended forever: purchase()
+        // never returns, the caller's completion never fires, and the app's
+        // buy button spins indefinitely. Set after
+        // `applyZSPageSheetPresentation()` so the sheet controller exists.
+        safari.presentationController?.delegate = self
+
         self.safariViewController = safari
         self.presentedSafariVC = safari
 
@@ -323,7 +333,19 @@ internal final class WebCheckoutFlow: NSObject {
 
 extension WebCheckoutFlow: @preconcurrency SFSafariViewControllerDelegate {
     func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
-        ZSLogger.debug("Inline checkout dismissed by user", category: .checkout)
+        ZSLogger.debug("Inline checkout dismissed by user (close button)", category: .checkout)
+        resumeCheckoutContinuation()
+    }
+}
+
+// MARK: - UIAdaptivePresentationControllerDelegate
+
+/// Covers the interactive swipe-to-dismiss path, which never reaches
+/// `SFSafariViewControllerDelegate`. `resumeCheckoutContinuation()` is
+/// idempotent, so it is safe for both delegates to fire.
+extension WebCheckoutFlow: @preconcurrency UIAdaptivePresentationControllerDelegate {
+    func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+        ZSLogger.debug("Inline checkout dismissed by user (swipe)", category: .checkout)
         resumeCheckoutContinuation()
     }
 }
