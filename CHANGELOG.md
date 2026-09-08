@@ -1,6 +1,35 @@
 # Changelog
 
-## 1.6.0 — unreleased
+## 1.6.1 — 2026-09-07
+
+Patch. Two fixes on the browser checkout path — the one you get when your
+checkout sheet type is `.safari` or `.safariVC`. No API changes; drop-in from
+1.6.0, and from 1.5.x by way of the 1.6.0 notes below.
+
+### Swipe-dismissing checkout no longer strands the caller
+
+`SFSafariViewController` is presented as a page sheet with a grabber, so it can
+be dismissed by swiping it away — but `safariViewControllerDidFinish` fires
+only for the close button. The swipe routes through
+`UIAdaptivePresentationControllerDelegate` instead, which the checkout flow
+never adopted. The continuation awaiting dismissal was therefore never resumed:
+`purchase()` never returned, your `onComplete` never fired, and a buy button
+left in a loading state spun indefinitely. Closing with the X was unaffected,
+though it takes a moment while we confirm the transaction was abandoned.
+
+The same omission stranded the transaction poller, whose "keep polling" test is
+cleared only when that continuation resumes — so it ran to exhaustion, the one
+outcome that does not dismiss the sheet.
+
+### `onPresent` now fires on the browser path
+
+`.checkoutSheet(item:…)`'s `onPresent` fired only on the WebView path. Apps
+using it to clear a "buy tapped" loading state — the pattern our sample app
+documents — kept that state set for the entire browser session. It now fires
+when checkout is delegated to the browser. There is no true present-time hook
+on this path, so it fires at delegation, marginally before the browser appears.
+
+## 1.6.0 — 2026-08-19
 
 Additive minor. No breaking changes, and `Configuration` is untouched — no new
 fields, no changed defaults — so this is a drop-in upgrade from 1.5.x.
@@ -9,11 +38,30 @@ Cut deliberately **without** the in-flight cancel-flow UI work, which stays
 unreleased and moves to 1.7.0. This branch is 1.5.2 + the experiments work +
 the observer-mode changes below.
 
-> **TODO before tagging:** the experiments work (`checkout_route` routing,
-> storefront on products fetch, 410 re-init recovery, variant-aware cache key —
-> commits d36c6bd, c8bcea3, 78b7815) is in this release and has no notes here.
-> Whoever owns it should add a section; it adds public surface of its own, which
-> is part of why this is a minor rather than a patch.
+### Experiment support: routing, storefront, and cache freshness
+
+`fetchProducts` now sends the storefront (`Storefront.current.countryCode`) —
+the same value checkout sends — so a geo-targeted experiment resolves
+identically at display and at charge. The backend normalizes alpha-3 to
+alpha-2.
+
+Products carry a `checkoutRoute` of `web` or `store`. A cohort routed off web
+checkout now gets a clean native StoreKit purchase instead of a web `403`, and
+every entry point honors it — `purchase()`, `.checkoutSheet`, the WebView path
+and NativePay — through one rule: web checkout is used only when the route is
+`web` **and** a `webPrice` exists. Preloading skips store-routed products.
+
+Checkout response caching folds a variant fingerprint (route, web price, trial)
+into its key, so a dashboard override busts the cache on the next fetch rather
+than serving a stale price for the remainder of the TTL.
+
+Interactive pay recovers from a superseded checkout config: a `410` triggers a
+single re-initiate against the now-current variant, guarded on amount and trial
+so it throws rather than charging a price the customer did not approve. A
+second `410` propagates rather than looping.
+
+The NativePay trait compiles again — two Swift 6 strict-concurrency errors in
+the Apple Pay delegate. Annotations only; payment logic is byte-identical.
 
 ### `recordStoreKitPurchase(_:)`
 
