@@ -56,10 +56,17 @@ internal func performSafariCheckout(
     product: ZSProduct,
     userId: String?,
     checkoutType: CheckoutType,
+    onPresent: (() -> Void)? = nil,
     onComplete: (Result<CheckoutTransaction, Error>) -> Void,
     onFinally: () -> Void
 ) async {
     ZSLogger.info("[Checkout] safari delegation: routing to purchase() for \(checkoutType.rawValue)", category: .checkout)
+    // The WebView path fires this once the sheet is on screen. There is no
+    // equivalent hook on the browser path, so it fires at delegation time:
+    // slightly before the browser actually appears, but callers use it to clear
+    // a "buy tapped" loading state, and never firing it at all left that state
+    // set for the entire browser session.
+    onPresent?()
     do {
         let transaction = try await ZeroSettle.shared.purchase(
             productId: product.id, userId: userId
@@ -681,6 +688,7 @@ internal struct CheckoutSheetItemModifier<Header: View>: ViewModifier {
         guard checkoutType == .webView || checkoutType == .nativePay else {
             await performSafariCheckout(
                 product: product, userId: effectiveUserId, checkoutType: checkoutType,
+                onPresent: onPresent,
                 onComplete: wrappedOnComplete(productId: product.id), onFinally: { item = nil }
             )
             return
