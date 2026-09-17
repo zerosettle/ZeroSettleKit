@@ -324,14 +324,20 @@ public enum FunnelEventType: String, Sendable {
 ///   on first call and persists it in `UserDefaults` under
 ///   `zerosettle.anonymous_session_uuid`. The same UUID is reused across
 ///   launches until ``ZeroSettle/logout()`` is called or the app is
-///   uninstalled. Anonymous purchases attach to this UUID; they can be
-///   reconciled into a real user account later via
-///   `completeIdentification(.user(...))` (added in PR C2 — backend
-///   reconciliation endpoint).
+///   uninstalled. Anonymous purchases attach to this UUID **permanently**
+///   — there is no API to move them onto a real account later, and
+///   calling ``ZeroSettle/identify(_:)`` with `.user(...)` afterwards
+///   does not re-key them. If the user can eventually sign in, prefer
+///   `.deferred` until you have their real ID.
 /// - **`.deferred`** — you intend to identify later (auth happens on a
 ///   subsequent screen). Suppresses the 10s "no user identified" warning
-///   and is otherwise a no-op. Call ``ZeroSettle/identify(_:)`` again
-///   with `.user(...)` or `.anonymous` once you know who the user is.
+///   and is otherwise a no-op: it creates no identity, returns `nil`, and
+///   does **not** satisfy the identify-first requirement. `purchase()`
+///   and every other user-scoped call still throw
+///   ``ZeroSettleError/userNotIdentified`` until you call
+///   ``ZeroSettle/identify(_:)`` again with `.user(...)` or `.anonymous`.
+///   Nothing can be purchased "under" a deferred identity, so there is
+///   never an earlier purchase to reconcile.
 ///
 /// Pick exactly one. Don't mix `.user` with `.anonymous` in the same
 /// session — that would create two backend `Identity` records for what
