@@ -32,7 +32,7 @@ internal final class Backend: @unchecked Sendable {
         self.publishableKey = publishableKey
 
         self.decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .iso8601Permissive
         decoder.keyDecodingStrategy = .convertFromSnakeCase
 
         self.encoder = JSONEncoder()
