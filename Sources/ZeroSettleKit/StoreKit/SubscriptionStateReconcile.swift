@@ -36,9 +36,11 @@ internal struct ReconcileCandidate: Equatable {
 /// The backend only needs the current state of each subscription, not its
 /// history, so the payload is kept small:
 /// - Subscriptions: one entry per `Product.SubscriptionInfo.status(for:)`
-///   status (the latest transaction plus its signed renewal info). If the
-///   status call throws for a group, the latest `Transaction.all` transaction
-///   per original transaction ID stands in, without renewal info.
+///   status (the latest transaction plus its signed renewal info). Any
+///   subscription original transaction ID that no status entry covers (the
+///   status call threw, returned nothing, failed verification, or omitted that
+///   ID) falls back to its latest `Transaction.all` transaction, without
+///   renewal info.
 /// - Non-subscriptions (consumables, non-consumables): one entry per
 ///   transaction from `Transaction.all`, without renewal info, so refunds
 ///   still reach the backend.
@@ -94,20 +96,21 @@ internal struct SubscriptionStateReconciler {
 
     // MARK: - Pure selection
 
-    /// Picks what to send. Groups present in `statusesByGroup` use their status
-    /// entries; groups absent from it (the status call threw) fall back to the
-    /// latest transaction per original ID. Non-subscriptions pass through.
+    /// Picks what to send. Status entries are used as-is. Every subscription
+    /// original ID not covered by a status entry falls back to its latest
+    /// transaction, whatever the reason (call threw, empty or unverified list,
+    /// ID omitted). Non-subscriptions pass through.
     static func select(
         transactions: [ReconcileCandidate],
         statusesByGroup: [String: [ReconcileCandidate]]
     ) -> [ReconcileCandidate] {
         let statusEntries = dedupedByID(statusesByGroup.keys.sorted().flatMap { statusesByGroup[$0] ?? [] })
-        let failedGroupTxns = transactions.filter {
-            guard let group = $0.subscriptionGroupID else { return false }
-            return statusesByGroup[group] == nil
+        let covered = Set(statusEntries.map(\.originalID))
+        let uncoveredTxns = transactions.filter {
+            $0.subscriptionGroupID != nil && !covered.contains($0.originalID)
         }
         let nonSubscriptions = dedupedByID(transactions.filter { $0.subscriptionGroupID == nil })
-        return statusEntries + latestPerOriginalID(failedGroupTxns) + nonSubscriptions
+        return statusEntries + latestPerOriginalID(uncoveredTxns) + nonSubscriptions
     }
 
     /// First occurrence of each transaction ID wins.

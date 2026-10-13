@@ -102,7 +102,7 @@ final class SubscriptionStateReconcileTests: XCTestCase {
         XCTAssertEqual(picked.map(\.id), [9])
     }
 
-    func testSelectFallsBackOnlyForGroupsWhoseStatusFailed() {
+    func testSelectFallsBackOnlyForOriginalIDsWithoutStatus() {
         let txns = [
             cand(1, otid: 1, at: 1, group: "ok"), cand(2, otid: 1, at: 2, group: "ok"),
             cand(3, otid: 2, at: 1, group: "bad"), cand(4, otid: 2, at: 2, group: "bad"),
@@ -111,6 +111,25 @@ final class SubscriptionStateReconcileTests: XCTestCase {
         let out = SubscriptionStateReconciler.select(
             transactions: txns, statusesByGroup: ["ok": [status]]
         )
+        XCTAssertEqual(out.map(\.id), [2, 4])
+        XCTAssertEqual(out.first { $0.id == 2 }?.signedRenewalInfo, "r")
+        XCTAssertNil(out.first { $0.id == 4 }?.signedRenewalInfo)
+    }
+
+    func testEmptyStatusListFallsBackForGroup() {
+        let txns = [cand(1, otid: 1, at: 1), cand(2, otid: 1, at: 2), cand(3, otid: 2, at: 1)]
+        let out = SubscriptionStateReconciler.select(transactions: txns, statusesByGroup: ["g": []])
+        XCTAssertEqual(out.map(\.id), [2, 3])
+        XCTAssertTrue(out.allSatisfy { $0.signedRenewalInfo == nil })
+    }
+
+    func testStatusMissingOneOriginalIDFallsBackForThatID() {
+        let txns = [
+            cand(1, otid: 1, at: 1), cand(2, otid: 1, at: 2),
+            cand(3, otid: 2, at: 1), cand(4, otid: 2, at: 2),
+        ]
+        let status = cand(2, otid: 1, at: 2, renewal: "r")
+        let out = SubscriptionStateReconciler.select(transactions: txns, statusesByGroup: ["g": [status]])
         XCTAssertEqual(out.map(\.id), [2, 4])
         XCTAssertEqual(out.first { $0.id == 2 }?.signedRenewalInfo, "r")
         XCTAssertNil(out.first { $0.id == 4 }?.signedRenewalInfo)
