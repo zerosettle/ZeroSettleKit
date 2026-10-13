@@ -11,40 +11,71 @@ internal struct SubscriptionStateEntry: Encodable {
     let signedRenewalInfo: String?
 }
 
+/// One StoreKit transaction reduced to the fields the reconcile selection
+/// needs, so selection and filtering can be unit tested without StoreKit.
+internal struct ReconcileCandidate: Equatable {
+    let id: UInt64
+    let originalID: UInt64
+    let purchaseDate: Date
+    let appAccountToken: UUID?
+    let signedTransaction: String
+    let signedRenewalInfo: String?
+    /// `nil` for consumables and non-consumables.
+    let subscriptionGroupID: String?
+
+    var entry: SubscriptionStateEntry {
+        SubscriptionStateEntry(
+            signedTransaction: signedTransaction,
+            signedRenewalInfo: signedRenewalInfo
+        )
+    }
+}
+
 /// Builds the bulk reconcile payload from the device's StoreKit state.
 ///
-/// Iterates `Transaction.all` (which includes expired and revoked
-/// transactions, unlike `currentEntitlements`). For each transaction in
-/// a subscription product, looks up the corresponding
-/// `Product.SubscriptionInfo.Status.renewalInfo` JWS via
-/// `Product.SubscriptionInfo.status(for:)`.
-///
-/// Non-subscription transactions (consumables, non-consumables) are
-/// included but without `signedRenewalInfo` (the backend ignores them
-/// for state classification — they have no lifecycle).
+/// The backend only needs the current state of each subscription, not its
+/// history, so the payload is kept small:
+/// - Subscriptions: one entry per `Product.SubscriptionInfo.status(for:)`
+///   status (the latest transaction plus its signed renewal info). If the
+///   status call throws for a group, the latest `Transaction.all` transaction
+///   per original transaction ID stands in, without renewal info.
+/// - Non-subscriptions (consumables, non-consumables): one entry per
+///   transaction from `Transaction.all`, without renewal info, so refunds
+///   still reach the backend.
+/// - Entries whose `appAccountToken` belongs to a different user are dropped.
 internal struct SubscriptionStateReconciler {
 
-    /// Gather all known StoreKit transactions + signed renewal infos.
-    /// Bounded by Apple's `Transaction.all` cap (typically last 6 months).
-    static func gather() async -> [SubscriptionStateEntry] {
-        var entries: [SubscriptionStateEntry] = []
-        var seenTransactionIDs: Set<UInt64> = []
-        var renewalInfoByOTID: [UInt64: String] = [:]
-        var queriedGroups: Set<String> = []
-
-        // Pass 1: collect a renewal-info JWS per OTID we touch by querying
-        // each unique subscription group exactly once.
+    /// Gather the StoreKit transactions and signed renewal infos to reconcile.
+    static func gather(userId: String) async -> [SubscriptionStateEntry] {
+        var all: [ReconcileCandidate] = []
         for await result in StoreKit.Transaction.all {
             guard let txn = try? result.payloadValue else { continue }
-            guard let groupID = txn.subscriptionGroupID else { continue }
-            if queriedGroups.contains(groupID) { continue }
-            queriedGroups.insert(groupID)
+            all.append(ReconcileCandidate(
+                id: txn.id,
+                originalID: txn.originalID,
+                purchaseDate: txn.purchaseDate,
+                appAccountToken: txn.appAccountToken,
+                signedTransaction: result.jwsRepresentation,
+                signedRenewalInfo: nil,
+                subscriptionGroupID: txn.subscriptionGroupID
+            ))
+        }
 
+        var statusesByGroup: [String: [ReconcileCandidate]] = [:]
+        for groupID in Set(all.compactMap(\.subscriptionGroupID)) {
             do {
                 let statuses = try await Product.SubscriptionInfo.status(for: groupID)
-                for status in statuses {
-                    guard let statusTxn = try? status.transaction.payloadValue else { continue }
-                    renewalInfoByOTID[statusTxn.originalID] = status.renewalInfo.jwsRepresentation
+                statusesByGroup[groupID] = statuses.compactMap { status in
+                    guard let txn = try? status.transaction.payloadValue else { return nil }
+                    return ReconcileCandidate(
+                        id: txn.id,
+                        originalID: txn.originalID,
+                        purchaseDate: txn.purchaseDate,
+                        appAccountToken: txn.appAccountToken,
+                        signedTransaction: status.transaction.jwsRepresentation,
+                        signedRenewalInfo: status.renewalInfo.jwsRepresentation,
+                        subscriptionGroupID: groupID
+                    )
                 }
             } catch {
                 #if canImport(ZeroSettleCore)
@@ -56,19 +87,68 @@ internal struct SubscriptionStateReconciler {
             }
         }
 
-        // Pass 2: build one entry per unique transaction ID.
-        for await result in StoreKit.Transaction.all {
-            guard let txn = try? result.payloadValue else { continue }
-            if seenTransactionIDs.contains(txn.id) { continue }
-            seenTransactionIDs.insert(txn.id)
+        let selected = select(transactions: all, statusesByGroup: statusesByGroup)
+        let expected = expectedToken(userId: userId, bundleId: Bundle.main.bundleIdentifier)
+        return dropForeign(selected, expectedToken: expected).map(\.entry)
+    }
 
-            let signedRenewalInfo = renewalInfoByOTID[txn.originalID]
-            entries.append(SubscriptionStateEntry(
-                signedTransaction: result.jwsRepresentation,
-                signedRenewalInfo: signedRenewalInfo
-            ))
+    // MARK: - Pure selection
+
+    /// Picks what to send. Groups present in `statusesByGroup` use their status
+    /// entries; groups absent from it (the status call threw) fall back to the
+    /// latest transaction per original ID. Non-subscriptions pass through.
+    static func select(
+        transactions: [ReconcileCandidate],
+        statusesByGroup: [String: [ReconcileCandidate]]
+    ) -> [ReconcileCandidate] {
+        let statusEntries = dedupedByID(statusesByGroup.keys.sorted().flatMap { statusesByGroup[$0] ?? [] })
+        let failedGroupTxns = transactions.filter {
+            guard let group = $0.subscriptionGroupID else { return false }
+            return statusesByGroup[group] == nil
         }
+        let nonSubscriptions = dedupedByID(transactions.filter { $0.subscriptionGroupID == nil })
+        return statusEntries + latestPerOriginalID(failedGroupTxns) + nonSubscriptions
+    }
 
-        return entries
+    /// First occurrence of each transaction ID wins.
+    static func dedupedByID(_ candidates: [ReconcileCandidate]) -> [ReconcileCandidate] {
+        var seen: Set<UInt64> = []
+        return candidates.filter { seen.insert($0.id).inserted }
+    }
+
+    /// Latest transaction per original ID: greatest `purchaseDate`, ties by greater `id`.
+    static func latestPerOriginalID(_ candidates: [ReconcileCandidate]) -> [ReconcileCandidate] {
+        var latest: [UInt64: ReconcileCandidate] = [:]
+        for candidate in candidates {
+            guard let current = latest[candidate.originalID] else {
+                latest[candidate.originalID] = candidate
+                continue
+            }
+            if candidate.purchaseDate > current.purchaseDate
+                || (candidate.purchaseDate == current.purchaseDate && candidate.id > current.id) {
+                latest[candidate.originalID] = candidate
+            }
+        }
+        return latest.values.sorted { $0.id < $1.id }
+    }
+
+    // MARK: - Foreign-token filter
+
+    /// The token this user's purchases carry, or `nil` when it cannot be
+    /// derived (`derive` preconditions on empty inputs).
+    static func expectedToken(userId: String?, bundleId: String?) -> UUID? {
+        guard let userId, !userId.isEmpty, let bundleId, !bundleId.isEmpty else { return nil }
+        return AppAccountToken.derive(userId: userId, bundleId: bundleId)
+    }
+
+    /// Drops entries whose `appAccountToken` is set and differs from
+    /// `expectedToken`. Runs after selection so an older matching transaction
+    /// never replaces a newer foreign one. A `nil` expected token keeps all.
+    static func dropForeign(
+        _ candidates: [ReconcileCandidate],
+        expectedToken: UUID?
+    ) -> [ReconcileCandidate] {
+        guard let expectedToken else { return candidates }
+        return candidates.filter { $0.appAccountToken == nil || $0.appAccountToken == expectedToken }
     }
 }

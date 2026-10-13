@@ -466,7 +466,7 @@ internal final class StoreKitManager {
     /// bulk reconcile endpoint. No-op if userId isn't set yet.
     private func runSubscriptionStateReconcile() async {
         guard let userId = userId else { return }
-        let entries = await SubscriptionStateReconciler.gather()
+        let entries = await SubscriptionStateReconciler.gather(userId: userId)
         if entries.isEmpty {
             return
         }
