@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.6.2 — 2026-10-16
+
+Patch. A smaller StoreKit state reconcile payload. No API changes; drop-in from
+1.6.1.
+
+The reconcile that tells ZeroSettle which StoreKit subscriptions a user holds
+used to send every past renewal transaction. It now sends one entry per
+subscription, the latest, so the request is much smaller for long-running
+subscribers. It requires the matching backend, which has been live on
+api.zerosettle.io since 2026-10-16.
+
+- Where Apple's subscription status list leaves out a subscription (empty or
+  unverified list, omitted original transaction ID, or a thrown call), the
+  reconcile falls back per original transaction ID to that subscription's
+  latest transaction, rather than per group.
+- Transactions that carry another user's app account token are dropped, so a
+  device shared between accounts no longer reports the other account's
+  purchases.
+- The `sdkVersion` sent in request headers now reports the real version. In
+  1.6.1 it still said 1.6.0.
+
 ## 1.6.1 — 2026-09-07
 
 Patch. Two fixes on the browser checkout path — the one you get when your
