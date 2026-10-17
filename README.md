@@ -154,6 +154,42 @@ for await entitlements in ZeroSettle.shared.entitlementUpdates {
 
 To force-refresh from the server (e.g., on foreground), call `restoreEntitlements()` — no `userId` parameter once `identify` has run.
 
+### Check access by feature
+
+If you set up plans, add-ons, features and currencies in the dashboard, ask what the person can do instead of which product they bought. The values load with `identify(_:)` and refresh on every entitlements read.
+
+```swift
+if ZeroSettle.hasAccess("custom_styles") { showStyles() }          // on/off feature
+let quality = ZeroSettle.value("export_quality")                    // text feature, e.g. "4K"; nil for a toggle
+if let credits = ZeroSettle.balance("credits") {
+    label.text = "\(credits.remaining) of \(credits.limit ?? credits.remaining) left"
+}
+let planName = ZeroSettle.plan?.name                                // nil when the person has no plan
+```
+
+`ZeroSettle.shared` also exposes `plan`, `addOns`, `features` and `balances`. Each balance carries the currency, the amount `remaining`, the period's `limit`, the next `resetsAt`, and its parts: `allowanceRemaining`, `rolledOver` and `purchased`.
+
+To react to changes, use the stream. Any number of listeners each get every change, and each starts with the current value:
+
+```swift
+for await access in ZeroSettle.shared.accessUpdates {
+    render(access)
+}
+```
+
+You can also implement `zeroSettleAccessDidUpdate(_:)` on your delegate, or read `ZeroSettle.shared` from SwiftUI (it is `@Observable`).
+
+**Offline.** The last access is cached on the device for each user and environment, so checks work on a launch with no connection. Before anything has ever loaded for that person, pass defaults in the configuration:
+
+```swift
+ZeroSettle.shared.configure(.init(
+    publishableKey: "zs_pk_live_...",
+    offlineFeatureDefaults: ["custom_styles": .bool(true), "export_quality": .text("HD")]
+))
+```
+
+A key missing from the defaults is off. Once access has loaded, the defaults no longer apply. Logging out clears the value and the cached copy. The SDK also refreshes access when the app returns to the foreground, at most once a minute.
+
 ## Checkout Modes
 
 The checkout experience is controlled server-side via your dashboard:
@@ -264,6 +300,11 @@ ZeroSettle's backend decodes the token and submits the required reports to Apple
 | `Identity` | Enum passed to `identify(_:)` — `.user`, `.anonymous`, or `.deferred` |
 | `ZSProduct` | A purchasable item with web and App Store pricing |
 | `Entitlement` | An active access right with source tracking (`.webCheckout` or `.storeKit`) |
+| `ZSAccess` | A person's plan, add-ons, feature values and balances; delivered by `accessUpdates` |
+| `ZSPlan` | A plan or add-on (`key`, `name`, `kind`) |
+| `ZSFeatureValue` | A feature's value: `.bool` or `.text` |
+| `ZSBalance` | What is left in a currency: `remaining`, `limit`, `resetsAt` and its parts |
+| `ZSCurrency` | A spendable currency (`key`, `name`, `plural`, `glyph`, `offline`) |
 | `CheckoutTransaction` | Result of a completed purchase (formerly `ZSTransaction`) |
 | `CheckoutSheet` | SwiftUI checkout sheet component (formerly `ZSPaymentSheet`) |
 | `RemoteConfig` | Server-controlled checkout mode and migration campaigns |

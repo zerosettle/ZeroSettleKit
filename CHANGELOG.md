@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+Additive minor. Check what a person can do by feature, plan or currency balance.
+No changes to existing API. Requires a backend that returns plan, add-ons,
+features and balances on the entitlements read; against an older backend the new
+reads stay empty and nothing else changes.
+
+- `ZeroSettle.hasAccess(_:)`, `value(_:)`, `balance(_:)` and `plan`, as static
+  forwarders and as members of `ZeroSettle.shared`, plus `plan`, `addOns`,
+  `features` and `balances` on the instance.
+- `accessUpdates`: an `AsyncStream<ZSAccess>` that every listener can use at
+  once. A new stream starts with the current value.
+- `ZeroSettleDelegate.zeroSettleAccessDidUpdate(_:)`, with an empty default.
+- New types `ZSAccess`, `ZSPlan`, `ZSPlanKind`, `ZSFeatureValue`, `ZSBalance`
+  and `ZSCurrency`. Feature keys keep their form, so `custom_styles` stays
+  `custom_styles`.
+- `Configuration.offlineFeatureDefaults`: what `hasAccess` and `value` answer
+  before any access has loaded for the person.
+- The last access is cached on the device per user and environment, loaded
+  before the first fetch and deleted on `logout()`.
+- Access refreshes when the app returns to the foreground, at most once every 60
+  seconds and never while `identify` is still fetching.
+
 ## 1.6.2 — 2026-10-16
 
 Patch. A smaller StoreKit state reconcile payload. No API changes; drop-in from
