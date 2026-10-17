@@ -68,6 +68,14 @@ public protocol ZeroSettleDelegate: AnyObject {
     /// - Parameter entitlements: The updated list of all entitlements (filter with `\.isActive` for app logic)
     func zeroSettleEntitlementsDidUpdate(_ entitlements: [Entitlement])
 
+    // MARK: - Plan and Feature Access
+
+    /// Called when the person's plan, add-ons, features or balances change, including when the
+    /// device cache loads for a user. Not called when a refresh returns the same values.
+    ///
+    /// - Note: For async/await code, prefer ``ZeroSettle/accessUpdates``.
+    func zeroSettleAccessDidUpdate(_ access: ZSAccess)
+
     // MARK: - StoreKit Sync Events
 
     /// Called when a native StoreKit transaction is successfully synced to ZeroSettle.
@@ -91,6 +99,7 @@ public extension ZeroSettleDelegate {
     func zeroSettleCheckoutDidCancel(productId: String) {}
     func zeroSettleCheckoutDidFail(productId: String, error: Error) {}
     func zeroSettleEntitlementsDidUpdate(_ entitlements: [Entitlement]) {}
+    func zeroSettleAccessDidUpdate(_ access: ZSAccess) {}
     func zeroSettleDidSyncStoreKitTransaction(productId: String, transactionId: UInt64) {}
     func zeroSettleStoreKitSyncFailed(error: Error) {}
 }
