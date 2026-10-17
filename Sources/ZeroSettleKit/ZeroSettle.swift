@@ -658,9 +658,13 @@ public final class ZeroSettle: ObservableObject {
     @ObservationIgnored
     internal private(set) var accessUserId: String?
 
-    /// When access was last read from the backend successfully. Drives the foreground throttle.
+    /// When a foreground refresh last started, whether or not it succeeded. Drives the throttle.
     @ObservationIgnored
-    internal private(set) var lastAccessRefreshAt: Date?
+    internal private(set) var lastForegroundRefreshAt: Date?
+
+    /// The running foreground refresh, if any. A second activation during it does nothing.
+    @ObservationIgnored
+    internal private(set) var foregroundRefreshTask: Task<Void, Never>?
 
     @ObservationIgnored
     private let accessBroadcaster = AccessBroadcaster()
@@ -735,7 +739,7 @@ public final class ZeroSettle: ObservableObject {
     /// of the access keys (an old backend) leaves the current value alone.
     internal func updateAccess(_ newAccess: ZSAccess) {
         guard newAccess.isPresent else { return }
-        if let accessUserId {
+        if let accessUserId, !accessLoaded || access != newAccess {
             AccessStore.save(newAccess, userId: accessUserId, sandbox: isSandbox)
         }
         guard !accessLoaded || access != newAccess else { return }
@@ -755,8 +759,10 @@ public final class ZeroSettle: ObservableObject {
     internal func switchAccessUser(to userId: String) {
         guard accessUserId != userId else { return }
         accessUserId = userId
-        lastAccessRefreshAt = nil
+        lastForegroundRefreshAt = nil
         let cached = AccessStore.load(userId: userId, sandbox: isSandbox)
+        // Nothing to announce when there is no cache and nothing is loaded yet.
+        guard cached != nil || accessLoaded || access != .empty else { return }
         publishAccess(cached ?? .empty, loaded: cached != nil)
     }
 
@@ -766,25 +772,29 @@ public final class ZeroSettle: ObservableObject {
             AccessStore.remove(userId: accessUserId, sandbox: isSandbox)
         }
         accessUserId = nil
-        lastAccessRefreshAt = nil
+        lastForegroundRefreshAt = nil
         guard accessLoaded || access != .empty else { return }
         publishAccess(.empty, loaded: false)
     }
 
     /// Apply a read for `userId`, ignoring it when the person has changed since it started.
-    private func applyAccessRead(_ read: ZSAccess, userId: String) {
+    internal func applyAccessRead(_ read: ZSAccess, userId: String) {
         guard userId == accessUserId else { return }
-        lastAccessRefreshAt = Date()
         updateAccess(read)
     }
 
-    /// Refresh on return to foreground when a user is identified and the last successful read is
-    /// older than 60 seconds. Returns whether a refresh started.
+    /// Refresh on return to foreground when a user is identified. One fetch at a time, at most one
+    /// per 60 seconds measured from the last attempt (success or failure), and none while an
+    /// identify is still fetching. Returns whether a refresh started.
     @discardableResult
     internal func handleDidBecomeActive(now: Date = Date()) -> Bool {
-        guard accessUserId != nil else { return false }
-        if let last = lastAccessRefreshAt, now.timeIntervalSince(last) < 60 { return false }
-        Task { await refreshEntitlementsAndPublish() }
+        guard accessUserId != nil, foregroundRefreshTask == nil, inFlightBootstrap == nil else { return false }
+        if let last = lastForegroundRefreshAt, now.timeIntervalSince(last) < 60 { return false }
+        lastForegroundRefreshAt = now
+        foregroundRefreshTask = Task { [weak self] in
+            await self?.refreshEntitlementsAndPublish()
+            self?.foregroundRefreshTask = nil
+        }
         return true
     }
 
@@ -805,10 +815,16 @@ public final class ZeroSettle: ObservableObject {
 
     #if DEBUG
     internal var accessListenerCountForTesting: Int { accessBroadcaster.listenerCount }
-    internal func recordAccessRefresh(at date: Date) { lastAccessRefreshAt = date }
+    internal func setBackendForTesting(_ newBackend: Backend?) { backend = newBackend }
+    internal var backendForTesting: Backend? { backend }
+    internal func setBootstrapInFlightForTesting(_ running: Bool) {
+        inFlightBootstrap = running ? (userId: "test", task: Task<ProductCatalog, Error> { throw CancellationError() }) : nil
+    }
     internal func resetAccessForTesting() {
         accessUserId = nil
-        lastAccessRefreshAt = nil
+        lastForegroundRefreshAt = nil
+        foregroundRefreshTask = nil
+        inFlightBootstrap = nil
         objectWillChange.send()
         access = .empty
         accessLoaded = false

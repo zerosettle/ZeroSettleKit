@@ -15,7 +15,7 @@ final class AccessBroadcaster {
     var listenerCount: Int { continuations.count }
 
     func stream(current: ZSAccess) -> AsyncStream<ZSAccess> {
-        let (stream, continuation) = AsyncStream.makeStream(of: ZSAccess.self)
+        let (stream, continuation) = AsyncStream.makeStream(of: ZSAccess.self, bufferingPolicy: .bufferingNewest(1))
         let id = UUID()
         continuations[id] = continuation
         continuation.onTermination = { [weak self] _ in

@@ -181,18 +181,122 @@ final class AccessStateTests: XCTestCase {
         XCTAssertFalse(live.contains("user-a"))
     }
 
-    func test_foreground_refresh_throttled() {
+    func test_foreground_refresh_throttled() async {
         let now = Date()
         // No identified user: never refresh.
         XCTAssertFalse(zs.handleDidBecomeActive(now: now))
 
         zs.switchAccessUser(to: "user-a")
-        // Identified and never refreshed: refresh.
         XCTAssertTrue(zs.handleDidBecomeActive(now: now))
+        // A second activation during the fetch does nothing.
+        XCTAssertFalse(zs.handleDidBecomeActive(now: now.addingTimeInterval(100)))
+        await zs.foregroundRefreshTask?.value
 
-        zs.recordAccessRefresh(at: now)
         XCTAssertFalse(zs.handleDidBecomeActive(now: now.addingTimeInterval(59)))
         XCTAssertTrue(zs.handleDidBecomeActive(now: now.addingTimeInterval(61)))
+        await zs.foregroundRefreshTask?.value
+    }
+
+    func test_foreground_refresh_once_per_window_even_on_failure() async {
+        // No backend is configured, so every refresh ends without a successful read.
+        let now = Date()
+        zs.switchAccessUser(to: "user-a")
+        XCTAssertTrue(zs.handleDidBecomeActive(now: now))
+        await zs.foregroundRefreshTask?.value
+        XCTAssertNil(zs.foregroundRefreshTask)
+        for offset in [1.0, 20, 59] {
+            XCTAssertFalse(zs.handleDidBecomeActive(now: now.addingTimeInterval(offset)), "offset \(offset)")
+        }
+        XCTAssertTrue(zs.handleDidBecomeActive(now: now.addingTimeInterval(60)))
+        await zs.foregroundRefreshTask?.value
+    }
+
+    func test_no_foreground_fetch_during_bootstrap() async {
+        zs.switchAccessUser(to: "user-a")
+        zs.setBootstrapInFlightForTesting(true)
+        XCTAssertFalse(zs.handleDidBecomeActive(now: Date()))
+        zs.setBootstrapInFlightForTesting(false)
+        XCTAssertTrue(zs.handleDidBecomeActive(now: Date()))
+        await zs.foregroundRefreshTask?.value
+    }
+
+    // MARK: - Race guards, through the HTTP seam
+
+    private func installHoldingBackend() -> Backend {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [HoldingURLProtocol.self]
+        HoldingURLProtocol.reset()
+        let backend = Backend(baseURL: URL(string: "https://example.test")!, publishableKey: "zs_pk_test_x", session: URLSession(configuration: config))
+        zs.setBackendForTesting(backend)
+        return backend
+    }
+
+    private func body(feature: String) -> Data {
+        Data(#"{"entitlements": [], "plan": {"key": "pro", "name": "Pro", "kind": "tier"}, "features": {"\#(feature)": true}}"#.utf8)
+    }
+
+    private func waitUntilHeld(_ user: String) async {
+        for _ in 0..<500 where !HoldingURLProtocol.isHolding(user) { try? await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertTrue(HoldingURLProtocol.isHolding(user))
+    }
+
+    func test_stale_response_for_previous_user_is_dropped() async throws {
+        let savedBackend = zs.backendForTesting
+        defer { zs.setBackendForTesting(savedBackend) }
+        _ = installHoldingBackend()
+        HoldingURLProtocol.hold(user: "user-a", body: body(feature: "a_only"))
+
+        zs.switchAccessUser(to: "user-a")
+        let stale = Task { @MainActor in _ = try? await ZeroSettle.shared._restoreEntitlementsImpl(userId: "user-a") }
+        await waitUntilHeld("user-a")
+
+        zs.switchAccessUser(to: "user-b")
+        let bAccess = makeAccess(features: ["b_only": .bool(true)])
+        zs.updateAccess(bAccess)
+
+        HoldingURLProtocol.release(user: "user-a")
+        await stale.value
+
+        XCTAssertEqual(zs.access, bAccess)
+        XCTAssertFalse(zs.hasAccess("a_only"))
+        XCTAssertEqual(AccessStore.load(userId: "user-b", sandbox: zs.isSandbox), bAccess)
+        XCTAssertNil(AccessStore.load(userId: "user-a", sandbox: zs.isSandbox))
+    }
+
+    func test_logout_cannot_be_undone_by_in_flight_refresh() async throws {
+        let savedBackend = zs.backendForTesting
+        defer { zs.setBackendForTesting(savedBackend) }
+        _ = installHoldingBackend()
+        HoldingURLProtocol.hold(user: "user-a", body: body(feature: "a_only"))
+
+        zs.switchAccessUser(to: "user-a")
+        let stale = Task { @MainActor in _ = try? await ZeroSettle.shared._restoreEntitlementsImpl(userId: "user-a") }
+        await waitUntilHeld("user-a")
+
+        zs.clearAccessForLogout()
+        HoldingURLProtocol.release(user: "user-a")
+        await stale.value
+
+        XCTAssertEqual(zs.access, .empty)
+        XCTAssertFalse(zs.hasAccess("a_only"))
+        XCTAssertNil(AccessStore.load(userId: "user-a", sandbox: zs.isSandbox))
+    }
+
+    func test_switch_never_shows_previous_users_features() async {
+        zs.switchAccessUser(to: "user-a")
+        zs.updateAccess(makeAccess(features: ["a_only": .bool(true)]))
+        var iterator = zs.accessUpdates.makeAsyncIterator()
+        let replay = await iterator.next()
+        XCTAssertTrue(replay?.features["a_only"] != nil)
+
+        zs.switchAccessUser(to: "user-b")
+        XCTAssertFalse(zs.hasAccess("a_only"))
+        zs.updateAccess(makeAccess(features: ["b_only": .bool(true)]))
+
+        // Every value published after the switch belongs to the new user only.
+        let afterSwitch = await iterator.next()
+        XCTAssertNil(afterSwitch?.features["a_only"])
+        XCTAssertEqual(afterSwitch?.features["b_only"], .bool(true))
     }
 
     func test_static_forwarders_match_shared() {
@@ -202,5 +306,41 @@ final class AccessStateTests: XCTestCase {
         XCTAssertEqual(ZeroSettle.value("q"), zs.value("q"))
         XCTAssertEqual(ZeroSettle.balance("credits"), zs.balance("credits"))
         XCTAssertEqual(ZeroSettle.plan, zs.plan)
+    }
+}
+
+/// Holds the response for chosen users until released, so a test can switch users mid-request.
+final class HoldingURLProtocol: URLProtocol {
+    nonisolated(unsafe) private static var bodies: [String: Data] = [:]
+    nonisolated(unsafe) private static var held: [String: HoldingURLProtocol] = [:]
+    private static let lock = NSLock()
+
+    static func reset() { lock.lock(); bodies = [:]; held = [:]; lock.unlock() }
+    static func hold(user: String, body: Data) { lock.lock(); bodies[user] = body; lock.unlock() }
+    static func isHolding(_ user: String) -> Bool { lock.lock(); defer { lock.unlock() }; return held[user] != nil }
+    static func release(user: String) {
+        lock.lock()
+        let proto = held.removeValue(forKey: user)
+        let body = bodies[user]
+        lock.unlock()
+        proto?.finish(body ?? Data())
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let user = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?
+            .queryItems?.first { $0.name == "user_id" }?.value ?? ""
+        Self.lock.lock()
+        Self.held[user] = self
+        Self.lock.unlock()
+    }
+    override func stopLoading() {}
+
+    fileprivate func finish(_ body: Data) {
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
     }
 }
