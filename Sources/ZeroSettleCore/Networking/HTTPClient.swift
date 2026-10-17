@@ -60,6 +60,20 @@ public final class HTTPClient: @unchecked Sendable {
         return try await execute(request, responseType: responseType)
     }
 
+    /// GET that returns the validated raw response bytes, for callers that
+    /// need a decoder other than the client's own.
+    public func getData(
+        _ url: URL,
+        headers: [String: String] = [:]
+    ) async throws -> Data {
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = ZeroSettleConstants.Network.defaultTimeoutSeconds
+        headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
+
+        return try await validateResponse(for: request)
+    }
+
     // MARK: - POST
 
     public func post<Request: Encodable, Response: Decodable>(

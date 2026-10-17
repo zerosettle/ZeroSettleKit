@@ -494,7 +494,11 @@ internal final class Backend: @unchecked Sendable {
     // MARK: - Entitlements
 
     /// Get the current entitlements for a user.
-    func getEntitlements(userId: String) async throws -> [Entitlement] {
+    ///
+    /// The access part (plan, add-ons, features, balances) is decoded from the
+    /// same bytes with a plain decoder, because the shared decoder's
+    /// `.convertFromSnakeCase` would rewrite feature keys like `custom_styles`.
+    func getEntitlements(userId: String) async throws -> EntitlementsRead {
         var components = URLComponents(url: apiURL("iap/entitlements/"), resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "user_id", value: userId)]
 
@@ -502,10 +506,17 @@ internal final class Backend: @unchecked Sendable {
             throw Backend.wrapError(HTTPError.invalidURL("Failed to construct entitlements URL"))
         }
 
-        let response: EntitlementsResponse = try await wrapped {
-            try await httpClient.get(url, headers: authHeaders, responseType: EntitlementsResponse.self)
+        let data = try await wrapped {
+            try await httpClient.getData(url, headers: authHeaders)
         }
-        return response.entitlements
+        let response: EntitlementsResponse
+        do {
+            response = try decoder.decode(EntitlementsResponse.self, from: data)
+        } catch {
+            ZSLogger.error("Decoding failed: \(error)", category: .network)
+            throw Backend.wrapError(HTTPError.decodingFailed(error))
+        }
+        return EntitlementsRead(entitlements: response.entitlements, access: ZSAccess.decode(from: data))
     }
 
     // MARK: - Transaction History
@@ -994,6 +1005,12 @@ private struct PerProductPromptResponse: Decodable {
 
 private struct EntitlementsResponse: Decodable {
     let entitlements: [Entitlement]
+}
+
+/// Result of `getEntitlements`: the rows plus the plan and feature access.
+struct EntitlementsRead {
+    let entitlements: [Entitlement]
+    let access: ZSAccess
 }
 
 private struct TransactionHistoryResponse: Decodable {

@@ -2451,7 +2451,7 @@ public final class ZeroSettle: ObservableObject {
         }
 
         do {
-            let webEntitlements = try await backend.getEntitlements(userId: userId)
+            let webEntitlements = try await backend.getEntitlements(userId: userId).entitlements
             allEntitlements.append(contentsOf: webEntitlements)
         } catch {
             ZSLogger.error("Failed to fetch web entitlements: \(error)", category: .entitlements)
@@ -3179,7 +3179,7 @@ public final class ZeroSettle: ObservableObject {
         }
 
         do {
-            let webEntitlements = try await backend.getEntitlements(userId: userId)
+            let webEntitlements = try await backend.getEntitlements(userId: userId).entitlements
             let merged = publishWithWeb(webEntitlements)
             ZSLogger.debug("refreshEntitlementsAndPublish: published \(webEntitlements.count) web + \(storeKitEnts.count) storekit entitlement(s) + \(merged.count - storeKitEnts.count - webEntitlements.count) preserved fallback(s)", category: .entitlements)
         } catch {
