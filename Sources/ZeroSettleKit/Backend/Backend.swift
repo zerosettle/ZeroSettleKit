@@ -27,7 +27,7 @@ internal final class Backend: @unchecked Sendable {
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
 
-    init(baseURL: URL, publishableKey: String) {
+    init(baseURL: URL, publishableKey: String, session: URLSession = .shared) {
         self.baseURL = baseURL
         self.publishableKey = publishableKey
 
@@ -39,7 +39,7 @@ internal final class Backend: @unchecked Sendable {
         encoder.dateEncodingStrategy = .iso8601
         encoder.keyEncodingStrategy = .convertToSnakeCase
 
-        self.httpClient = HTTPClient(decoder: decoder, encoder: encoder)
+        self.httpClient = HTTPClient(session: session, decoder: decoder, encoder: encoder)
     }
 
     // MARK: - Auth Headers

@@ -98,4 +98,59 @@ final class AccessDecodingTests: XCTestCase {
         XCTAssertEqual(decoded.features["custom_styles"], .bool(true))
         XCTAssertTrue(decoded.isPresent)
     }
+
+    func test_bad_balance_drops_only_itself() {
+        let good = #"{"currency": {"key": "credits", "name": "Credit", "plural": "Credits", "glyph": "g", "offline": "allow"}, "remaining": 1, "limit": 2, "resets_at": null, "allowance_remaining": 1, "rolled_over": 0, "purchased": 0}"#
+        let badDate = good.replacingOccurrences(of: #""resets_at": null"#, with: #""resets_at": "not a date""#)
+        let result = access(#"{"plan": {"key": "pro", "name": "Pro", "kind": "tier"}, "features": {"a": true}, "balances": {"credits": \#(good), "bad": {"remaining": "x"}, "baddate": \#(badDate)}}"#)
+        XCTAssertEqual(result.balances.keys.sorted(), ["credits"])
+        XCTAssertEqual(result.plan?.key, "pro")
+        XCTAssertEqual(result.features["a"], .bool(true))
+        XCTAssertTrue(result.isPresent)
+    }
+
+    func test_bad_plan_keeps_features_and_empty_features_is_present() {
+        let result = access(#"{"plan": {"key": 5}, "add_ons": [{"nope": 1}, {"key": "p", "name": "P", "kind": "add_on"}], "features": {}}"#)
+        XCTAssertNil(result.plan)
+        XCTAssertEqual(result.addOns.map(\.key), ["p"])
+        XCTAssertTrue(result.isPresent)
+    }
+
+    func test_fractional_second_dates() {
+        let expected = ISO8601DateFormatter().date(from: "2026-11-03T00:00:00Z")!
+        for stamp in ["2026-11-03T00:00:00.123456+00:00", "2026-11-03T00:00:00.123Z", "2026-11-03T00:00:00Z", "2026-11-03T00:00:00+00:00"] {
+            let result = access(#"{"balances": {"c": {"currency": {"key": "c", "name": "C", "plural": "Cs", "glyph": "g", "offline": "allow"}, "remaining": 1, "limit": 1, "resets_at": "\#(stamp)", "allowance_remaining": 1, "rolled_over": 0, "purchased": 0}}}"#)
+            let date = result.balances["c"]?.resetsAt
+            XCTAssertNotNil(date, stamp)
+            XCTAssertEqual(date?.timeIntervalSince1970 ?? 0, expected.timeIntervalSince1970, accuracy: 1, stamp)
+        }
+    }
+
+    @MainActor
+    func test_feature_keys_keep_underscores_through_get_entitlements() async throws {
+        StubURLProtocol.body = Data("""
+        {"entitlements": [{"id": "e1", "product_id": "pro", "source": "web_checkout", "is_active": true, "status": "active", "purchased_at": "2026-10-01T00:00:00Z"}],
+         "features": {"custom_styles": true}}
+        """.utf8)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubURLProtocol.self]
+        let backend = Backend(baseURL: URL(string: "https://example.test")!, publishableKey: "zs_pk_test_x", session: URLSession(configuration: config))
+        let read = try await backend.getEntitlements(userId: "u1")
+        XCTAssertEqual(read.access.features["custom_styles"], .bool(true))
+        XCTAssertNil(read.access.features["customStyles"])
+        XCTAssertEqual(read.entitlements.map(\.productId), ["pro"])
+    }
+}
+
+final class StubURLProtocol: URLProtocol {
+    nonisolated(unsafe) static var body = Data()
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Self.body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
 }

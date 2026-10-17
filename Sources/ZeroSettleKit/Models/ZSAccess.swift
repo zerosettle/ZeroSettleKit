@@ -153,21 +153,23 @@ public struct ZSAccess: Codable, Sendable, Equatable {
         case addOns = "add_ons"
     }
 
-    /// Decodes a feature value, yielding nil for JSON that is neither a bool nor a string.
-    private struct LossyFeature: Decodable {
-        let value: ZSFeatureValue?
+    /// Decodes one entry, yielding nil when it is malformed so it drops alone.
+    private struct Lossy<Value: Decodable>: Decodable {
+        let value: Value?
         init(from decoder: Decoder) throws {
-            value = try? ZSFeatureValue(from: decoder)
+            value = try? Value(from: decoder)
         }
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        plan = try container.decodeIfPresent(ZSPlan.self, forKey: .plan)
-        addOns = try container.decodeIfPresent([ZSPlan].self, forKey: .addOns) ?? []
-        let lossy = try container.decodeIfPresent([String: LossyFeature].self, forKey: .features) ?? [:]
-        features = lossy.compactMapValues { $0.value }
-        balances = try container.decodeIfPresent([String: ZSBalance].self, forKey: .balances) ?? [:]
+        plan = (try? container.decodeIfPresent(ZSPlan.self, forKey: .plan)) ?? nil
+        let lossyAddOns = (try? container.decodeIfPresent([Lossy<ZSPlan>].self, forKey: .addOns)) ?? nil
+        addOns = (lossyAddOns ?? []).compactMap { $0.value }
+        let lossyFeatures = (try? container.decodeIfPresent([String: Lossy<ZSFeatureValue>].self, forKey: .features)) ?? nil
+        features = (lossyFeatures ?? [:]).compactMapValues { $0.value }
+        let lossyBalances = (try? container.decodeIfPresent([String: Lossy<ZSBalance>].self, forKey: .balances)) ?? nil
+        balances = (lossyBalances ?? [:]).compactMapValues { $0.value }
         isPresent = [CodingKeys.plan, .addOns, .features, .balances].contains { container.contains($0) }
     }
 
@@ -184,7 +186,15 @@ public struct ZSAccess: Codable, Sendable, Equatable {
     /// Returns ``empty`` when the bytes carry none of the four keys or cannot be read.
     static func decode(from data: Data) -> ZSAccess {
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let raw = try container.decode(String.self)
+            let fractional = ISO8601DateFormatter()
+            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = fractional.date(from: raw) { return date }
+            if let date = ISO8601DateFormatter().date(from: raw) { return date }
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid ISO 8601 date: \(raw)")
+        }
         do {
             return try decoder.decode(ZSAccess.self, from: data)
         } catch {
