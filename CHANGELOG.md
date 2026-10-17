@@ -5,7 +5,7 @@
 Additive minor. Check what a person can do by feature, plan or currency balance.
 No changes to existing API. Requires a backend that returns plan, add-ons,
 features and balances on the entitlements read; against an older backend the new
-reads stay empty and nothing else changes.
+reads stay empty. An app that does not use the new reads sees no change.
 
 - `ZeroSettle.hasAccess(_:)`, `value(_:)`, `balance(_:)` and `plan`, as static
   forwarders and as members of `ZeroSettle.shared`, plus `plan`, `addOns`,
@@ -18,10 +18,19 @@ reads stay empty and nothing else changes.
   `custom_styles`.
 - `Configuration.offlineFeatureDefaults`: what `hasAccess` and `value` answer
   before any access has loaded for the person.
-- The last access is cached on the device per user and environment, loaded
-  before the first fetch and deleted on `logout()`.
-- Access refreshes when the app returns to the foreground, at most once every 60
-  seconds and never while `identify` is still fetching.
+- The last access is cached on the device per user, publishable key and
+  environment, loaded before the first fetch and deleted on `logout()`. Calling
+  `configure` again clears the loaded access, so one app key never shows
+  another's plan or features.
+- Opt-in refresh on foreground. The first time your app uses `hasAccess`,
+  `value`, `balance`, `plan`, `addOns`, `features`, `balances`, `access` or
+  `accessUpdates`, the SDK starts refreshing entitlements and access when the
+  app becomes active, at most once every 60 seconds and never while `identify`
+  is still fetching. An app that never uses these reads gets no new network
+  traffic and no new entitlement update events on activation.
+- With `syncStoreKitTransactions: false` (RevenueCat mode), that refresh and the
+  refresh after a web checkout now read the backend for the identified user.
+  Before, they did nothing in that mode.
 
 ## 1.6.2 — 2026-10-16
 

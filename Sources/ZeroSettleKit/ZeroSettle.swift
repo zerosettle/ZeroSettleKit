@@ -645,10 +645,19 @@ public final class ZeroSettle: ObservableObject {
     /// The current person's plan, add-ons, feature values and balances.
     ///
     /// Empty until the first read for the identified user completes, unless the on-device cache
-    /// from an earlier launch loads first. **SwiftUI**: read from `ZeroSettle.shared`; the class is
-    /// `@Observable`. For other consumers see ``accessUpdates`` and
-    /// ``ZeroSettleDelegate/zeroSettleAccessDidUpdate(_:)``.
-    public private(set) var access: ZSAccess = .empty
+    /// from an earlier launch loads first. Requires ``identify(_:)``. **SwiftUI**: read from
+    /// `ZeroSettle.shared`; the class is `@Observable`. For other consumers see ``accessUpdates``
+    /// and ``ZeroSettleDelegate/zeroSettleAccessDidUpdate(_:)``.
+    ///
+    /// Reading this (or any plan, feature or balance accessor) also turns on the refresh when the
+    /// app returns to the foreground.
+    public var access: ZSAccess {
+        noteAccessUsed()
+        return currentAccess
+    }
+
+    /// Storage behind ``access``. SDK code reads this so internal reads do not count as app use.
+    internal private(set) var currentAccess: ZSAccess = .empty
 
     /// Whether any access has loaded for the current user, from the cache or the network.
     /// Decides whether ``Configuration/offlineFeatureDefaults`` apply.
@@ -667,12 +676,34 @@ public final class ZeroSettle: ObservableObject {
     internal private(set) var foregroundRefreshTask: Task<Void, Never>?
 
     @ObservationIgnored
+    private var foregroundRefreshToken = UUID()
+
+    /// Set the first time the app touches a plan, feature, balance or access stream. The
+    /// foreground refresh runs only after this, so existing integrations see no new traffic.
+    @ObservationIgnored
+    internal private(set) var accessReadsUsed = false
+
+    /// Counts access reads as they start. Each read carries its number, and one older than the
+    /// last applied (or than the last reset of the person or tenant) is dropped.
+    @ObservationIgnored
+    private var accessReadCounter = 0
+
+    @ObservationIgnored
+    private var lastAppliedAccessRead = 0
+
+    /// Bumped by ``logout()``, `identify` and `configure`. An entitlements refresh that started
+    /// under an earlier value publishes nothing.
+    @ObservationIgnored
+    internal private(set) var identityEpoch = 0
+
+    @ObservationIgnored
     private let accessBroadcaster = AccessBroadcaster()
 
     @ObservationIgnored
     private var accessForegroundObserver: NSObjectProtocol?
 
     /// The plan the person is on, or nil when they have none or access has not loaded.
+    /// Requires ``identify(_:)``.
     public var plan: ZSPlan? { access.plan }
 
     /// The add-ons the person has.
@@ -688,7 +719,8 @@ public final class ZeroSettle: ObservableObject {
     ///
     /// True for a toggle set on or a non-empty text value. A key the person does not have is false.
     /// Before any access has loaded (no cache, no network yet) the answer comes from
-    /// ``Configuration/offlineFeatureDefaults``.
+    /// ``Configuration/offlineFeatureDefaults``. Requires ``identify(_:)``; without it the
+    /// answer always comes from the defaults.
     public func hasAccess(_ key: String) -> Bool {
         switch resolvedFeature(key) {
         case .bool(let flag): return flag
@@ -706,13 +738,14 @@ public final class ZeroSettle: ObservableObject {
 
     /// What the person has left in a currency, or nil when they have none in it.
     public func balance(_ currencyKey: String) -> ZSBalance? {
-        access.balances[currencyKey]
+        noteAccessUsed()
+        return currentAccess.balances[currencyKey]
     }
 
     /// Plan, add-on, feature and balance changes as an async stream.
     ///
     /// Every call returns its own stream, so any number of listeners each receive every change.
-    /// A new stream yields the current value first.
+    /// A new stream yields the current value first. Requires ``identify(_:)``.
     ///
     /// ```swift
     /// for await access in ZeroSettle.shared.accessUpdates {
@@ -720,7 +753,8 @@ public final class ZeroSettle: ObservableObject {
     /// }
     /// ```
     public var accessUpdates: AsyncStream<ZSAccess> {
-        accessBroadcaster.stream(current: access)
+        noteAccessUsed()
+        return accessBroadcaster.stream(current: currentAccess)
     }
 
     /// Static forwarders so call sites read `ZeroSettle.hasAccess("key")`.
@@ -730,72 +764,154 @@ public final class ZeroSettle: ObservableObject {
     @MainActor public static var plan: ZSPlan? { shared.plan }
 
     private func resolvedFeature(_ key: String) -> ZSFeatureValue? {
-        if let loaded = access.features[key] { return loaded }
+        noteAccessUsed()
+        if let loaded = currentAccess.features[key] { return loaded }
         guard !accessLoaded else { return nil }
         return config?.offlineFeatureDefaults[key]
     }
 
+    /// What a read needs to be applied later: the person, tenant and environment it started for,
+    /// and its place in the order reads started.
+    internal struct AccessReadStamp {
+        let userId: String
+        let sequence: Int
+        let sandbox: Bool
+        let keyHash: String
+    }
+
+    /// First 8 hex characters of the SHA-256 of the configured publishable key.
+    internal var accessKeyHash: String {
+        AccessStore.keyHash(publishableKey: config?.publishableKey ?? "")
+    }
+
+    /// Stamp a read as it starts, so a late response can be checked against what has changed since.
+    internal func beginAccessRead(userId: String) -> AccessReadStamp {
+        accessReadCounter += 1
+        return AccessReadStamp(userId: userId, sequence: accessReadCounter, sandbox: isSandbox, keyHash: accessKeyHash)
+    }
+
+    /// Reads that started before now can no longer be applied.
+    private func fenceStartedAccessReads() {
+        lastAppliedAccessRead = accessReadCounter
+    }
+
+    private func noteAccessUsed() {
+        guard !accessReadsUsed else { return }
+        accessReadsUsed = true
+        installAccessForegroundObserver()
+    }
+
     /// The one write path for access, beside ``updateEntitlements(_:)``. A read that carried none
-    /// of the access keys (an old backend) leaves the current value alone.
-    internal func updateAccess(_ newAccess: ZSAccess) {
+    /// of the access keys (an old backend) leaves the current value alone. The cache entry is
+    /// written under the environment and tenant the read started in, when a stamp says so.
+    internal func updateAccess(_ newAccess: ZSAccess, stamp: AccessReadStamp? = nil) {
         guard newAccess.isPresent else { return }
-        if let accessUserId, !accessLoaded || access != newAccess {
-            AccessStore.save(newAccess, userId: accessUserId, sandbox: isSandbox)
+        if let accessUserId, !accessLoaded || currentAccess != newAccess {
+            AccessStore.save(
+                newAccess, userId: accessUserId,
+                sandbox: stamp?.sandbox ?? isSandbox, keyHash: stamp?.keyHash ?? accessKeyHash
+            )
         }
-        guard !accessLoaded || access != newAccess else { return }
+        guard !accessLoaded || currentAccess != newAccess else { return }
         publishAccess(newAccess, loaded: true)
     }
 
     private func publishAccess(_ newAccess: ZSAccess, loaded: Bool) {
         objectWillChange.send()
-        access = newAccess
+        currentAccess = newAccess
         accessLoaded = loaded
         accessBroadcaster.yield(newAccess)
         delegate?.zeroSettleAccessDidUpdate(newAccess)
     }
 
     /// Point access at a user. A different user starts from only that user's cache entry, never the
-    /// previous user's value. The same user keeps what is loaded.
+    /// previous user's value. The same user keeps what is loaded. Switching away from an anonymous
+    /// id deletes that id's cache entry.
     internal func switchAccessUser(to userId: String) {
         guard accessUserId != userId else { return }
+        if let previous = accessUserId,
+           previous == UserDefaults.standard.string(forKey: Self.anonymousSessionUUIDKey) {
+            AccessStore.remove(userId: previous, sandbox: isSandbox, keyHash: accessKeyHash)
+        }
         accessUserId = userId
         lastForegroundRefreshAt = nil
-        let cached = AccessStore.load(userId: userId, sandbox: isSandbox)
+        fenceStartedAccessReads()
+        let cached = AccessStore.load(userId: userId, sandbox: isSandbox, keyHash: accessKeyHash)
         // Nothing to announce when there is no cache and nothing is loaded yet.
-        guard cached != nil || accessLoaded || access != .empty else { return }
+        guard cached != nil || accessLoaded || currentAccess != .empty else { return }
         publishAccess(cached ?? .empty, loaded: cached != nil)
     }
 
     /// Logout: drop the value and delete this user's cache entry.
     internal func clearAccessForLogout() {
         if let accessUserId {
-            AccessStore.remove(userId: accessUserId, sandbox: isSandbox)
+            AccessStore.remove(userId: accessUserId, sandbox: isSandbox, keyHash: accessKeyHash)
         }
         accessUserId = nil
         lastForegroundRefreshAt = nil
-        guard accessLoaded || access != .empty else { return }
+        fenceStartedAccessReads()
+        guard accessLoaded || currentAccess != .empty else { return }
         publishAccess(.empty, loaded: false)
     }
 
-    /// Apply a read for `userId`, ignoring it when the person has changed since it started.
-    internal func applyAccessRead(_ read: ZSAccess, userId: String) {
-        guard userId == accessUserId else { return }
-        updateAccess(read)
+    /// `configure` swaps the tenant and environment, so the access of the old one must not
+    /// survive: clear the value, the user and any running refresh.
+    internal func resetAccessForConfigure() {
+        identityEpoch += 1
+        cancelForegroundRefresh()
+        accessUserId = nil
+        lastForegroundRefreshAt = nil
+        fenceStartedAccessReads()
+        guard accessLoaded || currentAccess != .empty else { return }
+        publishAccess(.empty, loaded: false)
     }
 
-    /// Refresh on return to foreground when a user is identified. One fetch at a time, at most one
-    /// per 60 seconds measured from the last attempt (success or failure), and none while an
-    /// identify is still fetching. Returns whether a refresh started.
+    private func cancelForegroundRefresh() {
+        foregroundRefreshTask?.cancel()
+        foregroundRefreshTask = nil
+        foregroundRefreshToken = UUID()
+    }
+
+    /// Apply a read, ignoring it when the person, tenant or environment has changed since it
+    /// started, or when a newer read has already been applied.
+    internal func applyAccessRead(_ read: ZSAccess, stamp: AccessReadStamp) {
+        guard stamp.userId == accessUserId,
+              stamp.keyHash == accessKeyHash,
+              stamp.sandbox == isSandbox,
+              stamp.sequence > lastAppliedAccessRead
+        else { return }
+        lastAppliedAccessRead = stamp.sequence
+        // A completed read counts as a refresh, so the first activation after launch does not repeat it.
+        lastForegroundRefreshAt = Date()
+        updateAccess(read, stamp: stamp)
+    }
+
+    /// Refresh on return to foreground when a user is identified and the app uses the access
+    /// reads. One fetch at a time, at most one per 60 seconds measured from the last attempt
+    /// (success or failure), and none while an identify is still fetching. Returns whether a
+    /// refresh started.
     @discardableResult
     internal func handleDidBecomeActive(now: Date = Date()) -> Bool {
-        guard accessUserId != nil, foregroundRefreshTask == nil, inFlightBootstrap == nil else { return false }
+        guard accessReadsUsed, accessUserId != nil, foregroundRefreshTask == nil, inFlightBootstrap == nil else { return false }
         if let last = lastForegroundRefreshAt, now.timeIntervalSince(last) < 60 { return false }
         lastForegroundRefreshAt = now
+        let token = UUID()
+        foregroundRefreshToken = token
         foregroundRefreshTask = Task { [weak self] in
-            await self?.refreshEntitlementsAndPublish()
-            self?.foregroundRefreshTask = nil
+            await self?.refreshForForeground()
+            if self?.foregroundRefreshToken == token { self?.foregroundRefreshTask = nil }
         }
         return true
+    }
+
+    /// With StoreKit sync off (RevenueCat mode) there is no StoreKit manager, so the shared
+    /// refresh has no user to work for. Read the backend for the identified user directly.
+    private func refreshForForeground() async {
+        if storeKitManager == nil, let userId = currentUserId ?? accessUserId {
+            _ = try? await _restoreEntitlementsImpl(userId: userId)
+        } else {
+            await refreshEntitlementsAndPublish()
+        }
     }
 
     private func installAccessForegroundObserver() {
@@ -823,13 +939,15 @@ public final class ZeroSettle: ObservableObject {
     internal func resetAccessForTesting() {
         accessUserId = nil
         lastForegroundRefreshAt = nil
-        foregroundRefreshTask = nil
+        cancelForegroundRefresh()
+        accessReadsUsed = false
         inFlightBootstrap = nil
         objectWillChange.send()
-        access = .empty
+        currentAccess = .empty
         accessLoaded = false
     }
     internal func setConfigForTesting(_ newConfig: Configuration?) { config = newConfig }
+    internal func setCurrentUserIdForTesting(_ userId: String?) { currentUserId = userId }
     internal func setOfflineFeatureDefaultsForTesting(_ defaults: [String: ZSFeatureValue]) {
         config = Configuration(publishableKey: "zs_pk_test_access_state", offlineFeatureDefaults: defaults)
     }
@@ -1109,6 +1227,8 @@ public final class ZeroSettle: ObservableObject {
         entitlements = []
         entitlementContinuation?.yield([])
         delegate?.zeroSettleEntitlementsDidUpdate([])
+        identityEpoch += 1
+        cancelForegroundRefresh()
         clearAccessForLogout()
         remoteConfig = nil
         cancelFlowConfig = nil
@@ -1485,7 +1605,8 @@ public final class ZeroSettle: ObservableObject {
         CheckoutPreloaderPool.shared.resetAll()
 
         self.config = config
-        installAccessForegroundObserver()
+        resetAccessForConfigure()
+        if accessReadsUsed { installAccessForegroundObserver() }
 
 #if DEBUG
         let baseURL = Self.baseURLOverride ?? config.backendURL
@@ -1703,6 +1824,8 @@ public final class ZeroSettle: ObservableObject {
     private func _runBootstrap(userId: String, name: String?, email: String?) async throws -> ProductCatalog {
         // Reset user-scoped state so back-to-back bootstrap() calls (with or
         // without an intervening logout()) never leak data across users.
+        identityEpoch += 1
+        cancelForegroundRefresh()
         customerName = nil
         customerEmail = nil
         isBootstrapped = false
@@ -2651,6 +2774,7 @@ public final class ZeroSettle: ObservableObject {
 
     internal func _restoreEntitlementsImpl(userId: String) async throws -> [Entitlement] {
         let backend = try requireBackend()
+        let epoch = identityEpoch
 
         var allEntitlements: [Entitlement] = []
 
@@ -2660,9 +2784,13 @@ public final class ZeroSettle: ObservableObject {
         }
 
         do {
+            let stamp = beginAccessRead(userId: userId)
             let read = try await backend.getEntitlements(userId: userId)
             allEntitlements.append(contentsOf: read.entitlements)
-            applyAccessRead(read.access, userId: userId)
+            // A logout, identify or configure during the read means these rows belong to a
+            // person who is no longer current. Hand them back without publishing.
+            guard epoch == identityEpoch else { return allEntitlements }
+            applyAccessRead(read.access, stamp: stamp)
         } catch {
             ZSLogger.error("Failed to fetch web entitlements: \(error)", category: .entitlements)
             // Atomic semantics (post-1.2.5): on backend failure, do NOT
@@ -3364,12 +3492,15 @@ public final class ZeroSettle: ObservableObject {
             ZSLogger.debug("refreshEntitlementsAndPublish: no userId (pre-bootstrap) — skipping", category: .entitlements)
             return
         }
+        let epoch = identityEpoch
 
         // Pull fresh StoreKit entitlements (post-claim ownership may have changed).
         var storeKitEnts: [Entitlement] = []
         if let storeKitManager {
             let fresh = await storeKitManager.getCurrentEntitlements()
             storeKitEnts = filterOwnedEntitlements(fresh)
+            // The person may have logged out or switched while StoreKit was read.
+            guard epoch == identityEpoch else { return }
         } else {
             // StoreKit sync disabled (RevenueCat mode) — keep whatever we had.
             storeKitEnts = entitlements.filter { $0.source == .storeKit }
@@ -3389,12 +3520,15 @@ public final class ZeroSettle: ObservableObject {
         }
 
         do {
+            let stamp = beginAccessRead(userId: userId)
             let read = try await backend.getEntitlements(userId: userId)
+            guard epoch == identityEpoch else { return }
             let webEntitlements = read.entitlements
-            applyAccessRead(read.access, userId: userId)
+            applyAccessRead(read.access, stamp: stamp)
             let merged = publishWithWeb(webEntitlements)
             ZSLogger.debug("refreshEntitlementsAndPublish: published \(webEntitlements.count) web + \(storeKitEnts.count) storekit entitlement(s) + \(merged.count - storeKitEnts.count - webEntitlements.count) preserved fallback(s)", category: .entitlements)
         } catch {
+            guard epoch == identityEpoch else { return }
             // Even when the backend call fails, republish the fresh StoreKit
             // slice so claims that changed local ownership surface to the UI.
             // Preserve web entitlements (including local fallbacks) so a
@@ -3420,14 +3554,24 @@ public final class ZeroSettle: ObservableObject {
     internal func refreshEntitlementsAfterCheckout(transaction: CheckoutTransaction) async {
         guard let _ = backend else { return }
 
-        // No userId means checkout without bootstrap — can't call the
-        // backend, so all we can do is append the local fallback.
-        guard storeKitManager?.currentUserId != nil else {
-            appendLocalEntitlement(for: transaction)
-            return
-        }
+        if storeKitManager == nil {
+            // StoreKit sync is off (RevenueCat mode): there is no StoreKit manager to name the
+            // user, so read the backend for the identified user directly.
+            guard let userId = currentUserId ?? accessUserId else {
+                appendLocalEntitlement(for: transaction)
+                return
+            }
+            _ = try? await _restoreEntitlementsImpl(userId: userId)
+        } else {
+            // No userId means checkout without bootstrap — can't call the
+            // backend, so all we can do is append the local fallback.
+            guard storeKitManager?.currentUserId != nil else {
+                appendLocalEntitlement(for: transaction)
+                return
+            }
 
-        await refreshEntitlementsAndPublish()
+            await refreshEntitlementsAndPublish()
+        }
 
         // Append a local fallback only when the server didn't return an
         // entitlement for this transaction (consumables, or a rare race

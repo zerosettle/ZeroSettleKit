@@ -50,12 +50,25 @@ final class AccessStateTests: XCTestCase {
         clearCache(for: ["user-a", "user-b"])
     }
 
+    private static let testKeys = ["", "zs_pk_test_access_state", "zs_pk_test_key_one", "zs_pk_test_key_two"]
+
     private func clearCache(for users: [String]) {
         for user in users {
             for sandbox in [true, false] {
-                UserDefaults.standard.removeObject(forKey: AccessStore.key(userId: user, sandbox: sandbox))
+                for key in Self.testKeys {
+                    UserDefaults.standard.removeObject(
+                        forKey: AccessStore.key(userId: user, sandbox: sandbox, keyHash: AccessStore.keyHash(publishableKey: key))
+                    )
+                }
+                UserDefaults.standard.removeObject(
+                    forKey: AccessStore.key(userId: user, sandbox: sandbox, keyHash: zs.accessKeyHash)
+                )
             }
         }
+    }
+
+    private func useKey(_ key: String) {
+        zs.setConfigForTesting(ZeroSettle.Configuration(publishableKey: key))
     }
 
     func test_has_access_bool_and_text() {
@@ -152,7 +165,7 @@ final class AccessStateTests: XCTestCase {
     func test_cache_is_per_user_and_cleared_on_logout() {
         zs.switchAccessUser(to: "user-a")
         zs.updateAccess(makeAccess(features: ["a_only": .bool(true)]))
-        let keyA = AccessStore.key(userId: "user-a", sandbox: zs.isSandbox)
+        let keyA = AccessStore.key(userId: "user-a", sandbox: zs.isSandbox, keyHash: zs.accessKeyHash)
         XCTAssertNotNil(UserDefaults.standard.data(forKey: keyA))
 
         // Another user never sees the first user's features.
@@ -172,17 +185,26 @@ final class AccessStateTests: XCTestCase {
     }
 
     func test_cache_key_shape() {
-        let live = AccessStore.key(userId: "user-a", sandbox: false)
-        let sandbox = AccessStore.key(userId: "user-a", sandbox: true)
-        XCTAssertTrue(live.hasPrefix("zs.access.v1.live."))
-        XCTAssertTrue(sandbox.hasPrefix("zs.access.v1.sandbox."))
+        let hash = AccessStore.keyHash(publishableKey: "zs_pk_live_one")
+        XCTAssertEqual(hash.count, 8)
+        let live = AccessStore.key(userId: "user-a", sandbox: false, keyHash: hash)
+        let sandbox = AccessStore.key(userId: "user-a", sandbox: true, keyHash: hash)
+        XCTAssertTrue(live.hasPrefix("zs.access.v1.live.\(hash)."))
+        XCTAssertTrue(sandbox.hasPrefix("zs.access.v1.sandbox.\(hash)."))
         XCTAssertEqual(live.split(separator: ".").last?.count, 16)
-        XCTAssertNotEqual(live, AccessStore.key(userId: "user-b", sandbox: false))
+        XCTAssertNotEqual(live, AccessStore.key(userId: "user-b", sandbox: false, keyHash: hash))
+        XCTAssertNotEqual(live, AccessStore.key(userId: "user-a", sandbox: false, keyHash: AccessStore.keyHash(publishableKey: "zs_pk_live_two")))
         XCTAssertFalse(live.contains("user-a"))
     }
 
     func test_foreground_refresh_throttled() async {
         let now = Date()
+        // Not opted in: never refresh.
+        zs.switchAccessUser(to: "user-a")
+        XCTAssertFalse(zs.handleDidBecomeActive(now: now))
+        zs.switchAccessUser(to: "user-b")
+        _ = zs.plan
+        zs.clearAccessForLogout()
         // No identified user: never refresh.
         XCTAssertFalse(zs.handleDidBecomeActive(now: now))
 
@@ -200,6 +222,7 @@ final class AccessStateTests: XCTestCase {
     func test_foreground_refresh_once_per_window_even_on_failure() async {
         // No backend is configured, so every refresh ends without a successful read.
         let now = Date()
+        _ = zs.plan
         zs.switchAccessUser(to: "user-a")
         XCTAssertTrue(zs.handleDidBecomeActive(now: now))
         await zs.foregroundRefreshTask?.value
@@ -212,6 +235,7 @@ final class AccessStateTests: XCTestCase {
     }
 
     func test_no_foreground_fetch_during_bootstrap() async {
+        _ = zs.plan
         zs.switchAccessUser(to: "user-a")
         zs.setBootstrapInFlightForTesting(true)
         XCTAssertFalse(zs.handleDidBecomeActive(now: Date()))
@@ -259,8 +283,8 @@ final class AccessStateTests: XCTestCase {
 
         XCTAssertEqual(zs.access, bAccess)
         XCTAssertFalse(zs.hasAccess("a_only"))
-        XCTAssertEqual(AccessStore.load(userId: "user-b", sandbox: zs.isSandbox), bAccess)
-        XCTAssertNil(AccessStore.load(userId: "user-a", sandbox: zs.isSandbox))
+        XCTAssertEqual(AccessStore.load(userId: "user-b", sandbox: zs.isSandbox, keyHash: zs.accessKeyHash), bAccess)
+        XCTAssertNil(AccessStore.load(userId: "user-a", sandbox: zs.isSandbox, keyHash: zs.accessKeyHash))
     }
 
     func test_logout_cannot_be_undone_by_in_flight_refresh() async throws {
@@ -279,7 +303,7 @@ final class AccessStateTests: XCTestCase {
 
         XCTAssertEqual(zs.access, .empty)
         XCTAssertFalse(zs.hasAccess("a_only"))
-        XCTAssertNil(AccessStore.load(userId: "user-a", sandbox: zs.isSandbox))
+        XCTAssertNil(AccessStore.load(userId: "user-a", sandbox: zs.isSandbox, keyHash: zs.accessKeyHash))
     }
 
     func test_switch_never_shows_previous_users_features() async {
@@ -297,6 +321,171 @@ final class AccessStateTests: XCTestCase {
         let afterSwitch = await iterator.next()
         XCTAssertNil(afterSwitch?.features["a_only"])
         XCTAssertEqual(afterSwitch?.features["b_only"], .bool(true))
+    }
+
+    // MARK: - Opt-in foreground refresh, RevenueCat mode, logout fencing
+
+    private func entitlementsBody(feature: String) -> Data {
+        Data("""
+        {"entitlements": [{"id": "ent_1", "product_id": "com.app.pro", "source": "web_checkout", "is_active": true,
+          "status": "active", "expires_at": "2099-06-15T00:00:00Z", "will_renew": true, "is_trial": false,
+          "purchased_at": "2024-06-15T00:00:00Z"}],
+         "plan": {"key": "pro", "name": "Pro", "kind": "tier"}, "features": {"\(feature)": true}}
+        """.utf8)
+    }
+
+    func test_no_foreground_refresh_until_new_reads_used() async {
+        zs.switchAccessUser(to: "user-a")
+        XCTAssertFalse(zs.accessReadsUsed)
+        XCTAssertFalse(zs.handleDidBecomeActive(now: Date()))
+        XCTAssertNil(zs.foregroundRefreshTask)
+
+        // Each of the new reads flips the flag.
+        let touches: [() -> Void] = [
+            { _ = self.zs.hasAccess("x") }, { _ = self.zs.value("x") }, { _ = self.zs.balance("x") },
+            { _ = self.zs.plan }, { _ = self.zs.addOns }, { _ = self.zs.features },
+            { _ = self.zs.balances }, { _ = self.zs.access }, { _ = self.zs.accessUpdates },
+        ]
+        for touch in touches {
+            zs.resetAccessForTesting()
+            zs.switchAccessUser(to: "user-a")
+            touch()
+            XCTAssertTrue(zs.accessReadsUsed)
+            XCTAssertTrue(zs.handleDidBecomeActive(now: Date()))
+            zs.resetAccessForTesting()
+        }
+    }
+
+    func test_foreground_refresh_reaches_backend_with_storekit_sync_off() async throws {
+        let savedBackend = zs.backendForTesting
+        defer { zs.setBackendForTesting(savedBackend) }
+        _ = installHoldingBackend()
+        HoldingURLProtocol.hold(user: "user-a", body: entitlementsBody(feature: "custom_styles"))
+
+        zs.switchAccessUser(to: "user-a")
+        _ = zs.plan
+        XCTAssertTrue(zs.handleDidBecomeActive(now: Date()))
+        await waitUntilHeld("user-a")
+
+        HoldingURLProtocol.release(user: "user-a")
+        await zs.foregroundRefreshTask?.value
+        XCTAssertTrue(zs.hasAccess("custom_styles"))
+        XCTAssertEqual(zs.entitlements.count, 1)
+        zs.logout()
+    }
+
+    func test_logout_during_foreground_read_publishes_nothing() async throws {
+        let savedBackend = zs.backendForTesting
+        defer { zs.setBackendForTesting(savedBackend) }
+        _ = installHoldingBackend()
+        HoldingURLProtocol.hold(user: "user-a", body: entitlementsBody(feature: "a_only"))
+
+        zs.switchAccessUser(to: "user-a")
+        _ = zs.plan
+        XCTAssertTrue(zs.handleDidBecomeActive(now: Date()))
+        let running = zs.foregroundRefreshTask
+        await waitUntilHeld("user-a")
+
+        zs.logout()
+        XCTAssertNil(zs.foregroundRefreshTask)
+        HoldingURLProtocol.release(user: "user-a")
+        await running?.value
+
+        XCTAssertTrue(zs.entitlements.isEmpty)
+        XCTAssertEqual(zs.access, .empty)
+    }
+
+    func test_logout_during_restore_read_publishes_nothing() async throws {
+        let savedBackend = zs.backendForTesting
+        defer { zs.setBackendForTesting(savedBackend) }
+        _ = installHoldingBackend()
+        HoldingURLProtocol.hold(user: "user-a", body: entitlementsBody(feature: "a_only"))
+
+        zs.switchAccessUser(to: "user-a")
+        let stale = Task { @MainActor in _ = try? await ZeroSettle.shared._restoreEntitlementsImpl(userId: "user-a") }
+        await waitUntilHeld("user-a")
+
+        zs.logout()
+        HoldingURLProtocol.release(user: "user-a")
+        await stale.value
+
+        XCTAssertTrue(zs.entitlements.isEmpty)
+        XCTAssertFalse(zs.hasAccess("a_only"))
+    }
+
+    func test_checkout_refresh_reaches_backend_with_storekit_sync_off() async throws {
+        let savedBackend = zs.backendForTesting
+        defer { zs.setBackendForTesting(savedBackend); zs.setCurrentUserIdForTesting(nil) }
+        _ = installHoldingBackend()
+        HoldingURLProtocol.hold(user: "user-a", body: entitlementsBody(feature: "custom_styles"))
+
+        zs.switchAccessUser(to: "user-a")
+        zs.setCurrentUserIdForTesting("user-a")
+        let transaction = CheckoutTransaction(
+            id: "txn_1", productId: "com.app.pro", status: .completed, source: .webCheckout, purchasedAt: Date()
+        )
+        let refresh = Task { @MainActor in await ZeroSettle.shared.refreshEntitlementsAfterCheckout(transaction: transaction) }
+        await waitUntilHeld("user-a")
+        HoldingURLProtocol.release(user: "user-a")
+        await refresh.value
+
+        XCTAssertTrue(zs.hasAccess("custom_styles"))
+        zs.logout()
+    }
+
+    // MARK: - Tenant and ordering
+
+    func test_configure_with_another_key_never_shows_previous_tenants_access() {
+        useKey("zs_pk_test_key_one")
+        zs.switchAccessUser(to: "user-a")
+        zs.updateAccess(makeAccess(features: ["tenant_one": .bool(true)]))
+        XCTAssertTrue(zs.hasAccess("tenant_one"))
+
+        // Another key, then the same user identifies again.
+        useKey("zs_pk_test_key_two")
+        zs.resetAccessForConfigure()
+        XCTAssertEqual(zs.access, .empty)
+        zs.switchAccessUser(to: "user-a")
+        XCTAssertFalse(zs.hasAccess("tenant_one"))
+        XCTAssertNil(zs.plan)
+
+        // The first tenant's entry is untouched and loads again under its own key.
+        useKey("zs_pk_test_key_one")
+        zs.resetAccessForConfigure()
+        zs.switchAccessUser(to: "user-a")
+        XCTAssertTrue(zs.hasAccess("tenant_one"))
+    }
+
+    func test_read_in_flight_across_configure_is_dropped() async throws {
+        let savedBackend = zs.backendForTesting
+        defer { zs.setBackendForTesting(savedBackend) }
+        useKey("zs_pk_test_key_one")
+        _ = installHoldingBackend()
+        HoldingURLProtocol.hold(user: "user-a", body: body(feature: "tenant_one"))
+
+        zs.switchAccessUser(to: "user-a")
+        let stale = Task { @MainActor in _ = try? await ZeroSettle.shared._restoreEntitlementsImpl(userId: "user-a") }
+        await waitUntilHeld("user-a")
+
+        useKey("zs_pk_test_key_two")
+        zs.resetAccessForConfigure()
+        zs.switchAccessUser(to: "user-a")
+        HoldingURLProtocol.release(user: "user-a")
+        await stale.value
+
+        XCTAssertEqual(zs.access, .empty)
+        XCTAssertFalse(zs.hasAccess("tenant_one"))
+        XCTAssertNil(AccessStore.load(userId: "user-a", sandbox: zs.isSandbox, keyHash: AccessStore.keyHash(publishableKey: "zs_pk_test_key_two")))
+        XCTAssertNil(AccessStore.load(userId: "user-a", sandbox: zs.isSandbox, keyHash: AccessStore.keyHash(publishableKey: "zs_pk_test_key_one")))
+    }
+
+    func test_older_read_never_overwrites_newer_one() {
+        zs.switchAccessUser(to: "user-a")
+        let older = zs.beginAccessRead(userId: "user-a")
+        let newer = zs.beginAccessRead(userId: "user-a")
+        zs.applyAccessRead(makeAccess(features: ["v": .text("new")]), stamp: newer)
+        zs.applyAccessRead(makeAccess(features: ["v": .text("old")]), stamp: older)
+        XCTAssertEqual(zs.value("v"), "new")
     }
 
     func test_static_forwarders_match_shared() {

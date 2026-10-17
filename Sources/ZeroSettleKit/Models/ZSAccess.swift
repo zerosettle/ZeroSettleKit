@@ -8,7 +8,9 @@
 //
 
 import Foundation
+#if canImport(ZeroSettleCore)
 internal import ZeroSettleCore
+#endif
 
 /// Whether a ``ZSPlan`` is a base tier or an add-on.
 public enum ZSPlanKind: String, Codable, Sendable {
@@ -161,21 +163,53 @@ public struct ZSAccess: Codable, Sendable, Equatable {
         }
     }
 
+    /// A key counts as present only when it decoded to the shape it should have: a plan object
+    /// (or an explicit null for no plan), an array of add-ons, a map of features, a map of
+    /// balances. A wrong-typed value is treated as absent so it never replaces a good cached value.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        plan = (try? container.decodeIfPresent(ZSPlan.self, forKey: .plan)) ?? nil
-        let lossyAddOns = (try? container.decodeIfPresent([Lossy<ZSPlan>].self, forKey: .addOns)) ?? nil
-        addOns = (lossyAddOns ?? []).compactMap { $0.value }
-        let lossyFeatures = (try? container.decodeIfPresent([String: Lossy<ZSFeatureValue>].self, forKey: .features)) ?? nil
-        features = (lossyFeatures ?? [:]).compactMapValues { $0.value }
-        let lossyBalances = (try? container.decodeIfPresent([String: Lossy<ZSBalance>].self, forKey: .balances)) ?? nil
-        balances = (lossyBalances ?? [:]).compactMapValues { $0.value }
-        isPresent = [CodingKeys.plan, .addOns, .features, .balances].contains { container.contains($0) }
+        var present = false
+
+        var decodedPlan: ZSPlan?
+        if container.contains(.plan) {
+            if (try? container.decodeNil(forKey: .plan)) == true {
+                present = true
+            } else if let value = try? container.decode(ZSPlan.self, forKey: .plan) {
+                decodedPlan = value
+                present = true
+            }
+        }
+        plan = decodedPlan
+
+        if let lossyAddOns = try? container.decode([Lossy<ZSPlan>].self, forKey: .addOns) {
+            addOns = lossyAddOns.compactMap { $0.value }
+            present = true
+        } else {
+            addOns = []
+        }
+        if let lossyFeatures = try? container.decode([String: Lossy<ZSFeatureValue>].self, forKey: .features) {
+            features = lossyFeatures.compactMapValues { $0.value }
+            present = true
+        } else {
+            features = [:]
+        }
+        if let lossyBalances = try? container.decode([String: Lossy<ZSBalance>].self, forKey: .balances) {
+            balances = lossyBalances.compactMapValues { $0.value }
+            present = true
+        } else {
+            balances = [:]
+        }
+        isPresent = present
     }
 
+    /// Encodes the four keys, or an empty object when ``isPresent`` is false.
+    ///
+    /// Dates follow the encoder's date strategy, so decode with a decoder using the same one.
+    /// The wire form from the server is an ISO 8601 string; a default `JSONDecoder` cannot read
+    /// it, and a balance whose `resets_at` fails to decode is dropped.
     public func encode(to encoder: Encoder) throws {
-        guard isPresent else { return }
         var container = encoder.container(keyedBy: CodingKeys.self)
+        guard isPresent else { return }
         try container.encodeIfPresent(plan, forKey: .plan)
         try container.encode(addOns, forKey: .addOns)
         try container.encode(features, forKey: .features)

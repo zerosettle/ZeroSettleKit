@@ -62,7 +62,7 @@ public final class HTTPClient: @unchecked Sendable {
 
     /// GET that returns the validated raw response bytes, for callers that
     /// need a decoder other than the client's own.
-    package func getData(
+    public func getData(
         _ url: URL,
         headers: [String: String] = [:]
     ) async throws -> Data {

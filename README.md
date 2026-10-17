@@ -156,13 +156,13 @@ To force-refresh from the server (e.g., on foreground), call `restoreEntitlement
 
 ### Check access by feature
 
-If you set up plans, add-ons, features and currencies in the dashboard, ask what the person can do instead of which product they bought. The values load with `identify(_:)` and refresh on every entitlements read.
+If you set up plans, add-ons, features and currencies in the dashboard, ask what the person can do instead of which product they bought. The values load with `identify(_:)` and refresh on every entitlements read. They need `identify(_:)`: without it, `hasAccess` answers only from your offline defaults.
 
 ```swift
 if ZeroSettle.hasAccess("custom_styles") { showStyles() }          // on/off feature
 let quality = ZeroSettle.value("export_quality")                    // text feature, e.g. "4K"; nil for a toggle
 if let credits = ZeroSettle.balance("credits") {
-    label.text = "\(credits.remaining) of \(credits.limit ?? credits.remaining) left"
+    label.text = credits.limit.map { "\(credits.remaining) of \($0) left" } ?? "\(credits.remaining) left"
 }
 let planName = ZeroSettle.plan?.name                                // nil when the person has no plan
 ```
@@ -179,7 +179,7 @@ for await access in ZeroSettle.shared.accessUpdates {
 
 You can also implement `zeroSettleAccessDidUpdate(_:)` on your delegate, or read `ZeroSettle.shared` from SwiftUI (it is `@Observable`).
 
-**Offline.** The last access is cached on the device for each user and environment, so checks work on a launch with no connection. Before anything has ever loaded for that person, pass defaults in the configuration:
+**Offline.** The last access is cached on the device for each user, app key and environment, so checks work on a launch with no connection. Before anything has ever loaded for that person, pass defaults in the configuration:
 
 ```swift
 ZeroSettle.shared.configure(.init(
@@ -188,7 +188,7 @@ ZeroSettle.shared.configure(.init(
 ))
 ```
 
-A key missing from the defaults is off. Once access has loaded, the defaults no longer apply. Logging out clears the value and the cached copy. The SDK also refreshes access when the app returns to the foreground, at most once a minute.
+A key missing from the defaults is off. Once access has loaded, the defaults no longer apply. Logging out clears the value and the cached copy. Once your app reads a plan, feature or balance, the SDK also refreshes entitlements and access when the app returns to the foreground, at most once a minute. An app that never uses these reads sees no new network traffic and no extra entitlement update events on activation.
 
 ## Checkout Modes
 

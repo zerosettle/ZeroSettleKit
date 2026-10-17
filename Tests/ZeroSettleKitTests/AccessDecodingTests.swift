@@ -37,6 +37,31 @@ final class AccessDecodingTests: XCTestCase {
         XCTAssertTrue(try decoder.decode(Rows.self, from: Data(json.utf8)).entitlements.isEmpty)
     }
 
+    func test_wrong_typed_or_null_maps_are_not_present() {
+        for json in [
+            #"{"features": null}"#, #"{"features": "x"}"#, #"{"balances": []}"#,
+            #"{"add_ons": {}}"#, #"{"plan": "pro"}"#, #"{"features": null, "balances": 3}"#,
+        ] {
+            let result = access(json)
+            XCTAssertFalse(result.isPresent, json)
+            XCTAssertEqual(result, .empty, json)
+        }
+        // A right-shaped empty value is still present, and a null plan means no plan.
+        XCTAssertTrue(access(#"{"features": {}}"#).isPresent)
+        XCTAssertTrue(access(#"{"plan": null}"#).isPresent)
+        // One good key makes it present while a bad sibling is ignored.
+        let mixed = access(#"{"features": null, "balances": {}}"#)
+        XCTAssertTrue(mixed.isPresent)
+        XCTAssertTrue(mixed.features.isEmpty)
+    }
+
+    func test_encoding_a_not_present_value_does_not_throw() throws {
+        let data = try JSONEncoder().encode(ZSAccess.empty)
+        XCTAssertEqual(String(data: data, encoding: .utf8), "{}")
+        let decoded = try JSONDecoder().decode(ZSAccess.self, from: data)
+        XCTAssertFalse(decoded.isPresent)
+    }
+
     func test_full_payload_decodes() {
         let result = access("""
         {
