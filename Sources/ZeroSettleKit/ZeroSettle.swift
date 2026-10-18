@@ -656,6 +656,9 @@ public final class ZeroSettle: ObservableObject {
         return currentAccess
     }
 
+    /// Reports the feature keys the app checks. Not observed: `hasAccess` runs inside SwiftUI bodies.
+    internal let featureCheckReporter = FeatureCheckReporter()
+
     /// Storage behind ``access``. SDK code reads this so internal reads do not count as app use.
     internal private(set) var currentAccess: ZSAccess = .empty
 
@@ -765,6 +768,7 @@ public final class ZeroSettle: ObservableObject {
 
     private func resolvedFeature(_ key: String) -> ZSFeatureValue? {
         noteAccessUsed()
+        featureCheckReporter.note(key)
         if let loaded = currentAccess.features[key] { return loaded }
         guard !accessLoaded else { return nil }
         return config?.offlineFeatureDefaults[key]
@@ -1342,8 +1346,12 @@ public final class ZeroSettle: ObservableObject {
     /// The effective base URL, accounting for any debug override.
     internal var effectiveBaseURL: URL? {
         guard let config else { return nil }
+        return Self.effectiveBaseURL(for: config)
+    }
+
+    private static func effectiveBaseURL(for config: Configuration) -> URL {
 #if DEBUG
-        return Self.baseURLOverride ?? config.backendURL
+        return baseURLOverride ?? config.backendURL
 #else
         return config.backendURL
 #endif
@@ -1604,6 +1612,8 @@ public final class ZeroSettle: ObservableObject {
         // they hold client_secrets from the previous environment.
         CheckoutPreloaderPool.shared.resetAll()
 
+        let keyOrBaseURLChanged = self.config?.publishableKey != config.publishableKey
+            || effectiveBaseURL != Self.effectiveBaseURL(for: config)
         self.config = config
         resetAccessForConfigure()
         if accessReadsUsed { installAccessForegroundObserver() }
@@ -1616,6 +1626,9 @@ public final class ZeroSettle: ObservableObject {
 
         let backend = Backend(baseURL: baseURL, publishableKey: config.publishableKey)
         self.backend = backend
+        if keyOrBaseURLChanged {
+            featureCheckReporter.reset(sender: BackendFeatureCheckSender(backend: backend))
+        }
 
         let checkoutFlow = WebCheckoutFlow(backend: backend)
         self.checkoutFlow = checkoutFlow

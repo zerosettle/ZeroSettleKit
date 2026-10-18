@@ -565,6 +565,17 @@ internal final class Backend: @unchecked Sendable {
         try await wrapped { try await httpClient.postVoid(url, body: body, headers: authHeaders) }
     }
 
+    // MARK: - Feature Check Reporting
+
+    /// Tell the backend which feature keys the app checks, so the dashboard can mark
+    /// "Check it in your app" done. 204 on success; the reporter reads 400, 401 and 403
+    /// from the wrapped error's status code.
+    func reportFeaturesChecked(keys: [String]) async throws {
+        let url = apiURL("iap/features/checked/")
+        let body = ReportFeaturesCheckedRequest(keys: keys)
+        try await wrapped { try await httpClient.postVoid(url, body: body, headers: authHeaders) }
+    }
+
     // MARK: - StoreKit Transaction Sync
 
     /// Forward a StoreKit transaction's JWS representation for server-side verification.
@@ -1181,6 +1192,10 @@ internal struct BatchCheckoutResponse: Decodable {
 /// handles `client_secret` → `clientSecret`.
 private struct FinalizePaymentIntentResponse: Decodable {
     let clientSecret: String
+}
+
+internal struct ReportFeaturesCheckedRequest: Encodable {
+    let keys: [String]
 }
 
 private struct SyncStoreKitTransactionRequest: Encodable {
