@@ -127,6 +127,8 @@ internal final class FeatureCheckReporter {
     }
 
     #if DEBUG
+    var generationForTesting: Int { generation }
+
     /// Wait for the scheduled or running flush, and any it chains, to finish.
     func waitForIdleForTesting() async {
         while let task = flushTask { await task.value }

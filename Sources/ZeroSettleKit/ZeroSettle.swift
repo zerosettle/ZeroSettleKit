@@ -659,6 +659,11 @@ public final class ZeroSettle: ObservableObject {
     /// Reports the feature keys the app checks. Not observed: `hasAccess` runs inside SwiftUI bodies.
     internal let featureCheckReporter = FeatureCheckReporter()
 
+    /// The key and base URL the reporter was last reset for, so a change to the debug URL override
+    /// alone still resets it.
+    @ObservationIgnored private var reporterPublishableKey: String?
+    @ObservationIgnored private var reporterBaseURL: URL?
+
     /// Storage behind ``access``. SDK code reads this so internal reads do not count as app use.
     internal private(set) var currentAccess: ZSAccess = .empty
 
@@ -1612,8 +1617,10 @@ public final class ZeroSettle: ObservableObject {
         // they hold client_secrets from the previous environment.
         CheckoutPreloaderPool.shared.resetAll()
 
-        let keyOrBaseURLChanged = self.config?.publishableKey != config.publishableKey
-            || effectiveBaseURL != Self.effectiveBaseURL(for: config)
+        let newBaseURL = Self.effectiveBaseURL(for: config)
+        let keyOrBaseURLChanged = reporterPublishableKey != config.publishableKey || reporterBaseURL != newBaseURL
+        reporterPublishableKey = config.publishableKey
+        reporterBaseURL = newBaseURL
         self.config = config
         resetAccessForConfigure()
         if accessReadsUsed { installAccessForegroundObserver() }

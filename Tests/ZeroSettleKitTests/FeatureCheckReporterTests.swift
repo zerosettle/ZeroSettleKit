@@ -229,6 +229,31 @@ final class FeatureCheckReporterTests: XCTestCase {
         XCTAssertEqual(new.batches, [["b"]])
     }
 
+    func testOldFlushDoesNotClearNewGenerationFlag() async {
+        let old = FakeFeatureSender(publishableKey: "zs_pk_test_old")
+        reporter.reset(sender: old)
+        old.holdNextSend()
+        reporter.note("old")
+        await waitUntil { old.isHolding }
+
+        let new = FakeFeatureSender(publishableKey: "zs_pk_test_new")
+        new.holdNextSend()
+        reporter.reset(sender: new)
+        reporter.note("A")
+        await waitUntil { new.isHolding }
+
+        old.release()
+        for _ in 0..<20 { await Task.yield() }
+        reporter.note("C")
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(new.batches, [["A"]], "no second flush while the first is in flight")
+
+        new.release()
+        await reporter.waitForIdleForTesting()
+        XCTAssertEqual(new.batches, [["A"], ["C"]])
+        XCTAssertEqual(old.batches.count, 1)
+    }
+
     func testNothingSentBeforeConfigure() async {
         reporter.note("a")
         await reporter.waitForIdleForTesting()
@@ -257,6 +282,7 @@ final class FeatureCheckConfigureTests: XCTestCase {
         defer { zs.setConfigForTesting(saved) }
         let sender = FakeFeatureSender()
         zs.featureCheckReporter.reset(sender: sender)
+        defer { zs.featureCheckReporter.reset(sender: FakeFeatureSender()) }
         _ = zs.balance("credits")
         _ = zs.plan
         _ = zs.access
@@ -264,6 +290,33 @@ final class FeatureCheckConfigureTests: XCTestCase {
         _ = zs.value("quality")
         await zs.featureCheckReporter.waitForIdleForTesting()
         XCTAssertEqual(sender.flattened, ["dark_mode", "quality"])
+    }
+}
+
+@MainActor
+final class FeatureCheckConfigureResetTests: XCTestCase {
+    func testConfigureResetsReporterOnlyOnKeyOrURLChange() {
+        let zs = ZeroSettle.shared
+        let savedConfig = zs.currentConfig
+        let savedOverride = ZeroSettle.baseURLOverride
+        defer {
+            ZeroSettle.baseURLOverride = savedOverride
+            zs.setConfigForTesting(savedConfig)
+            zs.featureCheckReporter.reset(sender: FakeFeatureSender())
+        }
+        ZeroSettle.baseURLOverride = URL(string: "https://one.test")!
+        zs.configure(.init(publishableKey: "zs_pk_test_cfg_a"))
+        let first = zs.featureCheckReporter.generationForTesting
+
+        zs.configure(.init(publishableKey: "zs_pk_test_cfg_a"))
+        XCTAssertEqual(zs.featureCheckReporter.generationForTesting, first, "same key and URL does not reset")
+
+        zs.configure(.init(publishableKey: "zs_pk_test_cfg_b"))
+        XCTAssertEqual(zs.featureCheckReporter.generationForTesting, first + 1, "a new key resets")
+
+        ZeroSettle.baseURLOverride = URL(string: "https://two.test")!
+        zs.configure(.init(publishableKey: "zs_pk_test_cfg_b"))
+        XCTAssertEqual(zs.featureCheckReporter.generationForTesting, first + 2, "a new base URL alone resets")
     }
 }
 
