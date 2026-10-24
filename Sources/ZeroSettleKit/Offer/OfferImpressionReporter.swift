@@ -47,6 +47,6 @@ final class OfferImpressionReporter {
     }
 
     private static func activeUserId() -> String {
-        ZeroSettle.shared.currentUserId ?? "anonymous"
+        ZeroSettle.shared.analyticsUserId
     }
 }

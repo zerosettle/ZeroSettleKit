@@ -7,13 +7,11 @@ final class IdentityAnalyticsIdTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        ZeroSettle.shared.logout()
-        UserDefaults.standard.removeObject(forKey: key)
+        StubbedSDK.setUp()
     }
 
     override func tearDown() {
-        ZeroSettle.shared.logout()
-        UserDefaults.standard.removeObject(forKey: key)
+        StubbedSDK.tearDown()
         super.tearDown()
     }
 
@@ -29,6 +27,7 @@ final class IdentityAnalyticsIdTests: XCTestCase {
     func testIdentifyAnonymousAdoptsTheSameUUID() async {
         let before = ZeroSettle.shared.analyticsUserId
         _ = try? await ZeroSettle.shared.identify(.anonymous)
+        XCTAssertEqual(ZeroSettle.shared.currentUserId, before)
         XCTAssertEqual(UserDefaults.standard.string(forKey: key), before)
         XCTAssertEqual(ZeroSettle.shared.analyticsUserId, before)
     }
@@ -45,5 +44,15 @@ final class IdentityAnalyticsIdTests: XCTestCase {
         _ = try? await ZeroSettle.shared.identify(.user(id: "u1"))
         XCTAssertEqual(ZeroSettle.shared.currentUserId, "u1")
         XCTAssertEqual(ZeroSettle.shared.analyticsUserId, "u1")
+    }
+
+    func testImpressionDedupeKeysOnAnalyticsIdNotLiteralAnonymous() {
+        let reporter = OfferImpressionReporter()
+        let offer = ResolvedOffer(productId: "p", variantId: 1, flowType: "migration")
+        XCTAssertTrue(reporter.shouldReportForTesting(offer))
+        XCTAssertFalse(reporter.shouldReportForTesting(offer))
+        // A different signed-out person (fresh UUID after logout) is a new key.
+        ZeroSettle.shared.logout()
+        XCTAssertTrue(reporter.shouldReportForTesting(offer))
     }
 }

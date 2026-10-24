@@ -31,6 +31,9 @@ public enum HTTPError: Error, LocalizedError {
 }
 
 /// A raw HTTP response: status, headers and body, with no status validation.
+///
+/// Internal use only. It is public because ZeroSettleCore and ZeroSettleKit
+/// ship as one module under CocoaPods; do not depend on it from app code.
 public struct HTTPRawResponse: Sendable {
     public let statusCode: Int
     /// Response headers with string keys and values (non-string entries dropped).
@@ -105,6 +108,7 @@ public final class HTTPClient: @unchecked Sendable {
         return try await execute(request, responseType: responseType)
     }
 
+    /// Internal use only (public for the single-module CocoaPods build).
     /// POST that returns the response whatever its status code, so callers can
     /// read headers (for example `Retry-After`) and map non-2xx bodies themselves.
     /// Transport failures still throw ``HTTPError/networkError(_:)``.

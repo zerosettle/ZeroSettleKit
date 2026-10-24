@@ -2,7 +2,16 @@
 
 ## Unreleased
 
-Identity phase 6. All additive.
+Identity phase 6. Plan to release as a minor version.
+
+- New `ZeroSettleError` cases (`reconcileRefused`, `invalidLinkToken`,
+  `rateLimited(retryAfter:)`). Apps that switch exhaustively over
+  `ZeroSettleError` without a `default` must add the cases or a default.
+- Signed-out events now send a per-device UUID instead of the literal
+  "anonymous", so counts of app users and paywall viewers rise once apps update.
+- RevenueCat-mode signed-in users' events now carry their real id.
+- `ReconcileResult.switchedToAccount` reports whether the SDK adopted the
+  account id.
 
 - `ZeroSettle.currentUserId` is now public (read-only).
 - New `ZeroSettle.analyticsUserId`: the id the SDK sends for events, the

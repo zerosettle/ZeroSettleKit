@@ -318,7 +318,7 @@ public enum ZeroSettleError: Error, LocalizedError, Equatable {
             return "The link token is invalid, expired or already used. Have your server mint a new one."
         case .rateLimited(let retryAfter):
             if let retryAfter {
-                return "Too many requests. Retry in \(Int(retryAfter)) seconds."
+                return "Too many requests. Retry in \(Int(ceil(retryAfter))) seconds."
             }
             return "Too many requests. Retry later."
         }
@@ -1110,6 +1110,12 @@ public final class ZeroSettle: ObservableObject {
     /// invariant is "same UUID across launches until ``logout()``"; that
     /// holds in `UserDefaults`, and avoids the cross-process / iCloud
     /// surprises Keychain brings.
+    /// Removes the persisted anonymous UUID (the same removal ``logout()``
+    /// performs) so a later anonymous session gets a fresh id.
+    internal func clearPersistedAnonymousUserId() {
+        UserDefaults.standard.removeObject(forKey: Self.anonymousSessionUUIDKey)
+    }
+
     private func anonymousSessionUserId() -> String {
         let defaults = UserDefaults.standard
         if let existing = defaults.string(forKey: Self.anonymousSessionUUIDKey),
@@ -1237,6 +1243,10 @@ public final class ZeroSettle: ObservableObject {
     /// ``logout()``. Read-only externally; see ``analyticsUserId`` for an id
     /// that is always available.
     ///
+    /// Not observable: it is `@ObservationIgnored`, so SwiftUI views do not
+    /// update when it changes. It is also set by the deprecated `userId:`
+    /// APIs (for example `bootstrap(userId:)`), not only by ``identify(_:)``.
+    ///
     /// Mutate via ``setActiveUserId(_:)`` to keep ``StoreKitManager`` in sync.
     @ObservationIgnored
     public private(set) var currentUserId: String?
@@ -1283,6 +1293,20 @@ public final class ZeroSettle: ObservableObject {
             // Allow a later configure() to retry only after a failed read.
             if value == nil { self.storeKitEnvironmentTask = nil }
         }
+    }
+
+    /// The StoreKit environment, waiting at most 1.5 s for the in-flight
+    /// `AppTransaction` read. `nil` if it has not finished by then.
+    internal func storeKitEnvironmentWaitingBriefly() async -> String? {
+        if let storeKitEnvironment { return storeKitEnvironment }
+        guard let task = storeKitEnvironmentTask else { return nil }
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await task.value }
+            group.addTask { try? await Task.sleep(nanoseconds: 1_500_000_000) }
+            await group.next()
+            group.cancelAll()
+        }
+        return storeKitEnvironment
     }
 
     /// Number of times ``identify(_:)`` switched from one signed-in user to
@@ -1534,7 +1558,13 @@ public final class ZeroSettle: ObservableObject {
     /// (``currentUserId``, compared case-insensitively), it continues as the
     /// account: it runs the same path as `identify(.user(id:))` for the account
     /// id and refreshes entitlements. Otherwise the current user is left alone
-    /// and only entitlements are refreshed.
+    /// and only entitlements are refreshed. If adopting the account fails after
+    /// the move succeeded, the result is still returned with
+    /// ``ReconcileResult/switchedToAccount`` false; call
+    /// `identify(.user(id: result.intoUserId))` to continue as the account.
+    ///
+    /// A rate-limited (429) response does not consume the token, so it stays
+    /// usable for a retry after the delay.
     ///
     /// - Parameter linkToken: The token your server signed.
     /// - Returns: What moved.
@@ -1547,20 +1577,39 @@ public final class ZeroSettle: ObservableObject {
         let backend = try requireBackend()
         let result = try await backend.reconcile(linkToken: linkToken)
 
+        var switched = false
         if Self.shouldAdoptReconciledUser(currentUserId: currentUserId, fromUserId: result.fromUserId) {
             // The move is deliberate, so it must not trip the user-switch warning.
             lastSignedInUserId = nil
             do {
+                // Bootstrap refreshes entitlements itself.
                 _ = try await _runIdentify(userId: result.intoUserId, name: nil, email: nil)
+                switched = true
+                // The absorbed anonymous id must not be reused by a later
+                // anonymous session.
+                let persisted = UserDefaults.standard.string(forKey: Self.anonymousSessionUUIDKey)
+                if let persisted, persisted.lowercased() == result.fromUserId.lowercased() {
+                    clearPersistedAnonymousUserId()
+                }
             } catch {
-                ZSLogger.warning(
+                ZSLogger.log(
                     "[ZeroSettle] reconcile succeeded but switching to the account id failed: \(error.localizedDescription)",
-                    category: .general
+                    category: .general,
+                    type: .default
                 )
             }
         }
-        await refreshEntitlementsAndPublish()
-        return result
+        if !switched {
+            await refreshEntitlementsAndPublish()
+        }
+        return ReconcileResult(
+            reconciliationId: result.reconciliationId,
+            fromUserId: result.fromUserId,
+            intoUserId: result.intoUserId,
+            movedTransactions: result.movedTransactions,
+            movedEntitlements: result.movedEntitlements,
+            switchedToAccount: switched
+        )
     }
 
     /// Deprecated alias for ``identify(_:)`` with ``Identity/user(id:name:email:)``.
@@ -1596,9 +1645,10 @@ public final class ZeroSettle: ObservableObject {
             if let previous = lastSignedInUserId,
                previous.lowercased() != userId.lowercased() {
                 userSwitchWarningCount += 1
-                ZSLogger.warning(
+                ZSLogger.log(
                     "[ZeroSettle] identify switched from one signed-in user to another without logout(). Purchases stay with the first id. If this is the same person, have your server reconcile the ids.",
-                    category: .general
+                    category: .general,
+                    type: .default
                 )
             }
             lastSignedInUserId = userId
@@ -2480,7 +2530,7 @@ public final class ZeroSettle: ObservableObject {
             }
 
             let userId = await instance.analyticsUserId
-            let environment = await instance.storeKitEnvironment
+            let environment = await instance.storeKitEnvironmentWaitingBriefly()
 
             do {
                 try await backend.trackFunnelEvent(
@@ -3418,6 +3468,8 @@ public final class ZeroSettle: ObservableObject {
     // MARK: - Test hooks
 
 #if DEBUG
+    internal func setStoreKitEnvironmentForTesting(_ value: String?) { storeKitEnvironment = value }
+
     internal func _resetForTesting() {
         offerManager = nil
         // Note: leaves currentConfig/identity intact — tests should configure as needed.
