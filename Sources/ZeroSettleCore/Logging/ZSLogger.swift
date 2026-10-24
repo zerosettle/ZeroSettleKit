@@ -71,6 +71,12 @@ public enum ZSLogger {
         log(message, category: category, type: .info)
     }
 
+    /// Logs a warning. `os_log` has no warning level, so this uses the
+    /// default level (above info, below error).
+    public static func warning(_ message: String, category: Category = .general) {
+        log(message, category: category, type: .default)
+    }
+
     public static func error(_ message: String, category: Category = .general) {
         log(message, category: category, type: .error)
     }

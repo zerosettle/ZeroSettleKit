@@ -942,6 +942,7 @@ public final class ZeroSettle: ObservableObject {
         // an explicit "auth coming later" assertion. The next configure()
         // / identify() cycle is responsible for re-declaring intent.
         deferredIdentification = false
+        lastSignedInUserId = nil
 
         // Persistent sync queue (StoreKitSyncQueue) holds JWS-tokens keyed
         // by the previous user's id. If we don't drop them, the next
@@ -1203,12 +1204,68 @@ public final class ZeroSettle: ObservableObject {
     @ObservationIgnored
     internal private(set) var deferredIdentification: Bool = false
 
-    /// The currently identified user, set by ``identify(_:)``
-    /// (any case other than ``Identity/deferred``). Cleared by ``logout()``.
-    /// Read-only externally — mutate via ``setActiveUserId(_:)`` to keep
-    /// ``StoreKitManager`` in sync.
+    /// The id the SDK sends for this user: the developer's id after
+    /// `identify(.user(id:))`, the persisted anonymous UUID after
+    /// `identify(.anonymous)`, and `nil` before any identify and after
+    /// ``logout()``. Read-only externally; see ``analyticsUserId`` for an id
+    /// that is always available.
+    ///
+    /// Mutate via ``setActiveUserId(_:)`` to keep ``StoreKitManager`` in sync.
     @ObservationIgnored
-    internal private(set) var currentUserId: String?
+    public private(set) var currentUserId: String?
+
+    /// The id the SDK uses for this person in paywall and offer events, always
+    /// non-empty: ``currentUserId`` when set, otherwise the persisted
+    /// anonymous UUID (generated and stored if none exists yet). It is stable
+    /// across launches until ``logout()``, and it is the same UUID
+    /// `identify(.anonymous)` will adopt, so views recorded before identify
+    /// join purchases made after it.
+    public var analyticsUserId: String {
+        if let currentUserId, !currentUserId.isEmpty {
+            return currentUserId
+        }
+        return anonymousSessionUserId()
+    }
+
+    /// StoreKit environment (`Production`, `Sandbox`, `Xcode`) read once per
+    /// launch from `AppTransaction`. `nil` until the read finishes or if it
+    /// fails; events omit the field in that case.
+    @ObservationIgnored
+    internal private(set) var storeKitEnvironment: String?
+
+    @ObservationIgnored
+    private var storeKitEnvironmentTask: Task<Void, Never>?
+
+    /// Reads `AppTransaction.shared` once per launch, off the configure path.
+    /// The payload is only used as a test-data flag, so an unverified result
+    /// is accepted.
+    private func loadStoreKitEnvironmentIfNeeded() {
+        guard storeKitEnvironment == nil, storeKitEnvironmentTask == nil else { return }
+        storeKitEnvironmentTask = Task { [weak self] in
+            let value: String?
+            do {
+                switch try await AppTransaction.shared {
+                case .verified(let tx), .unverified(let tx, _):
+                    value = tx.environment.rawValue
+                }
+            } catch {
+                value = nil
+            }
+            guard let self else { return }
+            if let value, !value.isEmpty { self.storeKitEnvironment = value }
+            // Allow a later configure() to retry only after a failed read.
+            if value == nil { self.storeKitEnvironmentTask = nil }
+        }
+    }
+
+    /// Number of times ``identify(_:)`` switched from one signed-in user to
+    /// another without ``logout()``. Internal so tests can pin the warning.
+    @ObservationIgnored
+    internal private(set) var userSwitchWarningCount: Int = 0
+
+    /// The signed-in (non-anonymous) id of the previous identify call, if any.
+    @ObservationIgnored
+    private var lastSignedInUserId: String?
 
     /// Observes StoreKit subscription state changes (cancel, revoke, expire)
     /// locally. Used by `ZSOfferManager` / `ZSMigrationManager` to transition
@@ -1280,6 +1337,7 @@ public final class ZeroSettle: ObservableObject {
         CheckoutPreloaderPool.shared.resetAll()
 
         self.config = config
+        loadStoreKitEnvironmentIfNeeded()
 
 #if DEBUG
         let baseURL = Self.baseURLOverride ?? config.backendURL
@@ -1418,7 +1476,7 @@ public final class ZeroSettle: ObservableObject {
         case .anonymous:
             deferredIdentification = false
             let userId = anonymousSessionUserId()
-            return try await _runIdentify(userId: userId, name: nil, email: nil)
+            return try await _runIdentify(userId: userId, name: nil, email: nil, isAnonymous: true)
         case .deferred:
             deferredIdentification = true
             ZSLogger.info(
@@ -1448,10 +1506,26 @@ public final class ZeroSettle: ObservableObject {
     @ObservationIgnored
     private var inFlightBootstrap: (userId: String, task: Task<ProductCatalog, Error>)?
 
-    private func _runIdentify(userId: String, name: String?, email: String?) async throws -> ProductCatalog {
+    private func _runIdentify(userId: String, name: String?, email: String?, isAnonymous: Bool = false) async throws -> ProductCatalog {
         guard !userId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             ZSLogger.error("identify() called with empty userId — this is a no-op. Pass a valid user identifier.", category: .entitlements)
             throw ZeroSettleError.invalidUserId
+        }
+
+        // Warn (no behaviour change) when one signed-in user replaces another
+        // without logout(). Anonymous -> user never warns.
+        if isAnonymous {
+            lastSignedInUserId = nil
+        } else {
+            if let previous = lastSignedInUserId,
+               previous.lowercased() != userId.lowercased() {
+                userSwitchWarningCount += 1
+                ZSLogger.warning(
+                    "[ZeroSettle] identify switched from one signed-in user to another without logout(). Purchases stay with the first id. If this is the same person, have your server reconcile the ids.",
+                    category: .general
+                )
+            }
+            lastSignedInUserId = userId
         }
 
         // Single-flight: if a bootstrap for the SAME userId is already running,
@@ -2329,7 +2403,8 @@ public final class ZeroSettle: ObservableObject {
                 return
             }
 
-            let userId = await instance.storeKitManager?.currentUserId ?? "anonymous"
+            let userId = await instance.analyticsUserId
+            let environment = await instance.storeKitEnvironment
 
             do {
                 try await backend.trackFunnelEvent(
@@ -2337,7 +2412,8 @@ public final class ZeroSettle: ObservableObject {
                     userId: userId,
                     productId: productId,
                     screenName: screenName,
-                    metadata: metadata
+                    metadata: metadata,
+                    environment: environment
                 )
                 ZSLogger.debug("trackEvent: \(type.rawValue) sent for product=\(productId)", category: .general)
             } catch {
@@ -2361,7 +2437,7 @@ public final class ZeroSettle: ObservableObject {
                 ZSLogger.debug("reportOfferViewed: SDK not configured, dropping", category: .general)
                 return
             }
-            let userId = await instance.storeKitManager?.currentUserId ?? "anonymous"
+            let userId = await instance.analyticsUserId
             let sessionId = await instance.sessionId
             do {
                 try await backend.reportOfferViewed(

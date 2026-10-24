@@ -845,7 +845,8 @@ internal final class Backend: @unchecked Sendable {
         userId: String,
         productId: String,
         screenName: String?,
-        metadata: [String: String]?
+        metadata: [String: String]?,
+        environment: String? = nil
     ) async throws {
         let url = apiURL("iap/events/")
         let body = TrackFunnelEventRequest(
@@ -853,7 +854,8 @@ internal final class Backend: @unchecked Sendable {
             userId: userId,
             productId: productId,
             screenName: screenName,
-            metadata: metadata
+            metadata: metadata,
+            environment: environment
         )
         try await wrapped { try await httpClient.postVoid(url, body: body, headers: authHeaders) }
     }
@@ -1304,6 +1306,22 @@ internal struct TrackFunnelEventRequest: Encodable {
     let productId: String
     let screenName: String?
     let metadata: [String: String]?
+    /// StoreKit environment, sent only when the SDK knows it.
+    var environment: String? = nil
+
+    private enum CodingKeys: String, CodingKey {
+        case eventType, userId, productId, screenName, metadata, environment
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(eventType, forKey: .eventType)
+        try c.encode(userId, forKey: .userId)
+        try c.encode(productId, forKey: .productId)
+        try c.encodeIfPresent(screenName, forKey: .screenName)
+        try c.encodeIfPresent(metadata, forKey: .metadata)
+        try c.encodeIfPresent(environment, forKey: .environment)
+    }
 }
 
 internal struct TrackOfferViewedRequest: Encodable {
