@@ -44,12 +44,9 @@ final class IdentityStubbedBackendTests: XCTestCase {
     }
 
     func testTrackEventSendsAnalyticsUserIdAndEnvironment() async throws {
-        // Let the launch-time AppTransaction read settle, then pin a value if it failed.
-        _ = await ZeroSettle.shared.storeKitEnvironmentWaitingBriefly()
-        if ZeroSettle.shared.storeKitEnvironment == nil {
-            ZeroSettle.shared.setStoreKitEnvironmentForTesting("Sandbox")
-        }
-        let expectedEnvironment = try XCTUnwrap(ZeroSettle.shared.storeKitEnvironment)
+        // Pin the value so a slow AppTransaction read cannot stall or change it.
+        ZeroSettle.shared.setStoreKitEnvironmentForTesting("Sandbox")
+        let expectedEnvironment = "Sandbox"
         let expectedUser = ZeroSettle.shared.analyticsUserId
 
         let sent = expectation(description: "event sent")
@@ -64,5 +61,17 @@ final class IdentityStubbedBackendTests: XCTestCase {
         XCTAssertEqual(json["user_id"] as? String, expectedUser)
         XCTAssertEqual(json["environment"] as? String, expectedEnvironment)
         XCTAssertNotEqual(json["user_id"] as? String, "anonymous")
+    }
+
+    func testEnvironmentWaitIsCappedWhenReadNeverFinishes() async {
+        ZeroSettle.shared.setStoreKitEnvironmentForTesting(nil)
+        ZeroSettle.shared.setNeverFinishingEnvironmentReadForTesting(true)
+        defer { ZeroSettle.shared.setNeverFinishingEnvironmentReadForTesting(false) }
+        let start = Date()
+        let value = await ZeroSettle.shared.storeKitEnvironmentWaitingBriefly()
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertNil(value)
+        XCTAssertGreaterThan(elapsed, 1.0)
+        XCTAssertLessThan(elapsed, 3.0)
     }
 }

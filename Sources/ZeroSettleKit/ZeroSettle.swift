@@ -1100,6 +1100,12 @@ public final class ZeroSettle: ObservableObject {
     /// the app stores under the same key.
     private static let anonymousSessionUUIDKey = "zerosettle.anonymous_session_uuid"
 
+    /// Removes the persisted anonymous UUID (the same removal ``logout()``
+    /// performs) so a later anonymous session gets a fresh id.
+    internal func clearPersistedAnonymousUserId() {
+        UserDefaults.standard.removeObject(forKey: Self.anonymousSessionUUIDKey)
+    }
+
     /// Returns the persisted anonymous session UUID, generating and
     /// persisting one if none exists. Used by ``identify(_:)`` when
     /// passed ``Identity/anonymous``.
@@ -1110,12 +1116,6 @@ public final class ZeroSettle: ObservableObject {
     /// invariant is "same UUID across launches until ``logout()``"; that
     /// holds in `UserDefaults`, and avoids the cross-process / iCloud
     /// surprises Keychain brings.
-    /// Removes the persisted anonymous UUID (the same removal ``logout()``
-    /// performs) so a later anonymous session gets a fresh id.
-    internal func clearPersistedAnonymousUserId() {
-        UserDefaults.standard.removeObject(forKey: Self.anonymousSessionUUIDKey)
-    }
-
     private func anonymousSessionUserId() -> String {
         let defaults = UserDefaults.standard
         if let existing = defaults.string(forKey: Self.anonymousSessionUUIDKey),
@@ -1289,22 +1289,27 @@ public final class ZeroSettle: ObservableObject {
                 value = nil
             }
             guard let self else { return }
-            if let value, !value.isEmpty { self.storeKitEnvironment = value }
+            if let value, !value.isEmpty, self.storeKitEnvironment == nil { self.storeKitEnvironment = value }
             // Allow a later configure() to retry only after a failed read.
             if value == nil { self.storeKitEnvironmentTask = nil }
         }
     }
 
     /// The StoreKit environment, waiting at most 1.5 s for the in-flight
-    /// `AppTransaction` read. `nil` if it has not finished by then.
+    /// `AppTransaction` read. `nil` if it has not finished by then. The read
+    /// keeps running unawaited; whichever of the read and the timer finishes
+    /// first resumes the caller, exactly once.
     internal func storeKitEnvironmentWaitingBriefly() async -> String? {
         if let storeKitEnvironment { return storeKitEnvironment }
         guard let task = storeKitEnvironmentTask else { return nil }
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask { await task.value }
-            group.addTask { try? await Task.sleep(nanoseconds: 1_500_000_000) }
-            await group.next()
-            group.cancelAll()
+        let gate = SingleResume()
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            gate.install(continuation)
+            Task.detached { await task.value; gate.resume() }
+            Task.detached {
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                gate.resume()
+            }
         }
         return storeKitEnvironment
     }
@@ -3470,6 +3475,15 @@ public final class ZeroSettle: ObservableObject {
 #if DEBUG
     internal func setStoreKitEnvironmentForTesting(_ value: String?) { storeKitEnvironment = value }
 
+    /// Replaces the environment read with a task that never finishes, so tests
+    /// can pin the wait cap. Pass `nil` to clear.
+    internal func setNeverFinishingEnvironmentReadForTesting(_ enabled: Bool) {
+        storeKitEnvironmentTask?.cancel()
+        storeKitEnvironmentTask = enabled
+            ? Task { try? await Task.sleep(nanoseconds: 60_000_000_000) }
+            : nil
+    }
+
     internal func _resetForTesting() {
         offerManager = nil
         // Note: leaves currentConfig/identity intact — tests should configure as needed.
@@ -3497,5 +3511,26 @@ extension ZeroSettle: StoreKitUpdateDelegate {
 
     func storeKitSyncFailed(error: Error) {
         delegate?.zeroSettleStoreKitSyncFailed(error: error)
+    }
+}
+
+/// Resumes one continuation at most once, from any thread.
+private final class SingleResume: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var finished = false
+
+    func install(_ continuation: CheckedContinuation<Void, Never>) {
+        lock.lock(); defer { lock.unlock() }
+        self.continuation = continuation
+    }
+
+    func resume() {
+        lock.lock()
+        let pending = finished ? nil : continuation
+        finished = true
+        continuation = nil
+        lock.unlock()
+        pending?.resume()
     }
 }
