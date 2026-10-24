@@ -178,6 +178,20 @@ public enum ZeroSettleError: Error, LocalizedError, Equatable {
     /// ``ZeroSettleError/isCancellation(_:)`` returns `false`.
     case applePaySetupRequired(autoPresentedSetup: Bool)
 
+    /// ``ZeroSettle/reconcile(linkToken:)`` was refused: the two ids could not
+    /// be merged (for example both already hold conflicting purchases). Nothing
+    /// was moved. The link token is spent; have your server mint a new one
+    /// before retrying.
+    case reconcileRefused
+
+    /// The link token passed to ``ZeroSettle/reconcile(linkToken:)`` is invalid,
+    /// expired or already used. Have your server mint a new one.
+    case invalidLinkToken
+
+    /// Too many requests. Retry after `retryAfter` seconds when the server
+    /// provided one, otherwise back off and retry later.
+    case rateLimited(retryAfter: TimeInterval?)
+
     /// Compares two errors by **case identity and value-typed payloads**.
     ///
     /// Synthesis is impossible here — ``storeKitVerificationFailed(underlyingError:)``
@@ -202,8 +216,12 @@ public enum ZeroSettleError: Error, LocalizedError, Equatable {
              (.invalidUserId, .invalidUserId),
              (.userNotIdentified, .userNotIdentified),
              (.checkoutNotStarted, .checkoutNotStarted),
-             (.applePayUnavailable, .applePayUnavailable):
+             (.applePayUnavailable, .applePayUnavailable),
+             (.reconcileRefused, .reconcileRefused),
+             (.invalidLinkToken, .invalidLinkToken):
             return true
+        case let (.rateLimited(l), .rateLimited(r)):
+            return l == r
         case let (.productNotFound(l), .productNotFound(r)):
             return l == r
         case let (.checkoutFailed(l), .checkoutFailed(r)):
@@ -294,6 +312,15 @@ public enum ZeroSettleError: Error, LocalizedError, Equatable {
             return nil
         case .applePaySetupRequired(autoPresentedSetup: false):
             return "Apple Pay is required for this purchase but no card is set up in Wallet."
+        case .reconcileRefused:
+            return "The accounts could not be merged. Nothing was moved. Have your server mint a new link token before retrying."
+        case .invalidLinkToken:
+            return "The link token is invalid, expired or already used. Have your server mint a new one."
+        case .rateLimited(let retryAfter):
+            if let retryAfter {
+                return "Too many requests. Retry in \(Int(retryAfter)) seconds."
+            }
+            return "Too many requests. Retry later."
         }
     }
 }
@@ -1485,6 +1512,55 @@ public final class ZeroSettle: ObservableObject {
             )
             return nil
         }
+    }
+
+    /// Whether ``reconcile(linkToken:)`` should switch the SDK to the account
+    /// after a success: true when the SDK is currently acting as the id that
+    /// was moved (`fromUserId`), compared case-insensitively.
+    internal static func shouldAdoptReconciledUser(currentUserId: String?, fromUserId: String) -> Bool {
+        guard let currentUserId else { return false }
+        return currentUserId.lowercased() == fromUserId.lowercased()
+    }
+
+    /// Finishes a guest-to-account move using a short-lived link token your
+    /// server signed.
+    ///
+    /// Your server mints the token with `POST /v1/identities/link-token` and
+    /// your secret key, then hands it to the app. ZeroSettle moves the guest
+    /// id's purchases onto the account id. A token is single-use, even when the
+    /// request is refused.
+    ///
+    /// On success, if the SDK is currently acting as the moved id
+    /// (``currentUserId``, compared case-insensitively), it continues as the
+    /// account: it runs the same path as `identify(.user(id:))` for the account
+    /// id and refreshes entitlements. Otherwise the current user is left alone
+    /// and only entitlements are refreshed.
+    ///
+    /// - Parameter linkToken: The token your server signed.
+    /// - Returns: What moved.
+    /// - Throws: ``ZeroSettleError/reconcileRefused``,
+    ///   ``ZeroSettleError/invalidLinkToken``,
+    ///   ``ZeroSettleError/rateLimited(retryAfter:)``, or
+    ///   ``ZeroSettleError/apiError(_:)`` for other failures.
+    @discardableResult
+    public func reconcile(linkToken: String) async throws -> ReconcileResult {
+        let backend = try requireBackend()
+        let result = try await backend.reconcile(linkToken: linkToken)
+
+        if Self.shouldAdoptReconciledUser(currentUserId: currentUserId, fromUserId: result.fromUserId) {
+            // The move is deliberate, so it must not trip the user-switch warning.
+            lastSignedInUserId = nil
+            do {
+                _ = try await _runIdentify(userId: result.intoUserId, name: nil, email: nil)
+            } catch {
+                ZSLogger.warning(
+                    "[ZeroSettle] reconcile succeeded but switching to the account id failed: \(error.localizedDescription)",
+                    category: .general
+                )
+            }
+        }
+        await refreshEntitlementsAndPublish()
+        return result
     }
 
     /// Deprecated alias for ``identify(_:)`` with ``Identity/user(id:name:email:)``.

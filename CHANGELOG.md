@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+Identity phase 6. All additive.
+
+- `ZeroSettle.currentUserId` is now public (read-only).
+- New `ZeroSettle.analyticsUserId`: the id the SDK sends for events, the
+  persisted anonymous UUID when no user is identified. Signed-out events no
+  longer send the literal "anonymous".
+- Funnel events carry the StoreKit `environment` when the SDK knows it.
+- A warning is logged when `identify(.user)` switches from one signed-in user
+  to another without `logout()`.
+- New `ZeroSettle.reconcile(linkToken:)` to finish a guest-to-account move with
+  a token your server signed, with new `ZeroSettleError` cases
+  `reconcileRefused`, `invalidLinkToken` and `rateLimited(retryAfter:)`.
+
 ## 1.6.2 — 2026-10-16
 
 Patch. A smaller StoreKit state reconcile payload. No API changes; drop-in from

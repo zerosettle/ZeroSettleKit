@@ -554,6 +554,50 @@ internal final class Backend: @unchecked Sendable {
         try await wrapped { try await httpClient.postVoid(url, body: body, headers: authHeaders) }
     }
 
+    // MARK: - Identity Reconcile
+
+    /// `POST iap/identities/reconcile/` with a server-signed link token.
+    func reconcile(linkToken: String) async throws -> ReconcileResult {
+        let url = apiURL("iap/identities/reconcile/")
+        let raw: HTTPRawResponse
+        do {
+            raw = try await httpClient.postRaw(url, body: ReconcileRequest(linkToken: linkToken), headers: authHeaders)
+        } catch {
+            throw Self.wrapError(error)
+        }
+        return try Self.mapReconcileResponse(statusCode: raw.statusCode, headers: raw.headers, body: raw.body)
+    }
+
+    /// Maps a reconcile HTTP response to a result or a typed error. Pure.
+    static func mapReconcileResponse(statusCode: Int, headers: [String: String], body: Data) throws -> ReconcileResult {
+        switch statusCode {
+        case 200...299:
+            do {
+                let decoder = JSONDecoder()
+                decoder.keyDecodingStrategy = .convertFromSnakeCase
+                return try decoder.decode(ReconcileResponse.self, from: body).result
+            } catch {
+                throw wrapError(HTTPError.decodingFailed(error))
+            }
+        case 409:
+            throw ZeroSettleError.reconcileRefused
+        case 401 where errorCode(in: body) == "invalid_link_token":
+            throw ZeroSettleError.invalidLinkToken
+        case 429:
+            let value = headers.first { $0.key.lowercased() == "retry-after" }?.value
+            let seconds = value.flatMap { TimeInterval($0.trimmingCharacters(in: .whitespaces)) }
+            throw ZeroSettleError.rateLimited(retryAfter: seconds.flatMap { $0 >= 0 ? $0 : nil })
+        default:
+            throw wrapError(HTTPError.httpError(statusCode: statusCode, body: body))
+        }
+    }
+
+    private static func errorCode(in body: Data) -> String? {
+        guard let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let error = json["error"] as? [String: Any] else { return nil }
+        return error["code"] as? String
+    }
+
     // MARK: - StoreKit Transaction Sync
 
     /// Forward a StoreKit transaction's JWS representation for server-side verification.
@@ -1298,6 +1342,32 @@ internal struct UpgradeOfferExecuteResponse: Decodable {
     let sessionId: String?
     let transactionId: String?
     let cancelInstructions: String?
+}
+
+internal struct ReconcileRequest: Encodable {
+    let linkToken: String
+}
+
+/// Wire shape of a successful reconcile (decoded with `.convertFromSnakeCase`).
+internal struct ReconcileResponse: Decodable, Equatable {
+    struct Moved: Decodable, Equatable {
+        let transactions: Int
+        let entitlements: Int
+    }
+    let reconciliationId: Int
+    let from: String
+    let into: String
+    let moved: Moved
+
+    var result: ReconcileResult {
+        ReconcileResult(
+            reconciliationId: reconciliationId,
+            fromUserId: from,
+            intoUserId: into,
+            movedTransactions: moved.transactions,
+            movedEntitlements: moved.entitlements
+        )
+    }
 }
 
 internal struct TrackFunnelEventRequest: Encodable {

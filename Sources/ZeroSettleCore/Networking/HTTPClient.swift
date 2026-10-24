@@ -30,6 +30,20 @@ public enum HTTPError: Error, LocalizedError {
     }
 }
 
+/// A raw HTTP response: status, headers and body, with no status validation.
+public struct HTTPRawResponse: Sendable {
+    public let statusCode: Int
+    /// Response headers with string keys and values (non-string entries dropped).
+    public let headers: [String: String]
+    public let body: Data
+
+    public init(statusCode: Int, headers: [String: String], body: Data) {
+        self.statusCode = statusCode
+        self.headers = headers
+        self.body = body
+    }
+}
+
 public final class HTTPClient: @unchecked Sendable {
     private let session: URLSession
     private let decoder: JSONDecoder
@@ -89,6 +103,37 @@ public final class HTTPClient: @unchecked Sendable {
         headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
 
         return try await execute(request, responseType: responseType)
+    }
+
+    /// POST that returns the response whatever its status code, so callers can
+    /// read headers (for example `Retry-After`) and map non-2xx bodies themselves.
+    /// Transport failures still throw ``HTTPError/networkError(_:)``.
+    public func postRaw<Body: Encodable>(
+        _ url: URL,
+        body: Body,
+        headers: [String: String] = [:]
+    ) async throws -> HTTPRawResponse {
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = ZeroSettleConstants.Network.defaultTimeoutSeconds
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
+        request.httpBody = try encoder.encode(body)
+
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw HTTPError.networkError(error)
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw HTTPError.invalidResponse
+        }
+        var flat: [String: String] = [:]
+        for (key, value) in http.allHeaderFields {
+            if let k = key as? String, let v = value as? String { flat[k] = v }
+        }
+        return HTTPRawResponse(statusCode: http.statusCode, headers: flat, body: data)
     }
 
     // MARK: - Void Convenience Methods
