@@ -113,6 +113,53 @@ final class AnonymousMergeTests: XCTestCase {
         XCTAssertEqual(pending, ["from": "zs_anon_other", "into": "acct-2"])
     }
 
+    func testIdentifyWaitsForARunningConfigureTimeAttempt() async throws {
+        _ = try await ZeroSettle.shared.identify(.anonymous)
+        let anon = try XCTUnwrap(ZeroSettle.shared.currentUserId)
+        let pair = #"{"from":"\#(anon)","into":"acct-1"}"#
+        UserDefaults.standard.set(Data(pair.utf8), forKey: StubbedSDK.pendingLinkKey)
+        StubURLProtocol.identityLinkBody = #"{"status": "merged"}"#
+        StubURLProtocol.identityLinkDelay = 0.4
+
+        let background = Task { await ZeroSettle.shared.retryPendingIdentityLink() }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        _ = try await ZeroSettle.shared.identify(.user(id: "acct-1"))
+
+        // The link had landed before identify returned, and it was not sent twice.
+        XCTAssertNil(pending)
+        XCTAssertEqual(linkRequests().count, 1)
+        _ = await background.value
+    }
+
+    func testTransientFailureOverwritesOlderPairAndSkipsSecondAttempt() async throws {
+        _ = try await ZeroSettle.shared.identify(.anonymous)
+        let anon = try XCTUnwrap(ZeroSettle.shared.currentUserId)
+        let older = #"{"from":"\#(anon)","into":"acct-1"}"#
+        UserDefaults.standard.set(Data(older.utf8), forKey: StubbedSDK.pendingLinkKey)
+        StubURLProtocol.identityLinkNetworkFailure = true
+
+        _ = try await ZeroSettle.shared.identify(.user(id: "acct-2"))
+
+        XCTAssertEqual(pending, ["from": anon, "into": "acct-2"])
+        XCTAssertEqual(linkRequests().count, 1)
+        XCTAssertEqual(ZeroSettle.shared.currentUserId, "acct-2")
+    }
+
+    func testTotalDeadlineCapsAHangingRequest() async throws {
+        _ = try await ZeroSettle.shared.identify(.anonymous)
+        let anon = try XCTUnwrap(ZeroSettle.shared.currentUserId)
+        StubURLProtocol.identityLinkHangs = true
+        Backend.identityLinkTimeoutSeconds = 0.3
+        defer { Backend.identityLinkTimeoutSeconds = 5 }
+
+        let start = Date()
+        _ = try await ZeroSettle.shared.identify(.user(id: "acct-1"))
+
+        XCTAssertLessThan(Date().timeIntervalSince(start), 3)
+        XCTAssertEqual(pending, ["from": anon, "into": "acct-1"])
+        XCTAssertEqual(ZeroSettle.shared.currentUserId, "acct-1")
+    }
+
     func testPairKeptOnServerErrorAndRateLimit() async throws {
         _ = try await ZeroSettle.shared.identify(.anonymous)
         StubURLProtocol.identityLinkStatusCode = 503

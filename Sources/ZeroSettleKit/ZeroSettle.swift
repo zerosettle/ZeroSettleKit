@@ -1111,8 +1111,18 @@ public final class ZeroSettle: ObservableObject {
     /// confirmed yet, as JSON `{"from": ..., "into": ...}`.
     private static let pendingIdentityLinkKey = "zerosettle.pending_identity_link"
 
+    /// What one attempt at the pending pair did.
+    internal enum IdentityLinkOutcome: Sendable {
+        /// No pair was stored, or there was no backend.
+        case nothingPending
+        /// The server answered (or the failure was final), so the pair is settled.
+        case settled
+        /// A network error, timeout, 5xx or 429; the pair is kept.
+        case transient
+    }
+
     @ObservationIgnored
-    private var identityLinkInFlight = false
+    private var identityLinkTask: Task<IdentityLinkOutcome, Never>?
 
     /// Removes the persisted anonymous UUID (the same removal ``logout()``
     /// performs) so a later anonymous session gets a fresh id.
@@ -1596,42 +1606,65 @@ public final class ZeroSettle: ObservableObject {
 
     /// Makes one bounded attempt at the stored pending pair. Never throws;
     /// the pair is cleared on a server answer and kept on a transient failure.
-    internal func retryPendingIdentityLink() async {
-        guard !identityLinkInFlight, let backend, let pair = pendingIdentityLink() else { return }
-        identityLinkInFlight = true
-        defer { identityLinkInFlight = false }
+    /// When an attempt is already running, waits for it and returns its outcome
+    /// instead of starting another.
+    @discardableResult
+    internal func retryPendingIdentityLink() async -> IdentityLinkOutcome {
+        if let running = identityLinkTask { return await running.value }
+        guard let backend, let pair = pendingIdentityLink() else { return .nothingPending }
+        let task = Task { @MainActor [weak self] () -> IdentityLinkOutcome in
+            guard let self else { return .transient }
+            defer { self.identityLinkTask = nil }
+            return await self.attemptIdentityLink(pair, backend: backend)
+        }
+        identityLinkTask = task
+        return await task.value
+    }
+
+    private func attemptIdentityLink(_ pair: PendingIdentityLink, backend: Backend) async -> IdentityLinkOutcome {
         do {
             let status = try await backend.identityLink(previousUserId: pair.from, userId: pair.into)
             ZSLogger.info("[ZeroSettle] Anonymous id link finished (\(status.rawValue)).", category: .general)
         } catch {
             guard Self.isTerminalIdentityLinkFailure(error) else {
                 ZSLogger.info("[ZeroSettle] Anonymous id link will be retried later: \(error.localizedDescription)", category: .general)
-                return
+                return .transient
             }
         }
         // Only settle the pair that was sent; a newer pair written while the
         // request was in flight must survive.
-        guard pendingIdentityLink() == pair else { return }
+        guard pendingIdentityLink() == pair else { return .settled }
         UserDefaults.standard.removeObject(forKey: Self.pendingIdentityLinkKey)
         let defaults = UserDefaults.standard
         if let stored = defaults.string(forKey: Self.anonymousSessionUUIDKey),
            stored.lowercased() == pair.from.lowercased() {
             defaults.removeObject(forKey: Self.anonymousSessionUUIDKey)
         }
+        return .settled
     }
 
-    /// Called by `identify(.user)`: retries an older pending pair, then, when
-    /// the stored anonymous id carries the SDK prefix and differs from the
-    /// account id, records the new pair and attempts it once.
+    /// Called by `identify(.user)`. Waits for any running attempt, then makes
+    /// one attempt at an older pending pair. When that fails transiently, the
+    /// newest pair (stored anonymous id into this account) replaces it and is
+    /// left for a later identify or configure, so sign-in waits for at most
+    /// one attempt. Otherwise, when the stored anonymous id carries the SDK
+    /// prefix and differs from the account id, the new pair is recorded and
+    /// attempted once.
     private func linkAnonymousIdentity(into userId: String) async {
-        await retryPendingIdentityLink()
+        let outcome = await retryPendingIdentityLink()
         let defaults = UserDefaults.standard
-        guard pendingIdentityLink() == nil,
-              let stored = defaults.string(forKey: Self.anonymousSessionUUIDKey),
+        guard let stored = defaults.string(forKey: Self.anonymousSessionUUIDKey),
               stored.lowercased().hasPrefix(Self.anonymousIdPrefix),
               stored.lowercased() != userId.lowercased() else { return }
-        storePendingIdentityLink(PendingIdentityLink(from: stored, into: userId))
-        await retryPendingIdentityLink()
+        let fresh = PendingIdentityLink(from: stored, into: userId)
+        switch outcome {
+        case .transient:
+            storePendingIdentityLink(fresh)
+        case .nothingPending, .settled:
+            guard pendingIdentityLink() == nil else { return }
+            storePendingIdentityLink(fresh)
+            await retryPendingIdentityLink()
+        }
     }
 
     /// Whether ``reconcile(linkToken:)`` should switch the SDK to the account

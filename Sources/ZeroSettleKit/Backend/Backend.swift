@@ -593,11 +593,28 @@ internal final class Backend: @unchecked Sendable {
     }
 
     /// Short on purpose: `identify(.user)` waits on this call, so a bad
-    /// network must not stall sign-in. A timeout keeps the pending pair.
-    static let identityLinkTimeoutSeconds: TimeInterval = 5
+    /// network must not stall sign-in. It is a hard total deadline, not just
+    /// the request's idle timeout. A timeout keeps the pending pair.
+    nonisolated(unsafe) static var identityLinkTimeoutSeconds: TimeInterval = 5
 
     /// `POST iap/identity-link/` folding a guest id (`zs_anon_...`) into an account id.
     func identityLink(previousUserId: String, userId: String) async throws -> IdentityLinkStatus {
+        let deadline = Self.identityLinkTimeoutSeconds
+        return try await withThrowingTaskGroup(of: IdentityLinkStatus.self) { group in
+            group.addTask {
+                try await self.sendIdentityLink(previousUserId: previousUserId, userId: userId, timeout: deadline)
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(deadline * 1_000_000_000))
+                throw Self.wrapError(HTTPError.networkError(URLError(.timedOut)))
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else { return .skipped }
+            return first
+        }
+    }
+
+    private func sendIdentityLink(previousUserId: String, userId: String, timeout: TimeInterval) async throws -> IdentityLinkStatus {
         let url = apiURL("iap/identity-link/")
         let raw: HTTPRawResponse
         do {
@@ -605,7 +622,7 @@ internal final class Backend: @unchecked Sendable {
                 url,
                 body: IdentityLinkRequest(previousUserId: previousUserId, userId: userId),
                 headers: authHeaders,
-                timeout: Self.identityLinkTimeoutSeconds
+                timeout: timeout
             )
         } catch {
             throw Self.wrapError(error)

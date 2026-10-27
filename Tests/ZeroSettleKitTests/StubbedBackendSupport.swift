@@ -19,6 +19,10 @@ final class StubURLProtocol: URLProtocol {
     nonisolated(unsafe) static var identityLinkTimesOut = false
     /// `timeoutInterval` of the last identity-link request.
     nonisolated(unsafe) static var identityLinkTimeout: TimeInterval?
+    /// Seconds to hold an identity-link response back.
+    nonisolated(unsafe) static var identityLinkDelay: TimeInterval = 0
+    /// When true, identity-link requests never get a response.
+    nonisolated(unsafe) static var identityLinkHangs = false
     nonisolated(unsafe) static var onRequest: (@Sendable (String) -> Void)?
     private static let lock = NSLock()
 
@@ -31,6 +35,8 @@ final class StubURLProtocol: URLProtocol {
         identityLinkNetworkFailure = false
         identityLinkTimesOut = false
         identityLinkTimeout = nil
+        identityLinkDelay = 0
+        identityLinkHangs = false
         onRequest = nil
     }
 
@@ -65,10 +71,16 @@ final class StubURLProtocol: URLProtocol {
         let identityLinkStatus = Self.identityLinkStatusCode
         let identityLinkFails = Self.identityLinkNetworkFailure
         let identityLinkTimesOut = Self.identityLinkTimesOut
+        let identityLinkDelay = Self.identityLinkDelay
+        let identityLinkHangs = Self.identityLinkHangs
         if url.path.contains("identity-link") { Self.identityLinkTimeout = request.timeoutInterval }
         let callback = Self.onRequest
         Self.lock.unlock()
 
+        if url.path.contains("identity-link") && identityLinkHangs { return }
+        if url.path.contains("identity-link") && identityLinkDelay > 0 {
+            Thread.sleep(forTimeInterval: identityLinkDelay)
+        }
         if url.path.contains("identity-link") && identityLinkTimesOut {
             client?.urlProtocol(self, didFailWithError: URLError(.timedOut))
             callback?(url.path)
