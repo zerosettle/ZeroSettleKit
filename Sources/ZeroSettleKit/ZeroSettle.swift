@@ -347,15 +347,11 @@ public enum FunnelEventType: String, Sendable {
 ///   common case. The SDK creates/updates a backend `Identity` for this
 ///   `id` and routes every subsequent API call against it.
 /// - **`.anonymous`** — you have no authenticated user yet (or by design)
-///   but want a stable identity for purchases. The SDK generates a UUID
-///   on first call and persists it in `UserDefaults` under
-///   `zerosettle.anonymous_session_uuid`. The same UUID is reused across
-///   launches until ``ZeroSettle/logout()`` is called or the app is
-///   uninstalled. Anonymous purchases attach to this UUID **permanently**
-///   — there is no API to move them onto a real account later, and
-///   calling ``ZeroSettle/identify(_:)`` with `.user(...)` afterwards
-///   does not re-key them. If the user can eventually sign in, prefer
-///   `.deferred` until you have their real ID.
+///   but want a stable identity for purchases. The SDK generates an id of
+///   the form `zs_anon_<uuid>` on first call and persists it in
+///   `UserDefaults` under `zerosettle.anonymous_session_uuid`. The same id
+///   is reused across launches until ``ZeroSettle/logout()`` is called or
+///   the app is uninstalled. Installs that already hold a bare UUID keep it.
 /// - **`.deferred`** — you intend to identify later (auth happens on a
 ///   subsequent screen). Suppresses the 10s "no user identified" warning
 ///   and is otherwise a no-op: it creates no identity, returns `nil`, and
@@ -366,9 +362,16 @@ public enum FunnelEventType: String, Sendable {
 ///   Nothing can be purchased "under" a deferred identity, so there is
 ///   never an earlier purchase to reconcile.
 ///
-/// Pick exactly one. Don't mix `.user` with `.anonymous` in the same
-/// session — that would create two backend `Identity` records for what
-/// is logically the same person, defeating the point of the SDK.
+/// **Anonymous at launch, user at sign-in.** Call `identify(.anonymous)`
+/// when the app starts and `identify(.user(id:))` when the person signs in.
+/// The SDK then asks ZeroSettle to fold the anonymous id into the account,
+/// but only when the account is new (it has no purchases or activity yet).
+/// When the account already has history, the SDK just switches to it and
+/// the anonymous purchases stay on the anonymous id. User ids must be hard
+/// to guess (a UUID or an opaque server-issued id), because anyone who
+/// knows an id can sign in to it. Ids starting with `zs_anon_` are
+/// reserved; ``ZeroSettle/identify(_:)`` throws
+/// ``ZeroSettleError/invalidUserId`` for them.
 public enum Identity: Sendable {
     /// An authenticated app user. `id` is your app's user identifier
     /// (any non-empty string — the SDK derives a UUIDv5 for
@@ -1100,14 +1103,25 @@ public final class ZeroSettle: ObservableObject {
     /// the app stores under the same key.
     private static let anonymousSessionUUIDKey = "zerosettle.anonymous_session_uuid"
 
+    /// Prefix of every anonymous id the SDK mints. Ids with this prefix are
+    /// reserved and cannot be passed to `identify(.user(id:))`.
+    internal static let anonymousIdPrefix = "zs_anon_"
+
+    /// `UserDefaults` key holding a guest-to-account pair the server has not
+    /// confirmed yet, as JSON `{"from": ..., "into": ...}`.
+    private static let pendingIdentityLinkKey = "zerosettle.pending_identity_link"
+
+    @ObservationIgnored
+    private var identityLinkInFlight = false
+
     /// Removes the persisted anonymous UUID (the same removal ``logout()``
     /// performs) so a later anonymous session gets a fresh id.
     internal func clearPersistedAnonymousUserId() {
         UserDefaults.standard.removeObject(forKey: Self.anonymousSessionUUIDKey)
     }
 
-    /// Returns the persisted anonymous session UUID, generating and
-    /// persisting one if none exists. Used by ``identify(_:)`` when
+    /// Returns the persisted anonymous session id, generating and
+    /// persisting one (`zs_anon_` + lowercase UUID) if none exists. Used by ``identify(_:)`` when
     /// passed ``Identity/anonymous``.
     ///
     /// We persist in `UserDefaults` (not Keychain) because anonymous
@@ -1122,7 +1136,7 @@ public final class ZeroSettle: ObservableObject {
            !existing.isEmpty {
             return existing
         }
-        let fresh = UUID().uuidString.lowercased()
+        let fresh = Self.anonymousIdPrefix + UUID().uuidString.lowercased()
         defaults.set(fresh, forKey: Self.anonymousSessionUUIDKey)
         ZSLogger.info(
             "[ZeroSettle] Generated new anonymous session UUID. Persisted to UserDefaults; cleared on logout().",
@@ -1433,6 +1447,11 @@ public final class ZeroSettle: ObservableObject {
 
         setIsConfigured(true)
 
+        // A guest-to-account link the last session could not finish.
+        if pendingIdentityLink() != nil {
+            Task { await self.retryPendingIdentityLink() }
+        }
+
         let mode = config.publishableKey.hasPrefix("zs_pk_test_") ? "sandbox" : "live"
         ZSLogger.info("ZeroSettle configured (mode=\(mode))", category: .general)
 
@@ -1527,7 +1546,12 @@ public final class ZeroSettle: ObservableObject {
     public func identify(_ identity: Identity) async throws -> ProductCatalog? {
         switch identity {
         case .user(let id, let name, let email):
+            if id.lowercased().hasPrefix(Self.anonymousIdPrefix) {
+                ZSLogger.error("identify(.user) was given an id starting with \(Self.anonymousIdPrefix), which is reserved for anonymous sessions.", category: .general)
+                throw ZeroSettleError.invalidUserId
+            }
             deferredIdentification = false
+            await linkAnonymousIdentity(into: id)
             return try await _runIdentify(userId: id, name: name, email: email)
         case .anonymous:
             deferredIdentification = false
@@ -1541,6 +1565,70 @@ public final class ZeroSettle: ObservableObject {
             )
             return nil
         }
+    }
+
+    // MARK: - Anonymous to account link
+
+    private struct PendingIdentityLink: Codable, Equatable {
+        let from: String
+        let into: String
+    }
+
+    private func pendingIdentityLink() -> PendingIdentityLink? {
+        guard let data = UserDefaults.standard.data(forKey: Self.pendingIdentityLinkKey) else { return nil }
+        return try? JSONDecoder().decode(PendingIdentityLink.self, from: data)
+    }
+
+    private func storePendingIdentityLink(_ pair: PendingIdentityLink) {
+        if let data = try? JSONEncoder().encode(pair) {
+            UserDefaults.standard.set(data, forKey: Self.pendingIdentityLinkKey)
+        }
+    }
+
+    /// Whether a failed link is final: a 4xx other than a timeout or a rate
+    /// limit will not succeed on retry. Network errors, 5xx and 429 keep the pair.
+    private static func isTerminalIdentityLinkFailure(_ error: Error) -> Bool {
+        guard let iapError = error as? ZeroSettleError,
+              case .apiError(let detail) = iapError,
+              let status = detail.statusCode else { return false }
+        return (400..<500).contains(status) && status != 408 && status != 429
+    }
+
+    /// Makes one bounded attempt at the stored pending pair. Never throws;
+    /// the pair is cleared on a server answer and kept on a transient failure.
+    internal func retryPendingIdentityLink() async {
+        guard !identityLinkInFlight, let backend, let pair = pendingIdentityLink() else { return }
+        identityLinkInFlight = true
+        defer { identityLinkInFlight = false }
+        do {
+            let status = try await backend.identityLink(previousUserId: pair.from, userId: pair.into)
+            ZSLogger.info("[ZeroSettle] Anonymous id link finished (\(status.rawValue)).", category: .general)
+        } catch {
+            guard Self.isTerminalIdentityLinkFailure(error) else {
+                ZSLogger.info("[ZeroSettle] Anonymous id link will be retried later: \(error.localizedDescription)", category: .general)
+                return
+            }
+        }
+        UserDefaults.standard.removeObject(forKey: Self.pendingIdentityLinkKey)
+        let defaults = UserDefaults.standard
+        if let stored = defaults.string(forKey: Self.anonymousSessionUUIDKey),
+           stored.lowercased() == pair.from.lowercased() {
+            defaults.removeObject(forKey: Self.anonymousSessionUUIDKey)
+        }
+    }
+
+    /// Called by `identify(.user)`: retries an older pending pair, then, when
+    /// the stored anonymous id carries the SDK prefix and differs from the
+    /// account id, records the new pair and attempts it once.
+    private func linkAnonymousIdentity(into userId: String) async {
+        await retryPendingIdentityLink()
+        let defaults = UserDefaults.standard
+        guard pendingIdentityLink() == nil,
+              let stored = defaults.string(forKey: Self.anonymousSessionUUIDKey),
+              stored.lowercased().hasPrefix(Self.anonymousIdPrefix),
+              stored.lowercased() != userId.lowercased() else { return }
+        storePendingIdentityLink(PendingIdentityLink(from: stored, into: userId))
+        await retryPendingIdentityLink()
     }
 
     /// Whether ``reconcile(linkToken:)`` should switch the SDK to the account

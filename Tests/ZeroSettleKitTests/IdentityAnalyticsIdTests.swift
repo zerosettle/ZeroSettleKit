@@ -20,7 +20,8 @@ final class IdentityAnalyticsIdTests: XCTestCase {
         let a = ZeroSettle.shared.analyticsUserId
         let b = ZeroSettle.shared.analyticsUserId
         XCTAssertEqual(a, b)
-        XCTAssertNotNil(UUID(uuidString: a))
+        XCTAssertTrue(a.hasPrefix("zs_anon_"))
+        XCTAssertNotNil(UUID(uuidString: String(a.dropFirst("zs_anon_".count))))
         XCTAssertNil(ZeroSettle.shared.currentUserId)
     }
 

@@ -11,6 +11,10 @@ final class StubURLProtocol: URLProtocol {
 
     nonisolated(unsafe) static var recorded: [Recorded] = []
     nonisolated(unsafe) static var reconcileBody = "{}"
+    nonisolated(unsafe) static var identityLinkBody = #"{"status": "skipped"}"#
+    nonisolated(unsafe) static var identityLinkStatusCode = 200
+    /// When true, identity-link requests fail at the transport layer.
+    nonisolated(unsafe) static var identityLinkNetworkFailure = false
     nonisolated(unsafe) static var onRequest: (@Sendable (String) -> Void)?
     private static let lock = NSLock()
 
@@ -18,6 +22,9 @@ final class StubURLProtocol: URLProtocol {
         lock.lock(); defer { lock.unlock() }
         recorded = []
         reconcileBody = "{}"
+        identityLinkBody = #"{"status": "skipped"}"#
+        identityLinkStatusCode = 200
+        identityLinkNetworkFailure = false
         onRequest = nil
     }
 
@@ -48,16 +55,27 @@ final class StubURLProtocol: URLProtocol {
         Self.lock.lock()
         Self.recorded.append(Recorded(path: url.path, body: body))
         let reconcile = Self.reconcileBody
+        let identityLink = Self.identityLinkBody
+        let identityLinkStatus = Self.identityLinkStatusCode
+        let identityLinkFails = Self.identityLinkNetworkFailure
         let callback = Self.onRequest
         Self.lock.unlock()
 
+        if url.path.contains("identity-link") && identityLinkFails {
+            client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
+            callback?(url.path)
+            return
+        }
+
+        var statusCode = 200
         let payload: String
-        if url.path.contains("products") { payload = #"{"products": []}"# }
+        if url.path.contains("identity-link") { payload = identityLink; statusCode = identityLinkStatus }
+        else if url.path.contains("products") { payload = #"{"products": []}"# }
         else if url.path.contains("entitlements") { payload = #"{"entitlements": []}"# }
         else if url.path.contains("reconcile") { payload = reconcile }
         else { payload = "{}" }
 
-        let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil,
+        let response = HTTPURLResponse(url: url, statusCode: statusCode, httpVersion: nil,
                                        headerFields: ["Content-Type": "application/json"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(payload.utf8))
@@ -72,6 +90,7 @@ final class StubURLProtocol: URLProtocol {
 @MainActor
 enum StubbedSDK {
     static let anonymousKey = "zerosettle.anonymous_session_uuid"
+    static let pendingLinkKey = "zerosettle.pending_identity_link"
 
     static func setUp() {
         StubURLProtocol.reset()
@@ -79,6 +98,7 @@ enum StubbedSDK {
         ZeroSettle.baseURLOverride = URL(string: "https://stub.zerosettle.test")
         ZeroSettle.shared.logout()
         UserDefaults.standard.removeObject(forKey: anonymousKey)
+        UserDefaults.standard.removeObject(forKey: pendingLinkKey)
         ZeroSettle.shared.configure(.init(
             publishableKey: "zs_pk_test_stubbedIdentity",
             syncStoreKitTransactions: false,
@@ -89,6 +109,7 @@ enum StubbedSDK {
     static func tearDown() {
         ZeroSettle.shared.logout()
         UserDefaults.standard.removeObject(forKey: anonymousKey)
+        UserDefaults.standard.removeObject(forKey: pendingLinkKey)
         ZeroSettle.shared.setStoreKitEnvironmentForTesting(nil)
         ZeroSettle.baseURLOverride = nil
         URLProtocol.unregisterClass(StubURLProtocol.self)

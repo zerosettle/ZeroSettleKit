@@ -592,6 +592,38 @@ internal final class Backend: @unchecked Sendable {
         }
     }
 
+    /// `POST iap/identity-link/` folding a guest id (`zs_anon_...`) into an account id.
+    func identityLink(previousUserId: String, userId: String) async throws -> IdentityLinkStatus {
+        let url = apiURL("iap/identity-link/")
+        let raw: HTTPRawResponse
+        do {
+            raw = try await httpClient.postRaw(
+                url,
+                body: IdentityLinkRequest(previousUserId: previousUserId, userId: userId),
+                headers: authHeaders
+            )
+        } catch {
+            throw Self.wrapError(error)
+        }
+        return try Self.mapIdentityLinkResponse(statusCode: raw.statusCode, headers: raw.headers, body: raw.body)
+    }
+
+    /// Maps an identity-link HTTP response to a status or a typed error. Pure.
+    /// An unknown or missing `status` maps to `.skipped`.
+    static func mapIdentityLinkResponse(statusCode: Int, headers: [String: String], body: Data) throws -> IdentityLinkStatus {
+        switch statusCode {
+        case 200...299:
+            let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+            return (json?["status"] as? String).flatMap(IdentityLinkStatus.init(rawValue:)) ?? .skipped
+        case 429:
+            let value = headers.first { $0.key.lowercased() == "retry-after" }?.value
+            let seconds = value.flatMap { TimeInterval($0.trimmingCharacters(in: .whitespaces)) }
+            throw ZeroSettleError.rateLimited(retryAfter: seconds.flatMap { $0 >= 0 ? $0 : nil })
+        default:
+            throw wrapError(HTTPError.httpError(statusCode: statusCode, body: body))
+        }
+    }
+
     private static func errorCode(in body: Data) -> String? {
         guard let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
               let error = json["error"] as? [String: Any] else { return nil }
@@ -1342,6 +1374,16 @@ internal struct UpgradeOfferExecuteResponse: Decodable {
     let sessionId: String?
     let transactionId: String?
     let cancelInstructions: String?
+}
+
+internal struct IdentityLinkRequest: Encodable {
+    let previousUserId: String
+    let userId: String
+}
+
+/// Outcome of `POST iap/identity-link/`.
+internal enum IdentityLinkStatus: String {
+    case merged, switched, skipped
 }
 
 internal struct ReconcileRequest: Encodable {
