@@ -1,28 +1,48 @@
 # Changelog
 
-## Unreleased
+## 1.7.0 — 2026-10-27
 
-Identity phase 6. Plan to release as a minor version.
+Minor. Guest-to-account reconcile, an anonymous to account merge at sign-in,
+and a public `analyticsUserId`. Drop-in from 1.6.2 apart from the new
+`ZeroSettleError` cases below. It requires the matching backend (the
+`iap/identity-link/` endpoint and the reconcile link token).
 
-- New `ZeroSettleError` cases (`reconcileRefused`, `invalidLinkToken`,
-  `rateLimited(retryAfter:)`). Apps that switch exhaustively over
+### Anonymous to account merge
+
+- New anonymous ids use the `zs_anon_` prefix (`zs_anon_` plus a UUID). Ids
+  stored by earlier versions are kept as they are.
+- `identify(.user)` now folds the stored anonymous id into the account through
+  `POST iap/identity-link/`. If the call fails on the network, with a 5xx or
+  with a 429, the pair is kept and retried once per `identify` and `configure`.
+  The call has a hard 5 second deadline, so `identify(.user)` cannot stall.
+- `identify(.user)` with an id that starts with `zs_anon_` fails with
+  `ZeroSettleError.invalidUserId`. The prefix is reserved.
+- The merge only moves history into an account that has none. Use user ids that
+  are hard to guess (a UUID or an opaque server-issued id, not an email or a
+  sequential number).
+
+### Guest-to-account reconcile
+
+- New `ZeroSettle.reconcile(linkToken:)` finishes a guest-to-account move with a
+  token your server signed. It returns a `ReconcileResult` with the moved
+  transaction and entitlement counts, and `switchedToAccount`, which reports
+  whether the SDK adopted the account id.
+- New `ZeroSettleError` cases: `reconcileRefused`, `invalidLinkToken` and
+  `rateLimited(retryAfter:)`. Apps that switch exhaustively over
   `ZeroSettleError` without a `default` must add the cases or a default.
-- Signed-out events now send a per-device UUID instead of the literal
-  "anonymous", so counts of app users and paywall viewers rise once apps update.
-- RevenueCat-mode signed-in users' events now carry their real id.
-- `ReconcileResult.switchedToAccount` reports whether the SDK adopted the
-  account id.
 
+### Analytics
+
+- New `ZeroSettle.analyticsUserId`: the id the SDK sends with events, which is
+  the persisted anonymous id when no user is identified. Signed-out events used
+  to send the literal "anonymous", so counts of app users and paywall viewers
+  rise once apps update. Offer impressions use it too.
+- RevenueCat-mode signed-in users' events now carry their real id.
+- Funnel events carry the StoreKit `environment` when the SDK knows it. The wait
+  for the environment is capped at 1.5 seconds.
 - `ZeroSettle.currentUserId` is now public (read-only).
-- New `ZeroSettle.analyticsUserId`: the id the SDK sends for events, the
-  persisted anonymous UUID when no user is identified. Signed-out events no
-  longer send the literal "anonymous".
-- Funnel events carry the StoreKit `environment` when the SDK knows it.
-- A warning is logged when `identify(.user)` switches from one signed-in user
-  to another without `logout()`.
-- New `ZeroSettle.reconcile(linkToken:)` to finish a guest-to-account move with
-  a token your server signed, with new `ZeroSettleError` cases
-  `reconcileRefused`, `invalidLinkToken` and `rateLimited(retryAfter:)`.
+- A warning is logged when `identify(.user)` switches from one signed-in user to
+  another without `logout()`.
 
 ## 1.6.2 — 2026-10-16
 
