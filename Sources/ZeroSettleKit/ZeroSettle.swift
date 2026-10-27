@@ -1609,6 +1609,9 @@ public final class ZeroSettle: ObservableObject {
                 return
             }
         }
+        // Only settle the pair that was sent; a newer pair written while the
+        // request was in flight must survive.
+        guard pendingIdentityLink() == pair else { return }
         UserDefaults.standard.removeObject(forKey: Self.pendingIdentityLinkKey)
         let defaults = UserDefaults.standard
         if let stored = defaults.string(forKey: Self.anonymousSessionUUIDKey),

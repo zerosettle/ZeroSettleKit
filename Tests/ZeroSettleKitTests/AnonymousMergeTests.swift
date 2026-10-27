@@ -98,6 +98,21 @@ final class AnonymousMergeTests: XCTestCase {
         XCTAssertEqual(ZeroSettle.shared.currentUserId, "acct-1")
     }
 
+    func testSettlingDoesNotClearANewerPairWrittenMidFlight() async throws {
+        _ = try await ZeroSettle.shared.identify(.anonymous)
+        StubURLProtocol.identityLinkBody = #"{"status": "merged"}"#
+        let newer = #"{"from":"zs_anon_other","into":"acct-2"}"#
+        StubURLProtocol.onRequest = { path in
+            if path.contains("identity-link") {
+                UserDefaults.standard.set(Data(newer.utf8), forKey: "zerosettle.pending_identity_link")
+            }
+        }
+
+        _ = try await ZeroSettle.shared.identify(.user(id: "acct-1"))
+
+        XCTAssertEqual(pending, ["from": "zs_anon_other", "into": "acct-2"])
+    }
+
     func testPairKeptOnServerErrorAndRateLimit() async throws {
         _ = try await ZeroSettle.shared.identify(.anonymous)
         StubURLProtocol.identityLinkStatusCode = 503
