@@ -86,6 +86,18 @@ final class AnonymousMergeTests: XCTestCase {
         XCTAssertEqual(linkRequests().count, 1)
     }
 
+    func testTimeoutKeepsPairIdentifyReturnsAndRequestUsesFiveSeconds() async throws {
+        _ = try await ZeroSettle.shared.identify(.anonymous)
+        let anon = try XCTUnwrap(ZeroSettle.shared.currentUserId)
+        StubURLProtocol.identityLinkTimesOut = true
+
+        _ = try await ZeroSettle.shared.identify(.user(id: "acct-1"))
+
+        XCTAssertEqual(StubURLProtocol.identityLinkTimeout, 5)
+        XCTAssertEqual(pending, ["from": anon, "into": "acct-1"])
+        XCTAssertEqual(ZeroSettle.shared.currentUserId, "acct-1")
+    }
+
     func testPairKeptOnServerErrorAndRateLimit() async throws {
         _ = try await ZeroSettle.shared.identify(.anonymous)
         StubURLProtocol.identityLinkStatusCode = 503

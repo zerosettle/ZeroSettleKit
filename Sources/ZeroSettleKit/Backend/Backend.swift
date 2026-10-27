@@ -592,6 +592,10 @@ internal final class Backend: @unchecked Sendable {
         }
     }
 
+    /// Short on purpose: `identify(.user)` waits on this call, so a bad
+    /// network must not stall sign-in. A timeout keeps the pending pair.
+    static let identityLinkTimeoutSeconds: TimeInterval = 5
+
     /// `POST iap/identity-link/` folding a guest id (`zs_anon_...`) into an account id.
     func identityLink(previousUserId: String, userId: String) async throws -> IdentityLinkStatus {
         let url = apiURL("iap/identity-link/")
@@ -600,7 +604,8 @@ internal final class Backend: @unchecked Sendable {
             raw = try await httpClient.postRaw(
                 url,
                 body: IdentityLinkRequest(previousUserId: previousUserId, userId: userId),
-                headers: authHeaders
+                headers: authHeaders,
+                timeout: Self.identityLinkTimeoutSeconds
             )
         } catch {
             throw Self.wrapError(error)

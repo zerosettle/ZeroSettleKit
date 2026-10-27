@@ -115,11 +115,12 @@ public final class HTTPClient: @unchecked Sendable {
     public func postRaw<Body: Encodable>(
         _ url: URL,
         body: Body,
-        headers: [String: String] = [:]
+        headers: [String: String] = [:],
+        timeout: TimeInterval = ZeroSettleConstants.Network.defaultTimeoutSeconds
     ) async throws -> HTTPRawResponse {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = ZeroSettleConstants.Network.defaultTimeoutSeconds
+        request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
         request.httpBody = try encoder.encode(body)
