@@ -30,6 +30,15 @@ final class IAPConfigurationTests: XCTestCase {
 // MARK: - Price Tests
 
 final class PriceTests: XCTestCase {
+    func testStoreKitAmountScalesByCurrencyMinorUnit() {
+        let yen = Price(storeKitAmount: 1200, currencyCode: "JPY")
+        XCTAssertEqual(yen.amountCents, 1200)
+        XCTAssertEqual(Price(storeKitAmount: Decimal(string: "9.99")!, currencyCode: "USD").amountCents, 999)
+        XCTAssertEqual(Price(storeKitAmount: Decimal(string: "1.234")!, currencyCode: "KWD").amountCents, 1234)
+        // The same number formats as the same amount the user sees in the store.
+        XCTAssertEqual(yen.formatted, Price(amountMicros: 1_200_000_000, currencyCode: "JPY").formatted)
+    }
+
     func testPriceFormattedFromMicros() {
         let price = Price(amountMicros: 9_990_000, currencyCode: "USD")
         XCTAssertEqual(price.amountCents, 999)

@@ -168,12 +168,9 @@ public struct ZSProduct: Identifiable, Sendable {
     /// StoreKit price - prefers on-device fetch, falls back to backend price for display
     public var storeKitPrice: Price? {
         if let skProduct = _storeKitProduct {
-            let cents = (skProduct.price as NSDecimalNumber)
-                .multiplying(by: 100)
-                .rounding(accordingToBehavior: nil)
-                .intValue
-            let currency = webPrice?.currencyCode ?? appStorePrice?.currencyCode ?? "USD"
-            return Price(amountCents: cents, currencyCode: currency)
+            // StoreKit reports its own currency; scale by that currency's minor unit.
+            return Price(storeKitAmount: skProduct.price,
+                         currencyCode: skProduct.priceFormatStyle.currencyCode)
         }
         return appStorePrice
     }
@@ -418,6 +415,16 @@ public struct Price: Sendable, Equatable, Hashable {
     /// Convenience initializer that converts from micros (backend wire format) to cents.
     public init(amountMicros: Int, currencyCode: String) {
         self.amountCents = Price.minorUnits(fromMicros: amountMicros, currencyCode: currencyCode)
+        self.currencyCode = currencyCode
+    }
+
+    /// Builds a price from an on-device StoreKit amount (a whole-unit decimal such as 9.99 or 1200).
+    init(storeKitAmount: Decimal, currencyCode: String) {
+        let scale = Decimal(sign: .plus, exponent: Price.minorUnitDigits(for: currencyCode), significand: 1)
+        let minor = (storeKitAmount * scale as NSDecimalNumber)
+            .rounding(accordingToBehavior: nil)
+            .intValue
+        self.amountCents = minor
         self.currencyCode = currencyCode
     }
 
