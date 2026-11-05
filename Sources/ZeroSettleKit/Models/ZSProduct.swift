@@ -195,6 +195,8 @@ public struct ZSProduct: Identifiable, Sendable {
     /// Example: StoreKit = $9.99, web = $6.99 → `savingsPercent` = 30
     public var savingsPercent: Int? {
         guard let webPrice, let skPrice = storeKitPrice, skPrice.amountCents > 0 else { return nil }
+        // Minor units of different currencies are not comparable (1200 yen vs 1200 cents).
+        guard webPrice.currencyCode.caseInsensitiveCompare(skPrice.currencyCode) == .orderedSame else { return nil }
         let savings = Double(skPrice.amountCents - webPrice.amountCents) / Double(skPrice.amountCents)
         let percent = Int((savings * 100).rounded())
         return percent > 0 ? percent : nil

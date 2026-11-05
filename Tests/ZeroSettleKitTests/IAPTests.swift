@@ -39,6 +39,23 @@ final class PriceTests: XCTestCase {
         XCTAssertEqual(yen.formatted, Price(amountMicros: 1_200_000_000, currencyCode: "JPY").formatted)
     }
 
+    private func product(web: Price, store: Price) -> ZSProduct {
+        ZSProduct(id: "p", displayName: "P", productDescription: "", type: .autoRenewableSubscription,
+                  webPrice: web, appStorePrice: store)
+    }
+
+    func testSavingsPercentComparesSameCurrencyOnly() {
+        let same = product(web: Price(amountCents: 700, currencyCode: "USD"),
+                           store: Price(amountCents: 1000, currencyCode: "usd"))
+        XCTAssertEqual(same.savingsPercent, 30)
+        let yen = product(web: Price(amountCents: 840, currencyCode: "JPY"),
+                          store: Price(amountCents: 1200, currencyCode: "jpy"))
+        XCTAssertEqual(yen.savingsPercent, 30)
+        let mixed = product(web: Price(amountCents: 700, currencyCode: "USD"),
+                            store: Price(amountCents: 1200, currencyCode: "JPY"))
+        XCTAssertNil(mixed.savingsPercent)
+    }
+
     func testPriceFormattedFromMicros() {
         let price = Price(amountMicros: 9_990_000, currencyCode: "USD")
         XCTAssertEqual(price.amountCents, 999)
