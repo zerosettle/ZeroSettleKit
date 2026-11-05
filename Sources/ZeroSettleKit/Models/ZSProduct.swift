@@ -398,11 +398,13 @@ extension ZSProduct: Hashable {
 
 /// A price with currency information.
 ///
-/// All amounts are in **cents** (e.g., 999 = $9.99), consistent with Stripe conventions.
-/// The backend sends amounts in micros; the custom `Codable` implementation converts
-/// automatically so callers always work with cents.
+/// Amounts are in the currency's **minor unit**, consistent with Stripe conventions
+/// (999 = $9.99, but 1200 = 1,200 yen because yen has no minor unit).
+/// The backend sends amounts in micros of the whole currency unit; the custom `Codable`
+/// implementation converts using the currency's own decimal places.
 public struct Price: Sendable, Equatable, Hashable {
-    /// Price in cents (e.g., 999 = $9.99).
+    /// Price in the currency's minor unit (e.g., 999 = $9.99; 1200 = 1,200 JPY).
+    /// The name is kept for source compatibility.
     public let amountCents: Int
 
     /// ISO 4217 currency code (e.g., "USD")
@@ -415,14 +417,45 @@ public struct Price: Sendable, Equatable, Hashable {
 
     /// Convenience initializer that converts from micros (backend wire format) to cents.
     public init(amountMicros: Int, currencyCode: String) {
-        self.amountCents = Int((Double(amountMicros) / 10_000.0).rounded())
+        self.amountCents = Price.minorUnits(fromMicros: amountMicros, currencyCode: currencyCode)
         self.currencyCode = currencyCode
     }
 
-    /// Formatted price string (e.g., "$9.99")
+    /// Formatted price string (e.g., "$9.99", "¥1,200")
     public var formatted: String {
-        let decimal = Decimal(amountCents) / 100
+        let decimal = Decimal(sign: amountCents < 0 ? .minus : .plus,
+                              exponent: -Price.minorUnitDigits(for: currencyCode),
+                              significand: Decimal(abs(amountCents)))
         return decimal.formatted(.currency(code: currencyCode))
+    }
+
+    // Mirrors the backend's `api/services/currency.py`: Stripe's minor unit is 0 digits for
+    // the zero-decimal set, 3 for the three-decimal set and 2 for everything else.
+    private static let zeroDecimalCurrencies: Set<String> = [
+        "BIF", "CLP", "DJF", "GNF", "JPY", "KMF", "KRW", "MGA",
+        "PYG", "RWF", "UGX", "VND", "VUV", "XAF", "XOF", "XPF",
+    ]
+    private static let threeDecimalCurrencies: Set<String> = [
+        "BHD", "IQD", "JOD", "KWD", "LYD", "OMR", "TND",
+    ]
+
+    /// Decimal places of the currency's minor unit.
+    static func minorUnitDigits(for currencyCode: String) -> Int {
+        let code = currencyCode.uppercased()
+        if zeroDecimalCurrencies.contains(code) { return 0 }
+        if threeDecimalCurrencies.contains(code) { return 3 }
+        return 2
+    }
+
+    /// Converts wire micros (1e-6 of the whole unit) to the currency's minor unit.
+    static func minorUnits(fromMicros micros: Int, currencyCode: String) -> Int {
+        let perMinorUnit = pow(10.0, Double(6 - minorUnitDigits(for: currencyCode)))
+        return Int((Double(micros) / perMinorUnit).rounded())
+    }
+
+    /// Converts a minor-unit amount back to wire micros.
+    static func micros(fromMinorUnits amount: Int, currencyCode: String) -> Int {
+        amount * Int(pow(10.0, Double(6 - minorUnitDigits(for: currencyCode))))
     }
 }
 
@@ -437,14 +470,15 @@ extension Price: Codable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let micros = try container.decode(Int.self, forKey: .amountCents)
-        amountCents = Int((Double(micros) / 10_000.0).rounded())
-        currencyCode = try container.decode(String.self, forKey: .currencyCode)
+        let code = try container.decode(String.self, forKey: .currencyCode)
+        amountCents = Price.minorUnits(fromMicros: micros, currencyCode: code)
+        currencyCode = code
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        // Convert cents back to micros for round-trip fidelity with backend
-        try container.encode(amountCents * 10_000, forKey: .amountCents)
+        // Convert minor units back to micros for round-trip fidelity with backend
+        try container.encode(Price.micros(fromMinorUnits: amountCents, currencyCode: currencyCode), forKey: .amountCents)
         try container.encode(currencyCode, forKey: .currencyCode)
     }
 }

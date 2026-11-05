@@ -68,6 +68,26 @@ final class PriceTests: XCTestCase {
         XCTAssertEqual(json["currencyCode"] as? String, "USD")
     }
 
+    func testZeroDecimalCurrencyMicrosAreWholeUnits() throws {
+        // 1,200 yen travels as 1_200_000_000 micros. It must stay 1200, not 12.
+        let price = Price(amountMicros: 1_200_000_000, currencyCode: "JPY")
+        XCTAssertEqual(price.amountCents, 1200)
+        XCTAssertTrue(price.formatted.contains("1,200") || price.formatted.contains("1200"))
+        XCTAssertFalse(price.formatted.contains("."))
+
+        let decoded = try JSONDecoder().decode(
+            Price.self, from: Data(#"{"amountMicros":1200000000,"currencyCode":"jpy"}"#.utf8))
+        XCTAssertEqual(decoded.amountCents, 1200)
+
+        let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(price)) as! [String: Any]
+        XCTAssertEqual(json["amountMicros"] as? Int, 1_200_000_000)
+    }
+
+    func testThreeDecimalCurrencyKeepsThousandths() {
+        // 1.500 KWD = 1500 fils = 1_500_000 micros.
+        XCTAssertEqual(Price(amountMicros: 1_500_000, currencyCode: "KWD").amountCents, 1500)
+    }
+
     func testPriceMicrosToCtentsConversion() {
         // 4_990_000 micros = 499 cents
         let price = Price(amountMicros: 4_990_000, currencyCode: "EUR")
